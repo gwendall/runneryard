@@ -94,6 +94,7 @@ func runInit(args []string) error {
 		files = append(files,
 			generatedFile{path: filepath.Join(projectDir, ".runneryard", "controller.env.example"), contents: renderHetznerEnv(options), mode: 0o600},
 			generatedFile{path: filepath.Join(projectDir, ".runneryard", "hetzner.controller.compose.yml"), contents: renderHetznerCompose(), mode: 0o644},
+			generatedFile{path: filepath.Join(projectDir, ".runneryard", ".gitignore"), contents: "controller.env\ngithub-app.pem\n", mode: 0o644},
 		)
 	}
 	for _, file := range files {
@@ -218,7 +219,7 @@ RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json
 HCLOUD_TOKEN=
 GITHUB_APP_CLIENT_ID=
 GITHUB_APP_INSTALLATION_ID=
-GITHUB_APP_PRIVATE_KEY=
+GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/github-app.pem
 `, options.githubURL, options.scaleSet, options.scaleSet, options.region, version, options.maxRunners)
 }
 
@@ -231,6 +232,7 @@ func renderHetznerCompose() string {
       - controller.env
     volumes:
       - runneryard_state:/var/lib/runneryard
+      - ./github-app.pem:/run/secrets/github-app.pem:ro
 
 volumes:
   runneryard_state:

@@ -63,6 +63,7 @@ This writes:
 
 - `.runneryard/controller.env.example`
 - `.runneryard/hetzner.controller.compose.yml`
+- `.runneryard/.gitignore` for the completed environment and App key
 - `.github/workflows/runneryard-canary.yml`
 
 It does not create infrastructure or upload credentials. Copy the environment
@@ -71,6 +72,14 @@ example on the controller host and fill it there:
 ```sh
 cp .runneryard/controller.env.example .runneryard/controller.env
 chmod 600 .runneryard/controller.env
+```
+
+Place the GitHub App private key beside the Compose file. It is mounted
+read-only and does not need to be flattened into an environment variable:
+
+```sh
+cp ~/Downloads/acme-ci.private-key.pem .runneryard/github-app.pem
+chmod 600 .runneryard/github-app.pem
 ```
 
 Required Hetzner values are:
@@ -83,6 +92,7 @@ RUNNER_HETZNER_SERVER_TYPE=cpx32
 RUNNER_HETZNER_IMAGE=docker-ce
 RUNNER_HETZNER_FIREWALL_ID=123456
 RUNNER_IMAGE=ghcr.io/gwendall/runneryard:0.2.0
+GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/github-app.pem
 ```
 
 `RUNNER_HETZNER_NETWORK_ID` is optional. A Hetzner Cloud firewall does not

@@ -45,7 +45,7 @@ hcloud firewall describe runneryard-workers -o json | jq .id`}</CodeBlock>
 
 cp .runneryard/controller.env.example \\
   .runneryard/controller.env`}</CodeBlock>
-              <p>Fill the GitHub App values, <code>HCLOUD_TOKEN</code>, and <code>RUNNER_HETZNER_FIREWALL_ID</code>. The default worker is <code>cpx32</code> on Hetzner&apos;s official <code>docker-ce</code> image.</p>
+              <p>Fill the GitHub App values, <code>HCLOUD_TOKEN</code>, and <code>RUNNER_HETZNER_FIREWALL_ID</code>. Put the App key at <code>.runneryard/github-app.pem</code>. The default worker is <code>cpx32</code> on Hetzner&apos;s official <code>docker-ce</code> image.</p>
             </div>
           </section>
           <section className="provider-section">
