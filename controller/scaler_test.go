@@ -14,9 +14,11 @@ import (
 
 type fakeCompute struct {
 	workers             []provider.Worker
+	inventoryErr        error
 	destroyErr          error
 	removeBeforeDestroy bool
 	destroyed           []string
+	events              *[]string
 }
 
 func (f *fakeCompute) Launch(_ context.Context, _ provider.Lease) (provider.Worker, error) {
@@ -24,6 +26,9 @@ func (f *fakeCompute) Launch(_ context.Context, _ provider.Lease) (provider.Work
 }
 
 func (f *fakeCompute) Inventory(_ context.Context) ([]provider.Worker, error) {
+	if f.inventoryErr != nil {
+		return nil, f.inventoryErr
+	}
 	return append([]provider.Worker(nil), f.workers...), nil
 }
 
@@ -41,7 +46,45 @@ func (f *fakeCompute) Destroy(_ context.Context, id string) error {
 		return f.destroyErr
 	}
 	f.destroyed = append(f.destroyed, id)
+	if f.events != nil {
+		*f.events = append(*f.events, "worker")
+	}
 	return nil
+}
+
+type fakeSessionCloser struct {
+	events         *[]string
+	closeErr       error
+	hadDeadline    bool
+	deadlineWindow time.Duration
+}
+
+func (f *fakeSessionCloser) Close(ctx context.Context) error {
+	deadline, ok := ctx.Deadline()
+	f.hadDeadline = ok
+	if ok {
+		f.deadlineWindow = time.Until(deadline)
+	}
+	*f.events = append(*f.events, "session")
+	return f.closeErr
+}
+
+type fakeMessageSession struct{ fakeSessionCloser }
+
+func (*fakeMessageSession) GetMessage(context.Context, int, int) (*scaleset.RunnerScaleSetMessage, error) {
+	return nil, errors.New("unexpected GetMessage call")
+}
+
+func (*fakeMessageSession) DeleteMessage(context.Context, int) error {
+	return errors.New("unexpected DeleteMessage call")
+}
+
+func (*fakeMessageSession) AcquireJobs(context.Context, []int64) ([]int64, error) {
+	return nil, errors.New("unexpected AcquireJobs call")
+}
+
+func (*fakeMessageSession) Session() scaleset.RunnerScaleSetSession {
+	return scaleset.RunnerScaleSetSession{}
 }
 
 func TestReconcileRemovesWorkerThatNoLongerExists(t *testing.T) {
@@ -118,6 +161,38 @@ func TestCompletionAcceptsAmbiguousDeletionWhenInventoryConfirmsAbsence(t *testi
 	}
 	if _, ok := state.get("runner-one"); ok {
 		t.Fatal("confirmed deleted worker remained in local state")
+	}
+}
+
+func TestShutdownReleasesSessionBeforeWorkerCleanup(t *testing.T) {
+	events := make([]string, 0, 2)
+	compute := &fakeCompute{events: &events}
+	state := newWorkerState()
+	state.add(provider.Worker{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-one"}, false)
+	scaler := testScaler(t, state, compute)
+
+	session := &fakeSessionCloser{events: &events, closeErr: errors.New("session API unavailable")}
+	shutdownController(session, scaler, slog.New(slog.DiscardHandler))
+	if len(events) != 2 || events[0] != "session" || events[1] != "worker" {
+		t.Fatalf("shutdown order = %#v, want session then worker", events)
+	}
+	if !session.hadDeadline || session.deadlineWindow <= 0 || session.deadlineWindow > sessionCloseTimeout {
+		t.Fatalf("session close deadline = %s, present=%t", session.deadlineWindow, session.hadDeadline)
+	}
+}
+
+func TestRecoveryFailureStillReleasesSession(t *testing.T) {
+	events := make([]string, 0, 1)
+	compute := &fakeCompute{inventoryErr: errors.New("provider inventory unavailable")}
+	scaler := testScaler(t, newWorkerState(), compute)
+	session := &fakeMessageSession{fakeSessionCloser: fakeSessionCloser{events: &events}}
+	cfg := Config{MaxWorkers: 4, Logger: slog.New(slog.DiscardHandler)}
+
+	if err := runControllerSession(context.Background(), session, scaler, cfg, 1); err == nil {
+		t.Fatal("expected recovery failure")
+	}
+	if len(events) != 1 || events[0] != "session" {
+		t.Fatalf("recovery failure did not release session: %#v", events)
 	}
 }
 

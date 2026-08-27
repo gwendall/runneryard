@@ -26,7 +26,7 @@ Initialize the empty ledger exactly once, before starting the controller. The
 command refuses to overwrite an existing ledger:
 
 ```sh
-fly machine run ghcr.io/gwendall/runneryard:0.2.0 \
+fly machine run ghcr.io/gwendall/runneryard:0.2.1 \
   --entrypoint "/usr/local/bin/controller-entrypoint" \
   --env RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json \
   --app acme-ci-controller \
@@ -57,6 +57,11 @@ fly tokens create deploy --app acme-ci-runners
 Store it as `FLY_API_TOKEN` only on the controller app. Never set it on the
 worker app.
 
+Keep non-sensitive policy such as `MAX_RUNNERS` in the generated TOML, not in
+Fly secrets. Secrets override `[env]`; defining a limit in both places can
+silently bypass the value under review. `runneryard doctor` fails when a
+controller secret shadows a policy value.
+
 ## GitHub App
 
 Create and install a GitHub App only on the repositories that will use this
@@ -81,7 +86,7 @@ fly secrets set --app acme-ci-controller \
 fly deploy \
   --app acme-ci-controller \
   --config .runneryard/fly.controller.toml \
-  --image ghcr.io/gwendall/runneryard:0.2.0 \
+  --image ghcr.io/gwendall/runneryard:0.2.1 \
   --ha=false
 ```
 

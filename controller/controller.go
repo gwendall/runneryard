@@ -14,6 +14,17 @@ import (
 	"github.com/gwendall/runneryard/provider"
 )
 
+const sessionCloseTimeout = 3 * time.Second
+
+type sessionCloser interface {
+	Close(context.Context) error
+}
+
+type messageSession interface {
+	listener.Client
+	sessionCloser
+}
+
 type Config struct {
 	GitHubURL    string
 	ScaleSetName string
@@ -106,7 +117,6 @@ func (c *Controller) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create message session: %w", err)
 	}
-	defer session.Close(context.Background())
 
 	scaler := &scaler{
 		state:          newWorkerState(),
@@ -119,13 +129,17 @@ func (c *Controller) Run(ctx context.Context) error {
 		budget:         budget,
 		logger:         cfg.Logger.WithGroup("scaler"),
 	}
+	return runControllerSession(ctx, session, scaler, cfg, scaleSet.ID)
+}
+
+func runControllerSession(ctx context.Context, session messageSession, scaler *scaler, cfg Config, scaleSetID int) error {
+	defer shutdownController(session, scaler, cfg.Logger)
 	if err := scaler.recover(ctx); err != nil {
 		return fmt.Errorf("recover workers: %w", err)
 	}
-	defer scaler.shutdown(context.WithoutCancel(ctx))
 
 	queue, err := listener.New(session, listener.Config{
-		ScaleSetID: scaleSet.ID,
+		ScaleSetID: scaleSetID,
 		MaxRunners: cfg.MaxWorkers,
 		Logger:     cfg.Logger.WithGroup("listener"),
 	})
@@ -137,6 +151,18 @@ func (c *Controller) Run(ctx context.Context) error {
 		return fmt.Errorf("run scale set listener: %w", err)
 	}
 	return nil
+}
+
+func shutdownController(session sessionCloser, scaler *scaler, logger *slog.Logger) {
+	// Release GitHub's single active scale-set session before provider cleanup.
+	// Cleanup may be slow or blocked; a stale session would prevent the next
+	// controller process from starting after a deployment.
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), sessionCloseTimeout)
+	if err := session.Close(closeCtx); err != nil {
+		logger.Error("failed to close message session", "error", err)
+	}
+	cancelClose()
+	scaler.shutdown(context.Background())
 }
 
 func (c *Controller) systemInfo(scaleSetID int) scaleset.SystemInfo {

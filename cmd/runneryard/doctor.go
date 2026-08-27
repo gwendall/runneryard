@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -69,7 +70,7 @@ func doctor(providerName, controllerApp, workerApp, firewallID string, run comma
 }
 
 func doctorFly(controllerApp, workerApp string, run commandRunner) []doctorCheck {
-	checks := make([]doctorCheck, 0, 4)
+	checks := make([]doctorCheck, 0, 5)
 	checks = append(checks, commandCheck(run, "Fly CLI", "fly", "auth", "whoami"))
 	if workerApp == "" {
 		return append(checks, doctorCheck{Name: "worker app", Status: "fail", Details: "pass --worker-app to verify secret isolation"})
@@ -81,13 +82,16 @@ func doctorFly(controllerApp, workerApp string, run commandRunner) []doctorCheck
 	} else {
 		checks = append(checks, doctorCheck{Name: "control/worker isolation", Status: "pass", Details: "apps are separate"})
 	}
+	if controllerApp != "" {
+		checks = append(checks, controllerPolicySecretCheck(controllerApp, run))
+	}
 	output, err := run("fly", "secrets", "list", "--app", workerApp, "--json")
 	if err != nil {
 		checks = append(checks, doctorCheck{Name: "worker app secrets", Status: "fail", Details: compactError(output, err)})
 	} else {
-		var secrets []any
-		if json.Unmarshal(output, &secrets) != nil {
-			checks = append(checks, doctorCheck{Name: "worker app secrets", Status: "fail", Details: "could not parse Fly response"})
+		secrets, parseErr := parseFlySecretNames(output)
+		if parseErr != nil {
+			checks = append(checks, doctorCheck{Name: "worker app secrets", Status: "fail", Details: parseErr.Error()})
 		} else if len(secrets) > 0 {
 			checks = append(checks, doctorCheck{Name: "worker app secrets", Status: "fail", Details: fmt.Sprintf("%d app secret(s) would reach job code", len(secrets))})
 		} else {
@@ -95,6 +99,61 @@ func doctorFly(controllerApp, workerApp string, run commandRunner) []doctorCheck
 		}
 	}
 	return checks
+}
+
+var flyPolicyEnvironment = map[string]struct{}{
+	"COMPUTE_PROVIDER": {}, "CONTROLLER_ID": {}, "GITHUB_CONFIG_URL": {},
+	"LOG_LEVEL": {}, "MAX_RUNNERS": {}, "MIN_RUNNERS": {}, "RUNNER_BUDGET_FILE": {},
+	"RUNNER_BUDGET_WINDOW": {}, "RUNNER_CPUS": {}, "RUNNER_CPU_KIND": {},
+	"RUNNER_FLY_APP": {}, "RUNNER_FLY_REGION": {}, "RUNNER_GROUP": {},
+	"RUNNER_IMAGE": {}, "RUNNER_MAX_LIFETIME": {}, "RUNNER_MEMORY_MB": {},
+	"RUNNER_ROOTFS_GB": {}, "RUNNER_USAGE_BUDGET": {}, "SCALE_SET_NAME": {},
+}
+
+func controllerPolicySecretCheck(controllerApp string, run commandRunner) doctorCheck {
+	output, err := run("fly", "secrets", "list", "--app", controllerApp, "--json")
+	if err != nil {
+		return doctorCheck{Name: "controller policy source", Status: "fail", Details: compactError(output, err)}
+	}
+	secrets, err := parseFlySecretNames(output)
+	if err != nil {
+		return doctorCheck{Name: "controller policy source", Status: "fail", Details: err.Error()}
+	}
+	shadows := make([]string, 0)
+	for _, name := range secrets {
+		if _, exists := flyPolicyEnvironment[name]; exists {
+			shadows = append(shadows, name)
+		}
+	}
+	if len(shadows) > 0 {
+		return doctorCheck{
+			Name: "controller policy source", Status: "fail",
+			Details: "app secrets override non-secret policy: " + strings.Join(shadows, ", "),
+		}
+	}
+	return doctorCheck{Name: "controller policy source", Status: "pass", Details: "no policy values shadowed by secrets"}
+}
+
+func parseFlySecretNames(output []byte) ([]string, error) {
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return nil, fmt.Errorf("could not parse Fly response as a secret list")
+	}
+	var records []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(trimmed, &records); err != nil {
+		return nil, fmt.Errorf("could not parse Fly response as a secret list")
+	}
+	names := make([]string, 0, len(records))
+	for _, record := range records {
+		name := strings.TrimSpace(record.Name)
+		if name == "" {
+			return nil, fmt.Errorf("Fly secret response contains a record without a name")
+		}
+		names = append(names, name)
+	}
+	return names, nil
 }
 
 func doctorHetzner(firewallID string, run commandRunner) []doctorCheck {
