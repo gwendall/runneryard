@@ -48,11 +48,12 @@ accepts provider-specific configuration and returns `provider.Compute`. Tests
 must use the provider's HTTP seam or emulator and verify credential isolation,
 ownership filtering, idempotent deletion, and partial-create cleanup.
 
-Likely strategies:
+Bundled examples and likely strategies:
 
 - OCI compute (Fly, Railway-like platforms): launch the immutable runner image
   and pass the JIT configuration through the provider's secret injection.
-- VM compute (Hetzner, DigitalOcean, EC2, GCE): boot a pre-baked image or minimal
-  cloud-init/systemd payload and tag it with lease ownership.
+- VM compute (the bundled Hetzner preview, DigitalOcean, EC2, GCE): boot a
+  pre-baked image or minimal cloud-init payload, attach a deny-inbound firewall,
+  and tag it with lease ownership.
 - Restricted container PaaS: reject the profile when privileged Docker and
   reliable forced deletion cannot be guaranteed.

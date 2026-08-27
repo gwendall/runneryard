@@ -12,6 +12,7 @@ import (
 	"github.com/gwendall/runneryard/controller"
 	"github.com/gwendall/runneryard/provider"
 	flyprovider "github.com/gwendall/runneryard/providers/fly"
+	hetznerprovider "github.com/gwendall/runneryard/providers/hetzner"
 )
 
 type appConfig struct {
@@ -27,6 +28,13 @@ type appConfig struct {
 	FlyAPIBaseURL      string
 	FlyWorkerApp       string
 	FlyRegion          string
+	HetznerAPIToken    string
+	HetznerAPIBaseURL  string
+	HetznerLocation    string
+	HetznerServerType  string
+	HetznerServerImage string
+	HetznerFirewallID  int64
+	HetznerNetworkID   int64
 	RunnerImage        string
 	MinWorkers         int
 	MaxWorkers         int
@@ -43,21 +51,26 @@ type appConfig struct {
 
 func loadConfig() (appConfig, error) {
 	cfg := appConfig{
-		GitHubURL:        strings.TrimSpace(os.Getenv("GITHUB_CONFIG_URL")),
-		ScaleSetName:     envOr("SCALE_SET_NAME", "runneryard-linux-x64"),
-		RunnerGroup:      envOr("RUNNER_GROUP", scaleset.DefaultRunnerGroup),
-		GitHubToken:      strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
-		ComputeProvider:  envOr("COMPUTE_PROVIDER", "fly"),
-		ControllerID:     envOr("CONTROLLER_ID", envOr("SCALE_SET_NAME", "runneryard-linux-x64")),
-		ControllerFlyApp: strings.TrimSpace(os.Getenv("FLY_APP_NAME")),
-		FlyAPIToken:      strings.TrimSpace(os.Getenv("FLY_API_TOKEN")),
-		FlyAPIBaseURL:    envOr("FLY_API_BASE_URL", "https://api.machines.dev"),
-		FlyWorkerApp:     strings.TrimSpace(os.Getenv("RUNNER_FLY_APP")),
-		FlyRegion:        envOr("RUNNER_FLY_REGION", os.Getenv("FLY_REGION")),
-		RunnerImage:      envOr("RUNNER_IMAGE", os.Getenv("FLY_IMAGE_REF")),
-		RunnerCPUKind:    envOr("RUNNER_CPU_KIND", "shared"),
-		RunnerBudgetFile: strings.TrimSpace(os.Getenv("RUNNER_BUDGET_FILE")),
-		LogLevel:         parseLogLevel(envOr("LOG_LEVEL", "info")),
+		GitHubURL:          strings.TrimSpace(os.Getenv("GITHUB_CONFIG_URL")),
+		ScaleSetName:       envOr("SCALE_SET_NAME", "runneryard-linux-x64"),
+		RunnerGroup:        envOr("RUNNER_GROUP", scaleset.DefaultRunnerGroup),
+		GitHubToken:        strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
+		ComputeProvider:    envOr("COMPUTE_PROVIDER", "fly"),
+		ControllerID:       envOr("CONTROLLER_ID", envOr("SCALE_SET_NAME", "runneryard-linux-x64")),
+		ControllerFlyApp:   strings.TrimSpace(os.Getenv("FLY_APP_NAME")),
+		FlyAPIToken:        strings.TrimSpace(os.Getenv("FLY_API_TOKEN")),
+		FlyAPIBaseURL:      envOr("FLY_API_BASE_URL", "https://api.machines.dev"),
+		FlyWorkerApp:       strings.TrimSpace(os.Getenv("RUNNER_FLY_APP")),
+		FlyRegion:          envOr("RUNNER_FLY_REGION", os.Getenv("FLY_REGION")),
+		HetznerAPIToken:    strings.TrimSpace(os.Getenv("HCLOUD_TOKEN")),
+		HetznerAPIBaseURL:  envOr("HCLOUD_API_BASE_URL", "https://api.hetzner.cloud/v1"),
+		HetznerLocation:    envOr("RUNNER_HETZNER_LOCATION", "fsn1"),
+		HetznerServerType:  envOr("RUNNER_HETZNER_SERVER_TYPE", "cpx32"),
+		HetznerServerImage: envOr("RUNNER_HETZNER_IMAGE", "docker-ce"),
+		RunnerImage:        envOr("RUNNER_IMAGE", os.Getenv("FLY_IMAGE_REF")),
+		RunnerCPUKind:      envOr("RUNNER_CPU_KIND", "shared"),
+		RunnerBudgetFile:   strings.TrimSpace(os.Getenv("RUNNER_BUDGET_FILE")),
+		LogLevel:           parseLogLevel(envOr("LOG_LEVEL", "info")),
 	}
 
 	var err error
@@ -74,6 +87,12 @@ func loadConfig() (appConfig, error) {
 		return appConfig{}, err
 	}
 	if cfg.RunnerRootFSGB, err = envInt("RUNNER_ROOTFS_GB", 30); err != nil {
+		return appConfig{}, err
+	}
+	if cfg.HetznerFirewallID, err = envInt64("RUNNER_HETZNER_FIREWALL_ID", 0); err != nil {
+		return appConfig{}, err
+	}
+	if cfg.HetznerNetworkID, err = envInt64("RUNNER_HETZNER_NETWORK_ID", 0); err != nil {
 		return appConfig{}, err
 	}
 	if cfg.RunnerMaxLifetime, err = envDuration("RUNNER_MAX_LIFETIME", 2*time.Hour); err != nil {
@@ -125,14 +144,23 @@ func (c appConfig) validate() error {
 	if c.GitHubToken != "" && c.GitHubApp.Validate() == nil {
 		return fmt.Errorf("provide either GITHUB_TOKEN or GitHub App credentials, not both")
 	}
-	if c.ComputeProvider != "fly" {
+	switch c.ComputeProvider {
+	case "fly":
+		if c.FlyAPIToken == "" || c.FlyWorkerApp == "" || c.FlyRegion == "" || c.RunnerImage == "" {
+			return fmt.Errorf("Fly adapter requires FLY_API_TOKEN, RUNNER_FLY_APP, RUNNER_FLY_REGION, and RUNNER_IMAGE")
+		}
+		if c.ControllerFlyApp != "" && c.ControllerFlyApp == c.FlyWorkerApp {
+			return fmt.Errorf("controller and worker Fly apps must be different so app secrets cannot reach jobs")
+		}
+	case "hetzner":
+		if c.HetznerAPIToken == "" || c.HetznerLocation == "" || c.HetznerServerType == "" || c.HetznerServerImage == "" || c.HetznerFirewallID < 1 || c.RunnerImage == "" {
+			return fmt.Errorf("Hetzner adapter requires HCLOUD_TOKEN, RUNNER_HETZNER_LOCATION, RUNNER_HETZNER_SERVER_TYPE, RUNNER_HETZNER_IMAGE, RUNNER_HETZNER_FIREWALL_ID, and RUNNER_IMAGE")
+		}
+		if c.HetznerNetworkID < 0 {
+			return fmt.Errorf("RUNNER_HETZNER_NETWORK_ID cannot be negative")
+		}
+	default:
 		return fmt.Errorf("unsupported COMPUTE_PROVIDER %q", c.ComputeProvider)
-	}
-	if c.FlyAPIToken == "" || c.FlyWorkerApp == "" || c.FlyRegion == "" || c.RunnerImage == "" {
-		return fmt.Errorf("Fly adapter requires FLY_API_TOKEN, RUNNER_FLY_APP, RUNNER_FLY_REGION, and RUNNER_IMAGE")
-	}
-	if c.ControllerFlyApp != "" && c.ControllerFlyApp == c.FlyWorkerApp {
-		return fmt.Errorf("controller and worker Fly apps must be different so app secrets cannot reach jobs")
 	}
 	if c.MinWorkers < 0 || c.MaxWorkers < 1 || c.MinWorkers > c.MaxWorkers {
 		return fmt.Errorf("worker bounds must satisfy 0 <= MIN_RUNNERS <= MAX_RUNNERS and MAX_RUNNERS >= 1")
@@ -169,18 +197,35 @@ func (c appConfig) githubClient() (*scaleset.Client, error) {
 }
 
 func (c appConfig) compute() (provider.Compute, error) {
-	return flyprovider.New(flyprovider.Config{
-		APIToken:     c.FlyAPIToken,
-		APIBaseURL:   c.FlyAPIBaseURL,
-		App:          c.FlyWorkerApp,
-		Region:       c.FlyRegion,
-		Image:        c.RunnerImage,
-		ControllerID: c.ControllerID,
-		CPUKind:      c.RunnerCPUKind,
-		CPUs:         c.RunnerCPUs,
-		MemoryMB:     c.RunnerMemoryMB,
-		RootFSGB:     c.RunnerRootFSGB,
-	})
+	switch c.ComputeProvider {
+	case "fly":
+		return flyprovider.New(flyprovider.Config{
+			APIToken:     c.FlyAPIToken,
+			APIBaseURL:   c.FlyAPIBaseURL,
+			App:          c.FlyWorkerApp,
+			Region:       c.FlyRegion,
+			Image:        c.RunnerImage,
+			ControllerID: c.ControllerID,
+			CPUKind:      c.RunnerCPUKind,
+			CPUs:         c.RunnerCPUs,
+			MemoryMB:     c.RunnerMemoryMB,
+			RootFSGB:     c.RunnerRootFSGB,
+		})
+	case "hetzner":
+		return hetznerprovider.New(hetznerprovider.Config{
+			APIToken:     c.HetznerAPIToken,
+			APIBaseURL:   c.HetznerAPIBaseURL,
+			Location:     c.HetznerLocation,
+			ServerType:   c.HetznerServerType,
+			ServerImage:  c.HetznerServerImage,
+			RunnerImage:  c.RunnerImage,
+			ControllerID: c.ControllerID,
+			FirewallID:   c.HetznerFirewallID,
+			NetworkID:    c.HetznerNetworkID,
+		})
+	default:
+		return nil, fmt.Errorf("unsupported COMPUTE_PROVIDER %q", c.ComputeProvider)
+	}
 }
 
 func (c appConfig) controllerConfig(logger *slog.Logger) controller.Config {

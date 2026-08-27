@@ -26,7 +26,7 @@ var (
 	safeName        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
 	safeGitHubOwner = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
 	safeGitHubRepo  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
-	safeFlyRegion   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+	safeRegion      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 )
 
 func runInit(args []string) error {
@@ -37,7 +37,7 @@ func runInit(args []string) error {
 	flags.StringVar(&options.githubURL, "github", "", "GitHub repository or organization URL")
 	flags.StringVar(&options.provider, "provider", "fly", "compute provider")
 	flags.StringVar(&options.scaleSet, "name", "runneryard-linux-x64", "scale set and runs-on label")
-	flags.StringVar(&options.region, "region", "cdg", "provider region")
+	flags.StringVar(&options.region, "region", "", "provider region")
 	flags.IntVar(&options.maxRunners, "max-runners", 4, "hard concurrency ceiling")
 	flags.BoolVar(&options.force, "force", false, "overwrite generated files")
 	if err := flags.Parse(args); err != nil {
@@ -54,13 +54,22 @@ func runInit(args []string) error {
 		return fmt.Errorf("--github: %w", err)
 	}
 	options.githubURL = normalizedGitHubURL
-	if options.provider != "fly" {
-		return fmt.Errorf("provider %q is not bundled yet; see docs/adapter-contract.md", options.provider)
+	switch options.provider {
+	case "fly":
+		if options.region == "" {
+			options.region = "cdg"
+		}
+	case "hetzner":
+		if options.region == "" {
+			options.region = "fsn1"
+		}
+	default:
+		return fmt.Errorf("provider %q is not bundled; see docs/adapter-contract.md", options.provider)
 	}
 	if !safeName.MatchString(options.scaleSet) {
 		return errors.New("--name must contain only letters, numbers, dots, underscores, or hyphens")
 	}
-	if !safeFlyRegion.MatchString(options.region) {
+	if !safeRegion.MatchString(options.region) {
 		return errors.New("--region must contain only lowercase letters, numbers, or hyphens")
 	}
 	if options.maxRunners < 1 || options.maxRunners > 100 {
@@ -73,10 +82,19 @@ func runInit(args []string) error {
 	}
 	controllerApp := strings.ToLower(owner) + "-ci-controller"
 	workerApp := strings.ToLower(owner) + "-ci-runners"
-	files := []generatedFile{
-		{path: filepath.Join(projectDir, ".runneryard", "controller.env.example"), contents: renderEnv(options, controllerApp, workerApp), mode: 0o600},
-		{path: filepath.Join(projectDir, ".runneryard", "fly.controller.toml"), contents: renderFly(options, controllerApp, workerApp), mode: 0o644},
-		{path: filepath.Join(projectDir, ".github", "workflows", "runneryard-canary.yml"), contents: renderCanary(options.scaleSet), mode: 0o644},
+	files := []generatedFile{{
+		path: filepath.Join(projectDir, ".github", "workflows", "runneryard-canary.yml"), contents: renderCanary(options.scaleSet), mode: 0o644,
+	}}
+	if options.provider == "fly" {
+		files = append(files,
+			generatedFile{path: filepath.Join(projectDir, ".runneryard", "controller.env.example"), contents: renderFlyEnv(options, controllerApp, workerApp), mode: 0o600},
+			generatedFile{path: filepath.Join(projectDir, ".runneryard", "fly.controller.toml"), contents: renderFly(options, controllerApp, workerApp), mode: 0o644},
+		)
+	} else {
+		files = append(files,
+			generatedFile{path: filepath.Join(projectDir, ".runneryard", "controller.env.example"), contents: renderHetznerEnv(options), mode: 0o600},
+			generatedFile{path: filepath.Join(projectDir, ".runneryard", "hetzner.controller.compose.yml"), contents: renderHetznerCompose(), mode: 0o644},
+		)
 	}
 	for _, file := range files {
 		if _, err := os.Stat(file.path); err == nil && !options.force {
@@ -91,7 +109,11 @@ func runInit(args []string) error {
 		}
 	}
 	fmt.Printf("Created RunnerYard configuration for %s\n\n", options.githubURL)
-	fmt.Printf("Next:\n  1. Review .runneryard/controller.env.example\n  2. Follow docs/providers/fly.md to create the isolated apps and durable volume\n  3. Run: runneryard doctor --provider fly --controller-app %s --worker-app %s\n  4. Deploy the controller, then trigger .github/workflows/runneryard-canary.yml\n", controllerApp, workerApp)
+	if options.provider == "fly" {
+		fmt.Printf("Next:\n  1. Review .runneryard/controller.env.example\n  2. Follow docs/providers/fly.md to create the isolated apps and durable volume\n  3. Run: runneryard doctor --provider fly --controller-app %s --worker-app %s\n  4. Deploy the controller, then trigger .github/workflows/runneryard-canary.yml\n", controllerApp, workerApp)
+	} else {
+		fmt.Print("Next:\n  1. Create a dedicated Hetzner project and a firewall with no inbound rules\n  2. Fill .runneryard/controller.env from the generated example\n  3. Run: runneryard doctor --provider hetzner --firewall-id <id>\n  4. Follow docs/providers/hetzner.md, then trigger .github/workflows/runneryard-canary.yml\n")
+	}
 	return nil
 }
 
@@ -144,7 +166,7 @@ func writeGenerated(path, contents string, mode os.FileMode) error {
 	return os.WriteFile(path, []byte(contents), mode)
 }
 
-func renderEnv(options initOptions, controllerApp, workerApp string) string {
+func renderFlyEnv(options initOptions, controllerApp, workerApp string) string {
 	return fmt.Sprintf(`# Copy to a secret store. Never commit the completed file.
 GITHUB_CONFIG_URL=%s
 SCALE_SET_NAME=%s
@@ -170,6 +192,49 @@ GITHUB_APP_CLIENT_ID=
 GITHUB_APP_INSTALLATION_ID=
 GITHUB_APP_PRIVATE_KEY=
 `, options.githubURL, options.scaleSet, options.scaleSet, controllerApp, workerApp, options.region, version, options.maxRunners)
+}
+
+func renderHetznerEnv(options initOptions) string {
+	return fmt.Sprintf(`# Copy to .runneryard/controller.env on the controller host. Never commit it.
+GITHUB_CONFIG_URL=%s
+SCALE_SET_NAME=%s
+COMPUTE_PROVIDER=hetzner
+CONTROLLER_ID=%s
+RUNNER_HETZNER_LOCATION=%s
+RUNNER_HETZNER_SERVER_TYPE=cpx32
+RUNNER_HETZNER_IMAGE=docker-ce
+RUNNER_HETZNER_FIREWALL_ID=
+# Optional private network ID. Workers still need public egress for GitHub.
+RUNNER_HETZNER_NETWORK_ID=
+RUNNER_IMAGE=ghcr.io/gwendall/runneryard:%s
+MIN_RUNNERS=0
+MAX_RUNNERS=%d
+RUNNER_MAX_LIFETIME=2h
+RUNNER_USAGE_BUDGET=166h40m
+RUNNER_BUDGET_WINDOW=720h
+RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json
+
+# Set only on the controller:
+HCLOUD_TOKEN=
+GITHUB_APP_CLIENT_ID=
+GITHUB_APP_INSTALLATION_ID=
+GITHUB_APP_PRIVATE_KEY=
+`, options.githubURL, options.scaleSet, options.scaleSet, options.region, version, options.maxRunners)
+}
+
+func renderHetznerCompose() string {
+	return fmt.Sprintf(`services:
+  controller:
+    image: ghcr.io/gwendall/runneryard:%s
+    restart: unless-stopped
+    env_file:
+      - controller.env
+    volumes:
+      - runneryard_state:/var/lib/runneryard
+
+volumes:
+  runneryard_state:
+`, version)
 }
 
 func renderFly(options initOptions, controllerApp, workerApp string) string {

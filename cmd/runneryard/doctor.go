@@ -23,11 +23,12 @@ func runDoctor(args []string) error {
 	providerName := flags.String("provider", "fly", "compute provider")
 	workerApp := flags.String("worker-app", strings.TrimSpace(os.Getenv("RUNNER_FLY_APP")), "secret-free Fly worker app")
 	controllerApp := flags.String("controller-app", strings.TrimSpace(os.Getenv("FLY_APP_NAME")), "Fly controller app")
+	firewallID := flags.String("firewall-id", strings.TrimSpace(os.Getenv("RUNNER_HETZNER_FIREWALL_ID")), "Hetzner worker firewall ID")
 	jsonOutput := flags.Bool("json", false, "print machine-readable JSON")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	checks := doctor(*providerName, *controllerApp, *workerApp, execCommand)
+	checks := doctor(*providerName, *controllerApp, *workerApp, *firewallID, execCommand)
 	failed := false
 	for _, check := range checks {
 		if check.Status == "fail" {
@@ -54,11 +55,21 @@ func runDoctor(args []string) error {
 	return nil
 }
 
-func doctor(providerName, controllerApp, workerApp string, run commandRunner) []doctorCheck {
+func doctor(providerName, controllerApp, workerApp, firewallID string, run commandRunner) []doctorCheck {
 	checks := []doctorCheck{commandCheck(run, "git", "git", "--version")}
-	if providerName != "fly" {
+	switch providerName {
+	case "fly":
+		return append(checks, doctorFly(controllerApp, workerApp, run)...)
+	case "hetzner":
+		return append(checks, doctorHetzner(firewallID, run)...)
+	default:
 		return append(checks, doctorCheck{Name: "compute provider", Status: "fail", Details: fmt.Sprintf("%q is not bundled", providerName)})
 	}
+
+}
+
+func doctorFly(controllerApp, workerApp string, run commandRunner) []doctorCheck {
+	checks := make([]doctorCheck, 0, 4)
 	checks = append(checks, commandCheck(run, "Fly CLI", "fly", "auth", "whoami"))
 	if workerApp == "" {
 		return append(checks, doctorCheck{Name: "worker app", Status: "fail", Details: "pass --worker-app to verify secret isolation"})
@@ -84,6 +95,41 @@ func doctor(providerName, controllerApp, workerApp string, run commandRunner) []
 		}
 	}
 	return checks
+}
+
+func doctorHetzner(firewallID string, run commandRunner) []doctorCheck {
+	checks := []doctorCheck{commandCheck(run, "Hetzner CLI", "hcloud", "version")}
+	output, err := run("hcloud", "server", "list", "--selector", "runneryard-managed-by=true", "-o", "json")
+	if err != nil {
+		checks = append(checks, doctorCheck{Name: "Hetzner API", Status: "fail", Details: compactError(output, err)})
+	} else {
+		checks = append(checks, doctorCheck{Name: "Hetzner API", Status: "pass", Details: "authenticated project access"})
+	}
+	if firewallID == "" {
+		return append(checks, doctorCheck{Name: "worker firewall", Status: "fail", Details: "pass --firewall-id for the deny-inbound firewall"})
+	}
+	output, err = run("hcloud", "firewall", "describe", firewallID, "-o", "json")
+	if err != nil {
+		return append(checks, doctorCheck{Name: "worker firewall", Status: "fail", Details: compactError(output, err)})
+	}
+	var firewall struct {
+		Rules []struct {
+			Direction string `json:"direction"`
+		} `json:"rules"`
+	}
+	if err := json.Unmarshal(output, &firewall); err != nil {
+		return append(checks, doctorCheck{Name: "worker firewall", Status: "fail", Details: "could not parse Hetzner response"})
+	}
+	inbound := 0
+	for _, rule := range firewall.Rules {
+		if rule.Direction == "in" {
+			inbound++
+		}
+	}
+	if inbound > 0 {
+		return append(checks, doctorCheck{Name: "worker firewall", Status: "fail", Details: fmt.Sprintf("%d inbound rule(s) expose disposable workers", inbound)})
+	}
+	return append(checks, doctorCheck{Name: "worker firewall", Status: "pass", Details: "no inbound rules"})
 }
 
 func commandCheck(run commandRunner, label, command string, args ...string) doctorCheck {

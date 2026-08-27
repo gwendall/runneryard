@@ -78,3 +78,45 @@ func TestRunInitNormalizesGitHubURL(t *testing.T) {
 		t.Fatalf("GitHub URL was not normalized:\n%s", contents)
 	}
 }
+
+func TestRunInitCreatesHetznerScaffold(t *testing.T) {
+	previousVersion := version
+	version = "9.8.7"
+	t.Cleanup(func() { version = previousVersion })
+	directory := t.TempDir()
+	if err := runInit([]string{
+		"--directory", directory,
+		"--github", "https://github.com/acme/widgets",
+		"--provider", "hetzner",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	env, err := os.ReadFile(filepath.Join(directory, ".runneryard", "controller.env.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(env)
+	for _, expected := range []string{
+		"COMPUTE_PROVIDER=hetzner",
+		"RUNNER_HETZNER_LOCATION=fsn1",
+		"RUNNER_HETZNER_SERVER_TYPE=cpx32",
+		"RUNNER_HETZNER_IMAGE=docker-ce",
+		"RUNNER_HETZNER_FIREWALL_ID=",
+		"HCLOUD_TOKEN=",
+		"RUNNER_IMAGE=ghcr.io/gwendall/runneryard:9.8.7",
+	} {
+		if !strings.Contains(contents, expected) {
+			t.Fatalf("generated Hetzner env missing %q", expected)
+		}
+	}
+	compose, err := os.ReadFile(filepath.Join(directory, ".runneryard", "hetzner.controller.compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(compose), "ghcr.io/gwendall/runneryard:9.8.7") || !strings.Contains(string(compose), "runneryard_state") {
+		t.Fatalf("unexpected compose scaffold:\n%s", compose)
+	}
+	if _, err := os.Stat(filepath.Join(directory, ".runneryard", "fly.controller.toml")); !os.IsNotExist(err) {
+		t.Fatal("Hetzner scaffold should not contain Fly configuration")
+	}
+}

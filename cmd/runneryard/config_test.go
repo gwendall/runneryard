@@ -29,8 +29,43 @@ func TestConfigRejectsNonGitHubConfigURL(t *testing.T) {
 	}
 }
 
+func TestConfigLoadsHetznerAdapter(t *testing.T) {
+	setValidEnv(t)
+	t.Setenv("COMPUTE_PROVIDER", "hetzner")
+	t.Setenv("FLY_API_TOKEN", "")
+	t.Setenv("RUNNER_FLY_APP", "")
+	t.Setenv("RUNNER_FLY_REGION", "")
+	t.Setenv("HCLOUD_TOKEN", "hcloud-token")
+	t.Setenv("RUNNER_HETZNER_FIREWALL_ID", "42")
+	t.Setenv("RUNNER_HETZNER_NETWORK_ID", "84")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HetznerLocation != "fsn1" || cfg.HetznerServerType != "cpx32" || cfg.HetznerServerImage != "docker-ce" {
+		t.Fatalf("unexpected Hetzner defaults: %#v", cfg)
+	}
+	if cfg.HetznerFirewallID != 42 || cfg.HetznerNetworkID != 84 {
+		t.Fatalf("unexpected Hetzner resource IDs: %#v", cfg)
+	}
+	if _, err := cfg.compute(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConfigRequiresHetznerFirewall(t *testing.T) {
+	setValidEnv(t)
+	t.Setenv("COMPUTE_PROVIDER", "hetzner")
+	t.Setenv("HCLOUD_TOKEN", "hcloud-token")
+	t.Setenv("RUNNER_HETZNER_FIREWALL_ID", "")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected missing worker firewall to fail")
+	}
+}
+
 func setValidEnv(t *testing.T) {
 	t.Helper()
+	t.Setenv("COMPUTE_PROVIDER", "fly")
 	t.Setenv("GITHUB_CONFIG_URL", "https://github.com/acme/repo")
 	t.Setenv("GITHUB_TOKEN", "token")
 	t.Setenv("FLY_API_TOKEN", "fly-token")
