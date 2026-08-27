@@ -1,6 +1,7 @@
 ARG GO_VERSION=1.25.3
 ARG ACTIONS_RUNNER_IMAGE=ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
-ARG NODE_IMAGE=node:22.22.3-bookworm-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752
+ARG NODE_VERSION=22.22.3
+ARG NODE_IMAGE=node:${NODE_VERSION}-bookworm-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752
 FROM golang:${GO_VERSION}-bookworm AS controller-build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -17,6 +18,8 @@ FROM ${ACTIONS_RUNNER_IMAGE} AS actions-runner
 FROM ${NODE_IMAGE} AS node-runtime
 
 FROM ubuntu:24.04
+ARG NODE_VERSION
+ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -40,7 +43,17 @@ RUN chmod 0755 /usr/local/bin/runneryard /usr/local/bin/controller-entrypoint /u
 ENV HOME=/home/runner
 ENV RUNNER_TOOL_CACHE=/opt/hostedtoolcache
 ENV ImageOS=ubuntu24
-RUN mkdir -p /opt/hostedtoolcache && chown -R runner:docker /opt/hostedtoolcache /home/runner
+RUN set -eux; \
+  case "${TARGETARCH}" in \
+    amd64) toolcache_arch=x64 ;; \
+    arm64) toolcache_arch=arm64 ;; \
+    *) echo "unsupported runner architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+  esac; \
+  toolcache_dir="/opt/hostedtoolcache/node/${NODE_VERSION}/${toolcache_arch}"; \
+  mkdir -p "$(dirname "${toolcache_dir}")"; \
+  ln -s /usr/local "${toolcache_dir}"; \
+  touch "/opt/hostedtoolcache/node/${NODE_VERSION}/${toolcache_arch}.complete"; \
+  chown -R runner:docker /opt/hostedtoolcache /home/runner
 
 USER runner
 ENTRYPOINT ["/usr/bin/dumb-init", "--", "/usr/local/bin/controller-entrypoint"]
