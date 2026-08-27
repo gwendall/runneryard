@@ -90,8 +90,18 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: test "$(node -p "require('./package.json').version")" = "${RELEASE_TAG#v}"
-      - run: npm publish
+      - name: Publish immutable npm package
         working-directory: packages/cli
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          if npm view "runneryard@$version" version --json >/dev/null 2>&1; then
+            echo "runneryard@$version is already published; preserving the immutable registry artifact"
+            exit 0
+          fi
+          npm publish
 
   publish-latest:
     needs: [release, publish-npm]
