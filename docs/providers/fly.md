@@ -122,5 +122,6 @@ for a fail-closed durable usage ledger.
 
 Stop the controller before deleting either app. Confirm
 `fly machines list --app acme-ci-runners` is empty, revoke the worker-app token,
-then delete the two apps. Route workflows back to `ubuntu-latest` first so jobs
-do not remain queued on the removed scale set.
+then delete the two apps. First run
+`runneryard route disable --github https://github.com/acme/widgets` so jobs do
+not remain queued on the removed scale set.

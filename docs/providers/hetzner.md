@@ -185,7 +185,8 @@ powered-off worker as a leak and investigate it immediately.
 
 ## Outboarding
 
-1. Route workflows back to a hosted runner label.
+1. Run `runneryard route disable --github https://github.com/acme/widgets` and
+   verify `route status` reports `ubuntu-latest`.
 2. Stop the controller after active jobs finish.
 3. List and delete all servers carrying RunnerYard ownership labels.
 4. Revoke the Hetzner project token and GitHub App private key.
