@@ -65,16 +65,16 @@ type Adapter struct {
 
 func New(cfg Config) (*Adapter, error) {
 	if cfg.APIToken == "" || cfg.Location == "" || cfg.ServerType == "" || cfg.ServerImage == "" || cfg.RunnerImage == "" || cfg.ControllerID == "" {
-		return nil, fmt.Errorf("Hetzner token, location, server type, server image, runner image, and controller ID are required")
+		return nil, fmt.Errorf("hetzner token, location, server type, server image, runner image, and controller ID are required")
 	}
 	if cfg.FirewallID < 1 {
-		return nil, fmt.Errorf("Hetzner worker firewall ID is required")
+		return nil, fmt.Errorf("hetzner worker firewall ID is required")
 	}
 	if !safeLabelValue.MatchString(cfg.ControllerID) {
-		return nil, fmt.Errorf("Hetzner controller ID must be a valid label value of at most 63 characters")
+		return nil, fmt.Errorf("hetzner controller ID must be a valid label value of at most 63 characters")
 	}
 	if cfg.NetworkID < 0 {
-		return nil, fmt.Errorf("Hetzner network ID cannot be negative")
+		return nil, fmt.Errorf("hetzner network ID cannot be negative")
 	}
 	if cfg.APIBaseURL == "" {
 		cfg.APIBaseURL = "https://api.hetzner.cloud/v1"
@@ -328,7 +328,7 @@ func firewallApplied(item server, firewallID int64) bool {
 func (a *Adapter) waitActions(ctx context.Context, actions []action) error {
 	for _, current := range actions {
 		if current.ID < 1 {
-			return fmt.Errorf("Hetzner response did not include an action id")
+			return fmt.Errorf("hetzner response did not include an action id")
 		}
 		if err := a.waitAction(ctx, current); err != nil {
 			return err
@@ -344,12 +344,12 @@ func (a *Adapter) waitAction(ctx context.Context, current action) error {
 			return nil
 		case "error":
 			if current.Error != nil {
-				return fmt.Errorf("Hetzner action %d failed (%s): %s", current.ID, current.Error.Code, current.Error.Message)
+				return fmt.Errorf("hetzner action %d failed (%s): %s", current.ID, current.Error.Code, current.Error.Message)
 			}
-			return fmt.Errorf("Hetzner action %d failed", current.ID)
+			return fmt.Errorf("hetzner action %d failed", current.ID)
 		case "running", "":
 		default:
-			return fmt.Errorf("Hetzner action %d has unknown status %q", current.ID, current.Status)
+			return fmt.Errorf("hetzner action %d has unknown status %q", current.ID, current.Status)
 		}
 
 		timer := time.NewTimer(a.actionPollInterval)
@@ -479,13 +479,13 @@ func (a *Adapter) setHeaders(req *http.Request) {
 func responseError(resp *http.Response) error {
 	contents, readErr := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if readErr != nil {
-		return errors.Join(fmt.Errorf("Hetzner API returned %s", resp.Status), readErr)
+		return errors.Join(fmt.Errorf("hetzner API returned %s", resp.Status), readErr)
 	}
 	message := strings.TrimSpace(string(contents))
 	if message == "" {
-		return fmt.Errorf("Hetzner API returned %s", resp.Status)
+		return fmt.Errorf("hetzner API returned %s", resp.Status)
 	}
-	return fmt.Errorf("Hetzner API returned %s: %s", resp.Status, message)
+	return fmt.Errorf("hetzner API returned %s: %s", resp.Status, message)
 }
 
 var _ provider.Compute = (*Adapter)(nil)

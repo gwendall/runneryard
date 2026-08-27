@@ -74,13 +74,19 @@ cp .runneryard/controller.env.example .runneryard/controller.env
 chmod 600 .runneryard/controller.env
 ```
 
-Place the GitHub App private key beside the Compose file. It is mounted
-read-only and does not need to be flattened into an environment variable:
+Create a dedicated GitHub App and write its verified credentials directly to
+the generated, ignored files:
 
 ```sh
-cp ~/Downloads/acme-ci.private-key.pem .runneryard/github-app.pem
-chmod 600 .runneryard/github-app.pem
+npx runneryard auth github create \
+  --github https://github.com/acme/widgets \
+  --sink file
 ```
+
+This creates `.runneryard/github-app.pem` and `github-app.env` with mode
+`0600`. Compose reads the non-secret IDs from the env file and mounts the key
+read-only. No credential needs to be copied from a browser or flattened into a
+command argument.
 
 Required Hetzner values are:
 
@@ -92,7 +98,6 @@ RUNNER_HETZNER_SERVER_TYPE=cpx32
 RUNNER_HETZNER_IMAGE=docker-ce
 RUNNER_HETZNER_FIREWALL_ID=123456
 RUNNER_IMAGE=ghcr.io/gwendall/runneryard:0.2.1
-GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/github-app.pem
 ```
 
 `RUNNER_HETZNER_NETWORK_ID` is optional. A Hetzner Cloud firewall does not
@@ -101,10 +106,11 @@ dedicated to untrusted CI workers.
 
 ## GitHub App
 
-Create and install a GitHub App only on repositories that use this fleet. A
-repository scale set needs Metadata read and Administration read/write. The app
-does not need a webhook. Put its client ID, installation ID, and private key in
-the controller environment only.
+The generated GitHub App is private, subscribes to no webhook events, and is
+owned by the selected user or organization. A repository scale set needs
+Metadata read (implicit) and Repository Administration write. Install it only
+on repositories that use this fleet. Use `auth github import` with a mode
+`0600` PEM file to bring an existing app.
 
 ## Diagnose before deployment
 

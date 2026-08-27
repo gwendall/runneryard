@@ -56,13 +56,13 @@ type Adapter struct {
 
 func New(cfg Config) (*Adapter, error) {
 	if cfg.APIToken == "" || cfg.App == "" || cfg.Region == "" || cfg.Image == "" || cfg.ControllerID == "" {
-		return nil, fmt.Errorf("Fly token, worker app, region, image, and controller ID are required")
+		return nil, fmt.Errorf("fly token, worker app, region, image, and controller ID are required")
 	}
 	if cfg.CPUKind != "shared" && cfg.CPUKind != "performance" {
-		return nil, fmt.Errorf("Fly CPU kind must be shared or performance")
+		return nil, fmt.Errorf("fly CPU kind must be shared or performance")
 	}
 	if cfg.CPUs < 1 || cfg.MemoryMB < 512 || cfg.RootFSGB < 10 {
-		return nil, fmt.Errorf("Fly worker shape must have at least 1 CPU, 512 MB RAM, and 10 GB rootfs")
+		return nil, fmt.Errorf("fly worker shape must have at least 1 CPU, 512 MB RAM, and 10 GB rootfs")
 	}
 	if cfg.APIBaseURL == "" {
 		cfg.APIBaseURL = "https://api.machines.dev"
@@ -291,13 +291,13 @@ func (a *Adapter) setHeaders(req *http.Request) {
 func responseError(resp *http.Response) error {
 	contents, readErr := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if readErr != nil {
-		return errors.Join(fmt.Errorf("Fly API returned %s", resp.Status), readErr)
+		return errors.Join(fmt.Errorf("fly API returned %s", resp.Status), readErr)
 	}
 	message := strings.TrimSpace(string(contents))
 	if message == "" {
-		return fmt.Errorf("Fly API returned %s", resp.Status)
+		return fmt.Errorf("fly API returned %s", resp.Status)
 	}
-	return fmt.Errorf("Fly API returned %s: %s", resp.Status, message)
+	return fmt.Errorf("fly API returned %s: %s", resp.Status, message)
 }
 
 var _ provider.Compute = (*Adapter)(nil)

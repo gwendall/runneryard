@@ -40,7 +40,9 @@ func newUsageBudget(limit, window time.Duration, stateFile string, reservation t
 		return nil, fmt.Errorf("runner usage budget, window, and state file are required")
 	}
 	b := &usageBudget{limit: limit, window: window, reservation: reservation, stateFile: stateFile}
-	data, err := os.ReadFile(stateFile)
+	// stateFile is an operator-selected durable controller path. The controller
+	// OS identity is the filesystem security boundary.
+	data, err := os.ReadFile(stateFile) // #nosec G304
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("runner usage budget is not initialized; run runneryard budget init --file %s", stateFile)
 	}
@@ -80,7 +82,7 @@ func InitializeUsageBudget(stateFile string) error {
 	if err != nil {
 		return fmt.Errorf("encode runner usage budget: %w", err)
 	}
-	file, err := os.OpenFile(stateFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := os.OpenFile(stateFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304
 	if errors.Is(err, os.ErrExist) {
 		return fmt.Errorf("refusing to reset existing runner usage budget at %s", stateFile)
 	}
@@ -88,17 +90,21 @@ func InitializeUsageBudget(stateFile string) error {
 		return fmt.Errorf("create runner usage budget: %w", err)
 	}
 	if _, err := file.Write(append(data, '\n')); err != nil {
-		file.Close()
+		if closeErr := file.Close(); closeErr != nil {
+			return fmt.Errorf("write and close initial runner usage budget: %v; %w", err, closeErr)
+		}
 		return fmt.Errorf("write initial runner usage budget: %w", err)
 	}
 	if err := file.Sync(); err != nil {
-		file.Close()
+		if closeErr := file.Close(); closeErr != nil {
+			return fmt.Errorf("sync and close initial runner usage budget: %v; %w", err, closeErr)
+		}
 		return fmt.Errorf("sync initial runner usage budget: %w", err)
 	}
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close initial runner usage budget: %w", err)
 	}
-	directoryHandle, err := os.Open(directory)
+	directoryHandle, err := os.Open(directory) // #nosec G304 -- operator-selected ledger directory
 	if err != nil {
 		return fmt.Errorf("open runner usage budget directory: %w", err)
 	}
@@ -352,16 +358,20 @@ func (b *usageBudget) persist() error {
 		return fmt.Errorf("encode runner usage budget: %w", err)
 	}
 	temporary := b.stateFile + ".tmp"
-	file, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	file, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304
 	if err != nil {
 		return fmt.Errorf("open runner usage budget: %w", err)
 	}
 	if _, err := file.Write(append(data, '\n')); err != nil {
-		file.Close()
+		if closeErr := file.Close(); closeErr != nil {
+			return fmt.Errorf("write and close runner usage budget: %v; %w", err, closeErr)
+		}
 		return fmt.Errorf("write runner usage budget: %w", err)
 	}
 	if err := file.Sync(); err != nil {
-		file.Close()
+		if closeErr := file.Close(); closeErr != nil {
+			return fmt.Errorf("sync and close runner usage budget: %v; %w", err, closeErr)
+		}
 		return fmt.Errorf("sync runner usage budget: %w", err)
 	}
 	if err := file.Close(); err != nil {
@@ -370,7 +380,7 @@ func (b *usageBudget) persist() error {
 	if err := os.Rename(temporary, b.stateFile); err != nil {
 		return fmt.Errorf("commit runner usage budget: %w", err)
 	}
-	directoryHandle, err := os.Open(directory)
+	directoryHandle, err := os.Open(directory) // #nosec G304 -- operator-selected ledger directory
 	if err != nil {
 		return fmt.Errorf("open runner usage budget directory: %w", err)
 	}

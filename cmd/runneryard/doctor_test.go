@@ -48,6 +48,49 @@ func TestDoctorRejectsControllerSecretThatShadowsPolicy(t *testing.T) {
 	}
 }
 
+func TestDoctorAcceptsCompleteGitHubAppSecrets(t *testing.T) {
+	run := func(name string, args ...string) ([]byte, error) {
+		if name == "fly" && len(args) > 3 && args[0] == "secrets" {
+			if args[3] == "control" {
+				return []byte(`[{"name":"GITHUB_APP_CLIENT_ID"},{"name":"GITHUB_APP_INSTALLATION_ID"},{"name":"GITHUB_APP_PRIVATE_KEY"}]`), nil
+			}
+			return []byte(`[]`), nil
+		}
+		return []byte("ready"), nil
+	}
+	checks := doctor("fly", "control", "workers", "", run)
+	if !hasDoctorStatus(checks, "controller GitHub auth", "pass") {
+		t.Fatalf("checks = %#v", checks)
+	}
+}
+
+func TestDoctorWarnsForUserTokenAndRejectsMixedAuth(t *testing.T) {
+	for name, secrets := range map[string]string{
+		"user token": `[{"name":"GITHUB_TOKEN"}]`,
+		"mixed":      `[{"name":"GITHUB_TOKEN"},{"name":"GITHUB_APP_CLIENT_ID"},{"name":"GITHUB_APP_INSTALLATION_ID"},{"name":"GITHUB_APP_PRIVATE_KEY"}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			run := func(command string, args ...string) ([]byte, error) {
+				if command == "fly" && len(args) > 3 && args[0] == "secrets" {
+					if args[3] == "control" {
+						return []byte(secrets), nil
+					}
+					return []byte(`[]`), nil
+				}
+				return []byte("ready"), nil
+			}
+			checks := doctor("fly", "control", "workers", "", run)
+			expected := "warn"
+			if name == "mixed" {
+				expected = "fail"
+			}
+			if !hasDoctorStatus(checks, "controller GitHub auth", expected) {
+				t.Fatalf("checks = %#v", checks)
+			}
+		})
+	}
+}
+
 func TestDoctorRejectsUnusableFlySecretResponses(t *testing.T) {
 	for name, response := range map[string]string{
 		"null":         `null`,

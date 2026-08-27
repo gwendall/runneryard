@@ -31,14 +31,54 @@ and a persistent controller host. Do not deploy the controller yet.
 
 ## 3. Create credentials
 
-Create a GitHub App owned by the target organization and install it only on the
-repositories that should use the fleet. At repository scope it needs Metadata
-read and Administration read/write so the controller can manage runner scale
-sets. Store its client ID, installation ID, and private key only on the
-controller.
+The recommended flow creates a private GitHub App owned by the target user or
+organization. For Fly, its one-time private key goes from GitHub directly to
+the controller app secret store:
 
-For an initial private canary, a classic PAT accepted by GitHub's scale-set
-client can be used locally. Do not persist a broad personal token in the cloud.
+```sh
+npx runneryard auth github create \
+  --github https://github.com/acme/widgets \
+  --controller-app acme-ci-controller
+```
+
+For a Docker controller, including Hetzner, use the local file sink:
+
+```sh
+npx runneryard auth github create \
+  --github https://github.com/acme/widgets \
+  --sink file
+```
+
+The file sink creates `.runneryard/github-app.pem` and
+`.runneryard/github-app.env` with mode `0600` and adds both to the generated
+ignore file. The Compose scaffold mounts the key read-only.
+
+The CLI opens a loopback setup page, then GitHub shows the app owner and exact
+permission before approval. A repository fleet needs Repository
+Administration write because GitHub places runner scale-set management behind
+that permission; Metadata read is implicit. An organization fleet instead
+needs Organization Self-hosted runners write. The app is private, subscribes
+to no webhook events, and should be installed only on selected repositories.
+
+RunnerYard does not operate a hosted credential service. The temporary
+manifest code and private key return to the local CLI, are verified against the
+selected installation, and move to the chosen secret sink without being
+printed. See the [security model](security.md#github-app-ownership).
+
+To bring an existing app, keep the PEM in a mode `0600` file and run:
+
+```sh
+npx runneryard auth github import \
+  --github https://github.com/acme/widgets \
+  --client-id Iv1.example \
+  --installation-id 123456 \
+  --private-key-file ./existing-app.pem \
+  --controller-app acme-ci-controller
+```
+
+The import path verifies the app identity, installation owner, repository
+access, and permission before storing anything. A personal token remains a
+compatibility escape hatch for a private canary, but `doctor` warns about it.
 
 Create a credential scoped to the isolated worker provider boundary. It must be
 able to create, list, and delete workers, but should have no access to
@@ -55,7 +95,8 @@ npx runneryard doctor \
 ```
 
 Run this after both apps exist. Do not continue if control and worker scopes are
-the same or if the worker app contains any secret. Explicitly initialize the
+the same, the GitHub App secret set is incomplete, or the worker app contains
+any secret. Explicitly initialize the
 durable volume once with `runneryard budget init`; without an existing valid
 ledger, the controller refuses to start.
 
