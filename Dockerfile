@@ -16,7 +16,7 @@ FROM ${ACTIONS_RUNNER_IMAGE} AS actions-runner
 
 FROM ${NODE_IMAGE} AS node-runtime
 
-FROM ubuntu:24.04
+FROM ubuntu:24.10
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
