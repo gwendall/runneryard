@@ -16,14 +16,21 @@ import (
 type scaler struct {
 	state          *workerState
 	compute        provider.Compute
-	scaleSetClient *scaleset.Client
+	scaleSetClient runnerScaleSetClient
 	scaleSetID     int
 	minWorkers     int
 	maxWorkers     int
 	maxLifetime    time.Duration
 	budget         *usageBudget
+	retirements    *retirementQueue
 	reporter       *statusReporter
 	logger         *slog.Logger
+}
+
+type runnerScaleSetClient interface {
+	GenerateJitRunnerConfig(context.Context, *scaleset.RunnerScaleSetJitRunnerSetting, int) (*scaleset.RunnerScaleSetJitRunnerConfig, error)
+	GetRunnerByName(context.Context, string) (*scaleset.RunnerReference, error)
+	RemoveRunner(context.Context, int64) error
 }
 
 func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, assignedJobs int) (int, error) {
@@ -66,6 +73,17 @@ func (s *scaler) reconcile(ctx context.Context) error {
 		s.reporter.degraded("provider_inventory_failed")
 		return fmt.Errorf("inventory compute workers: %w", err)
 	}
+	if s.retirements.count() > 0 {
+		if err := s.finishPendingRetirements(ctx, workers); err != nil {
+			s.reporter.degraded("runner_retirement_failed")
+			return err
+		}
+		workers, err = s.compute.Inventory(ctx)
+		if err != nil {
+			s.reporter.degraded("provider_inventory_failed")
+			return fmt.Errorf("refresh inventory after runner retirement: %w", err)
+		}
+	}
 	local := s.state.all()
 	s.reporter.orphans(orphanCandidateCount(workers, local, s.maxLifetime, time.Now()))
 	localByWorker := make(map[string]struct{}, len(local))
@@ -73,17 +91,13 @@ func (s *scaler) reconcile(ctx context.Context) error {
 		localByWorker[record.Worker.ID] = struct{}{}
 	}
 	present := make(map[string]struct{}, len(workers))
+	retired := make(map[string]struct{})
 	for _, worker := range workers {
 		if !worker.CreatedAt.IsZero() && time.Since(worker.CreatedAt) > s.maxLifetime {
-			if err := s.destroyWorker(ctx, worker); err != nil {
-				s.reporter.degraded("provider_delete_failed")
-				return fmt.Errorf("delete worker %s after maximum lifetime: %w", worker.RunnerName, err)
+			if err := s.retireWorker(ctx, worker, true); err != nil {
+				return fmt.Errorf("retire worker %s after maximum lifetime: %w", worker.RunnerName, err)
 			}
-			if err := s.budget.settle(worker.LeaseID, time.Now()); err != nil {
-				s.reporter.degraded("usage_budget_write_failed")
-				return fmt.Errorf("settle runner usage budget for %s: %w", worker.RunnerName, err)
-			}
-			s.state.remove(worker.RunnerName)
+			retired[worker.RunnerName] = struct{}{}
 			s.logger.Warn("deleted worker after maximum lifetime", "runner", worker.RunnerName, "worker_id", worker.ID, "maximum_lifetime", s.maxLifetime)
 			continue
 		}
@@ -99,13 +113,14 @@ func (s *scaler) reconcile(ctx context.Context) error {
 		s.logger.Warn("adopted managed worker missing from local state", "runner", worker.RunnerName, "worker_id", worker.ID)
 	}
 	for name, record := range local {
+		if _, retiredNow := retired[name]; retiredNow {
+			continue
+		}
 		if _, ok := present[record.Worker.ID]; ok {
 			continue
 		}
-		s.state.remove(name)
-		if err := s.budget.settle(record.Worker.LeaseID, time.Now()); err != nil {
-			s.reporter.degraded("usage_budget_write_failed")
-			return fmt.Errorf("settle runner usage budget for disappeared worker %s: %w", name, err)
+		if err := s.retireWorker(ctx, record.Worker, false); err != nil {
+			return fmt.Errorf("retire disappeared worker %s: %w", name, err)
 		}
 		s.logger.Warn("worker disappeared before completion", "runner", name, "worker_id", record.Worker.ID)
 	}
@@ -137,15 +152,9 @@ func (s *scaler) HandleJobCompleted(ctx context.Context, job *scaleset.JobComple
 		s.logger.Warn("job completed on worker not present in local state", "runner", job.RunnerName, "job_id", job.JobID)
 		return nil
 	}
-	if err := s.destroyWorker(ctx, record.Worker); err != nil {
-		s.reporter.degraded("provider_delete_failed")
-		return fmt.Errorf("delete completed worker %s: %w", job.RunnerName, err)
+	if err := s.retireWorker(ctx, record.Worker, true); err != nil {
+		return fmt.Errorf("retire completed worker %s: %w", job.RunnerName, err)
 	}
-	if err := s.budget.settle(record.Worker.LeaseID, time.Now()); err != nil {
-		s.reporter.degraded("usage_budget_write_failed")
-		return fmt.Errorf("settle runner usage budget for %s: %w", job.RunnerName, err)
-	}
-	s.state.remove(job.RunnerName)
 	s.reportState()
 	s.reporter.budget(s.budget.snapshot(time.Now()))
 	s.reporter.recovered()
@@ -190,7 +199,7 @@ func (s *scaler) startWorker(ctx context.Context) (bool, error) {
 	s.reporter.latency(true, time.Since(launchStarted), err != nil)
 	if err != nil {
 		s.reporter.degraded("provider_launch_failed")
-		cleanupErr := s.cleanupAmbiguousLaunch(context.WithoutCancel(ctx), leaseID, err)
+		cleanupErr := s.cleanupAmbiguousLaunch(context.WithoutCancel(ctx), leaseID, name, err)
 		if cleanupErr != nil {
 			return false, cleanupErr
 		}
@@ -203,7 +212,7 @@ func (s *scaler) startWorker(ctx context.Context) (bool, error) {
 	}
 	if err := s.budget.adopt(leaseID, worker.CreatedAt); err != nil {
 		s.reporter.degraded("usage_budget_write_failed")
-		cleanupErr := s.destroyWorker(context.WithoutCancel(ctx), worker)
+		cleanupErr := s.retireWorker(context.WithoutCancel(ctx), worker, true)
 		budgetErr := s.budget.forfeit(leaseID, time.Now())
 		s.reporter.budget(s.budget.snapshot(time.Now()))
 		return false, errors.Join(
@@ -220,10 +229,10 @@ func (s *scaler) startWorker(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-func (s *scaler) cleanupAmbiguousLaunch(ctx context.Context, leaseID string, launchErr error) error {
+func (s *scaler) cleanupAmbiguousLaunch(ctx context.Context, leaseID, runnerName string, launchErr error) error {
 	var partial *provider.PartialLaunchError
 	if errors.As(launchErr, &partial) && partial.Worker.ID != "" {
-		if err := s.destroyWorker(ctx, partial.Worker); err != nil {
+		if err := s.retireWorker(ctx, partial.Worker, true); err != nil {
 			return errors.Join(launchErr, fmt.Errorf("clean up partial worker %s: %w", partial.Worker.ID, err))
 		}
 	}
@@ -231,13 +240,21 @@ func (s *scaler) cleanupAmbiguousLaunch(ctx context.Context, leaseID string, lau
 	if err != nil {
 		return errors.Join(launchErr, fmt.Errorf("inventory after ambiguous launch: %w", err))
 	}
+	cleanedWorker := false
 	for _, worker := range workers {
 		if worker.LeaseID != leaseID || (partial != nil && worker.ID == partial.Worker.ID) {
 			continue
 		}
-		if err := s.destroyWorker(ctx, worker); err != nil {
+		if err := s.retireWorker(ctx, worker, true); err != nil {
 			return errors.Join(launchErr, fmt.Errorf("clean up ambiguous worker %s: %w", worker.ID, err))
 		}
+		cleanedWorker = true
+	}
+	if cleanedWorker {
+		return nil
+	}
+	if err := s.retireWorker(ctx, provider.Worker{LeaseID: leaseID, RunnerName: runnerName}, false); err != nil {
+		return errors.Join(launchErr, fmt.Errorf("clean up ambiguous runner registration %s: %w", runnerName, err))
 	}
 	return nil
 }
@@ -247,6 +264,15 @@ func (s *scaler) recover(ctx context.Context) error {
 	if err != nil {
 		s.reporter.degraded("provider_inventory_failed")
 		return err
+	}
+	if err := s.finishPendingRetirements(ctx, workers); err != nil {
+		s.reporter.degraded("runner_retirement_failed")
+		return err
+	}
+	workers, err = s.compute.Inventory(ctx)
+	if err != nil {
+		s.reporter.degraded("provider_inventory_failed")
+		return fmt.Errorf("refresh inventory after recovering runner retirements: %w", err)
 	}
 	s.reporter.orphans(len(workers))
 	activeLeases := make(map[string]struct{}, len(workers))
@@ -268,6 +294,86 @@ func (s *scaler) recover(ctx context.Context) error {
 	s.reporter.orphans(0)
 	s.reportState()
 	s.reporter.budget(s.budget.snapshot(time.Now()))
+	return nil
+}
+
+func (s *scaler) finishPendingRetirements(ctx context.Context, workers []provider.Worker) error {
+	byName := make(map[string]provider.Worker, len(workers))
+	for _, worker := range workers {
+		if _, duplicate := byName[worker.RunnerName]; duplicate {
+			return fmt.Errorf("provider inventory contains duplicate runner name %q", worker.RunnerName)
+		}
+		byName[worker.RunnerName] = worker
+	}
+	for _, name := range s.retirements.all() {
+		worker, providerPresent := byName[name]
+		if !providerPresent {
+			if record, ok := s.state.get(name); ok {
+				worker = record.Worker
+			} else {
+				worker.RunnerName = name
+			}
+		}
+		if err := s.finishRetirement(ctx, worker, providerPresent); err != nil {
+			return fmt.Errorf("finish pending retirement for %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func (s *scaler) retireWorker(ctx context.Context, worker provider.Worker, providerPresent bool) error {
+	if err := s.retirements.add(worker.RunnerName); err != nil {
+		s.reporter.degraded("runner_retirement_state_failed")
+		return err
+	}
+	s.reporter.retirements(s.retirements.count())
+	return s.finishRetirement(ctx, worker, providerPresent)
+}
+
+func (s *scaler) finishRetirement(ctx context.Context, worker provider.Worker, providerPresent bool) error {
+	if providerPresent {
+		if err := s.destroyWorker(ctx, worker); err != nil {
+			s.reporter.degraded("provider_delete_failed")
+			return err
+		}
+	}
+	if err := s.removeRunnerRegistration(ctx, worker.RunnerName); err != nil {
+		s.reporter.degraded("github_runner_cleanup_failed")
+		return err
+	}
+	if worker.LeaseID != "" {
+		if err := s.budget.settle(worker.LeaseID, time.Now()); err != nil {
+			s.reporter.degraded("usage_budget_write_failed")
+			return err
+		}
+	}
+	s.state.remove(worker.RunnerName)
+	if err := s.retirements.remove(worker.RunnerName); err != nil {
+		s.reporter.degraded("runner_retirement_state_failed")
+		return err
+	}
+	s.reporter.retirements(s.retirements.count())
+	return nil
+}
+
+func (s *scaler) removeRunnerRegistration(ctx context.Context, name string) error {
+	runner, err := s.scaleSetClient.GetRunnerByName(ctx, name)
+	if err != nil {
+		return fmt.Errorf("find GitHub runner registration: %w", err)
+	}
+	if runner == nil {
+		return nil
+	}
+	// The Actions service omits runnerScaleSetId on some responses. A non-zero
+	// value must match; otherwise the durable, controller-generated random name
+	// is the ownership proof.
+	if runner.Name != name || (runner.RunnerScaleSetID != 0 && runner.RunnerScaleSetID != s.scaleSetID) {
+		return fmt.Errorf("refusing to remove runner %q from unexpected scale set %d", runner.Name, runner.RunnerScaleSetID)
+	}
+	if err := s.scaleSetClient.RemoveRunner(ctx, int64(runner.ID)); err != nil {
+		return fmt.Errorf("remove GitHub runner registration %d: %w", runner.ID, err)
+	}
+	s.logger.Info("removed GitHub runner registration", "runner", name, "runner_id", runner.ID)
 	return nil
 }
 

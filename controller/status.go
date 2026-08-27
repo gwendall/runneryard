@@ -50,13 +50,14 @@ type GitHubStatus struct {
 }
 
 type WorkerStatus struct {
-	Actual           int  `json:"actual"`
-	Starting         int  `json:"starting"`
-	Busy             int  `json:"busy"`
-	Idle             int  `json:"idle"`
-	OrphanCandidates int  `json:"orphan_candidates"`
-	Maximum          int  `json:"maximum"`
-	Saturated        bool `json:"saturated"`
+	Actual             int  `json:"actual"`
+	Starting           int  `json:"starting"`
+	Busy               int  `json:"busy"`
+	Idle               int  `json:"idle"`
+	OrphanCandidates   int  `json:"orphan_candidates"`
+	PendingRetirements int  `json:"pending_retirements"`
+	Maximum            int  `json:"maximum"`
+	Saturated          bool `json:"saturated"`
 }
 
 type LatencyStatus struct {
@@ -148,6 +149,8 @@ func (reporter *statusReporter) derive() {
 	switch {
 	case reporter.failure != "":
 		status.Health, status.Reason = "degraded", reporter.failure
+	case status.Workers.PendingRetirements > 0:
+		status.Health, status.Reason = "degraded", "runner_retirements_pending"
 	case status.Workers.OrphanCandidates > 0:
 		status.Health, status.Reason = "degraded", "orphan_candidates"
 	case status.Budget.RefusalReason != "":
@@ -191,6 +194,10 @@ func (reporter *statusReporter) starting(delta int) {
 
 func (reporter *statusReporter) orphans(count int) {
 	reporter.update(func(status *FleetStatus) { status.Workers.OrphanCandidates = max(0, count) })
+}
+
+func (reporter *statusReporter) retirements(count int) {
+	reporter.update(func(status *FleetStatus) { status.Workers.PendingRetirements = max(0, count) })
 }
 
 func (reporter *statusReporter) budget(snapshot BudgetStatus) {

@@ -17,11 +17,12 @@ the corresponding `JobStarted` message is still in flight. One-job workers are
 removed synchronously on `JobCompleted`; unused workers remain bounded by their
 provider lease and `RUNNER_MAX_LIFETIME`.
 
-Worker deletion is idempotent and confirmed against provider inventory when a
-delete request returns an ambiguous transport error. If the worker is already
-absent, the controller settles its lease and keeps serving the scale-set
-listener. If inventory still contains the worker, cleanup fails closed and the
-local record is retained for reconciliation.
+Worker retirement converges both control planes: provider compute is confirmed
+absent, then the matching GitHub runner registration is removed. The intent is
+written first to a durable `retirements.json` journal beside the budget ledger,
+so a controller restart or transient GitHub API failure cannot lose cleanup.
+Removal is restricted to RunnerYard names in the controller's exact scale set.
+If provider ownership is ambiguous, cleanup fails closed and remains pending.
 
 ## Safe upgrades
 
@@ -81,7 +82,9 @@ Healthy interpretation:
   measures the separate interval from worker creation to GitHub job start.
 - idle means a created JIT worker has not emitted `JobStarted`; it is not safe
   to delete opportunistically because assignment may already be in flight.
-- any orphan candidate or stable failure reason makes health `degraded`.
+- any orphan candidate, pending retirement, or stable failure reason makes
+  health `degraded`. A pending retirement is retried during reconciliation and
+  must return to zero after provider and GitHub cleanup recover.
 - budget used is settled compute, reserved is worst-case time held by active
   workers, and remaining is admission headroom. `usage_budget_exhausted` means
   new jobs intentionally stay queued.
@@ -102,6 +105,11 @@ corrupt, or unwritable state stops new compute rather than resetting the cap.
 The separate `runneryard budget init --file PATH` command bootstraps a new
 volume and refuses to overwrite a ledger. Never automate it on controller
 restart.
+
+The retirement journal is controller state, not a cache. Keep it on the same
+durable private volume as the budget ledger. Missing state is initialized once;
+corrupt or unwritable state stops retirement before provider deletion. Do not
+edit or reset it while a fleet is active.
 
 Queued jobs are the intended failure mode. Raise the budget from observed
 qualified workload, and account separately for the small always-on controller,

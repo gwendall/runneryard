@@ -39,6 +39,12 @@ func TestFleetStatusCoversEmptySaturatedAndDegradedStates(t *testing.T) {
 	if degraded.Health != "degraded" || degraded.Reason != "orphan_candidates" {
 		t.Fatalf("degraded status = %#v", degraded)
 	}
+
+	reporter.retirements(2)
+	retiring := loadFleetStatus(t, statusFile)
+	if retiring.Health != "degraded" || retiring.Reason != "runner_retirements_pending" || retiring.Workers.PendingRetirements != 2 {
+		t.Fatalf("retirement status = %#v", retiring)
+	}
 }
 
 func TestFleetStatusSeparatesLatencyAndExhaustedBudget(t *testing.T) {
