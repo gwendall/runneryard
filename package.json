@@ -1,0 +1,10 @@
+{
+  "name": "runneryard-workspace",
+  "private": true,
+  "packageManager": "pnpm@10.27.0",
+  "scripts": {
+    "build": "pnpm --filter runneryard-web build",
+    "check": "pnpm --filter runneryard test && pnpm --filter runneryard-web lint && pnpm --filter runneryard-web typecheck",
+    "dev": "pnpm --filter runneryard-web dev"
+  }
+}

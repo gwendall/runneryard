@@ -1,0 +1,31 @@
+{
+  "name": "runneryard",
+  "version": "0.1.0",
+  "description": "Run ephemeral GitHub Actions runners on infrastructure you control",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "runneryard": "bin/runneryard.mjs"
+  },
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gwendall/runneryard.git"
+  },
+  "homepage": "https://github.com/gwendall/runneryard#readme",
+  "bugs": {
+    "url": "https://github.com/gwendall/runneryard/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  exec sudo --preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE /usr/local/bin/runner-entrypoint "$@"
+fi
+
+if [[ -z "${ACTIONS_RUNNER_INPUT_JITCONFIG:-}" ]]; then
+  echo "ACTIONS_RUNNER_INPUT_JITCONFIG is required" >&2
+  exit 64
+fi
+
+if [[ -z "${RUNNERYARD_DEADLINE:-}" ]]; then
+  echo "RUNNERYARD_DEADLINE is required" >&2
+  exit 64
+fi
+
+deadline_epoch=$(date --date="$RUNNERYARD_DEADLINE" +%s)
+remaining_seconds=$((deadline_epoch - $(date +%s)))
+if (( remaining_seconds < 1 )); then
+  echo "runner lease is already expired" >&2
+  exit 70
+fi
+
+mkdir -p /etc/docker /var/lib/docker
+printf '%s\n' '{"storage-driver":"vfs"}' >/etc/docker/daemon.json
+
+dockerd --config-file=/etc/docker/daemon.json >/var/log/dockerd.log 2>&1 &
+docker_pid=$!
+
+cleanup() {
+  kill "$docker_pid" 2>/dev/null || true
+  wait "$docker_pid" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+for _attempt in $(seq 1 60); do
+  if docker info >/dev/null 2>&1; then
+    break
+  fi
+  if ! kill -0 "$docker_pid" 2>/dev/null; then
+    cat /var/log/dockerd.log >&2
+    exit 1
+  fi
+  sleep 1
+done
+
+docker info >/dev/null 2>&1 || {
+  cat /var/log/dockerd.log >&2
+  exit 1
+}
+
+chown runner:docker /var/run/docker.sock
+set +e
+timeout --signal=TERM --kill-after=30s "${remaining_seconds}s" \
+  setpriv --reuid=runner --regid=runner --init-groups \
+  env HOME=/home/runner USER=runner LOGNAME=runner \
+  XDG_CONFIG_HOME=/home/runner/.config \
+  /home/runner/run.sh
+runner_status=$?
+set -e
+exit "$runner_status"

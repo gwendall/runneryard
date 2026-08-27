@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+budget_file=${RUNNER_BUDGET_FILE:-}
+if [[ "$budget_file" == /var/lib/runneryard/* ]]; then
+  sudo install -d -o runner -g runner -m 0700 /var/lib/runneryard
+fi
+
+exec /usr/local/bin/runneryard "$@"

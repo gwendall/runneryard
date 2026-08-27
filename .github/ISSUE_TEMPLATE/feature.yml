@@ -1,0 +1,26 @@
+name: Feature request
+description: Propose a focused capability or provider adapter
+title: "feature: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What operator problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful interface or workflow.
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Trust and cost boundaries
+      description: Explain credentials, network access, cleanup, and spending limits.
+    validations:
+      required: true

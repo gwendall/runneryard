@@ -1,0 +1,39 @@
+name: Bug report
+description: Report reproducible incorrect behavior
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials or private repository content. Report security issues through the private advisory link.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: v0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider
+      options:
+        - Fly Machines
+        - Provider interface or custom adapter
+        - Not provider-specific
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include minimal reproduction steps, expected behavior, and sanitized logs.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture, runner image, and relevant non-secret configuration.
+    validations:
+      required: true

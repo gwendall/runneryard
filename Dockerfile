@@ -1,0 +1,46 @@
+ARG GO_VERSION=1.25.3
+ARG ACTIONS_RUNNER_IMAGE=ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
+ARG NODE_IMAGE=node:22.22.3-bookworm-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752
+FROM golang:${GO_VERSION}-bookworm AS controller-build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . ./
+ARG VERSION=dev
+ARG COMMIT_SHA=unknown
+RUN CGO_ENABLED=0 go build -trimpath \
+  -ldflags="-s -w -X main.version=${VERSION} -X main.commitSHA=${COMMIT_SHA}" \
+  -o /out/runneryard ./cmd/runneryard
+
+FROM ${ACTIONS_RUNNER_IMAGE} AS actions-runner
+
+FROM ${NODE_IMAGE} AS node-runtime
+
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates curl docker.io dumb-init gh git git-lfs iptables jq \
+    libyaml-dev python3 python3-pip sudo unzip util-linux zip \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --gid 1001 runner \
+  && useradd --create-home --uid 1001 --gid runner runner \
+  && usermod -aG docker,sudo runner \
+  && printf '%s\n' '%sudo ALL=(ALL:ALL) NOPASSWD:ALL' >/etc/sudoers.d/runner
+
+COPY --from=actions-runner --chown=runner:runner /home/runner/ /home/runner/
+COPY --from=node-runtime /usr/local/ /usr/local/
+RUN /home/runner/bin/installdependencies.sh
+COPY --from=controller-build /out/runneryard /usr/local/bin/runneryard
+COPY controller-entrypoint /usr/local/bin/controller-entrypoint
+COPY runner-entrypoint /usr/local/bin/runner-entrypoint
+RUN chmod 0755 /usr/local/bin/runneryard /usr/local/bin/controller-entrypoint /usr/local/bin/runner-entrypoint
+
+ENV HOME=/home/runner
+ENV RUNNER_TOOL_CACHE=/opt/hostedtoolcache
+ENV ImageOS=ubuntu24
+RUN mkdir -p /opt/hostedtoolcache && chown -R runner:docker /opt/hostedtoolcache /home/runner
+
+USER runner
+ENTRYPOINT ["/usr/bin/dumb-init", "--", "/usr/local/bin/controller-entrypoint"]

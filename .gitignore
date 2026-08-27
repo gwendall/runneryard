@@ -1,0 +1,13 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+.next
+.vercel
+coverage
+dist
+fly.toml
+node_modules
+*.pem
+*.tsbuildinfo
+.env*
