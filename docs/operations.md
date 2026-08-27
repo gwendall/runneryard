@@ -11,6 +11,12 @@ adopts managed workers created by the same controller after a restart, removes
 local records for disappeared workers, and destroys workers older than
 `RUNNER_MAX_LIFETIME`.
 
+Worker deletion is idempotent and confirmed against provider inventory when a
+delete request returns an ambiguous transport error. If the worker is already
+absent, the controller settles its lease and keeps serving the scale-set
+listener. If inventory still contains the worker, cleanup fails closed and the
+local record is retained for reconciliation.
+
 ## Safe upgrades
 
 Pin the runtime image to a release version. Deploy the controller first; new
