@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -88,9 +89,9 @@ func doctorFly(controllerApp, workerApp string, run commandRunner) []doctorCheck
 	if err != nil {
 		checks = append(checks, doctorCheck{Name: "worker app secrets", Status: "fail", Details: compactError(output, err)})
 	} else {
-		var secrets []any
-		if json.Unmarshal(output, &secrets) != nil {
-			checks = append(checks, doctorCheck{Name: "worker app secrets", Status: "fail", Details: "could not parse Fly response"})
+		secrets, parseErr := parseFlySecretNames(output)
+		if parseErr != nil {
+			checks = append(checks, doctorCheck{Name: "worker app secrets", Status: "fail", Details: parseErr.Error()})
 		} else if len(secrets) > 0 {
 			checks = append(checks, doctorCheck{Name: "worker app secrets", Status: "fail", Details: fmt.Sprintf("%d app secret(s) would reach job code", len(secrets))})
 		} else {
@@ -114,16 +115,14 @@ func controllerPolicySecretCheck(controllerApp string, run commandRunner) doctor
 	if err != nil {
 		return doctorCheck{Name: "controller policy source", Status: "fail", Details: compactError(output, err)}
 	}
-	var secrets []struct {
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(output, &secrets); err != nil {
-		return doctorCheck{Name: "controller policy source", Status: "fail", Details: "could not parse Fly response"}
+	secrets, err := parseFlySecretNames(output)
+	if err != nil {
+		return doctorCheck{Name: "controller policy source", Status: "fail", Details: err.Error()}
 	}
 	shadows := make([]string, 0)
-	for _, secret := range secrets {
-		if _, exists := flyPolicyEnvironment[secret.Name]; exists {
-			shadows = append(shadows, secret.Name)
+	for _, name := range secrets {
+		if _, exists := flyPolicyEnvironment[name]; exists {
+			shadows = append(shadows, name)
 		}
 	}
 	if len(shadows) > 0 {
@@ -133,6 +132,28 @@ func controllerPolicySecretCheck(controllerApp string, run commandRunner) doctor
 		}
 	}
 	return doctorCheck{Name: "controller policy source", Status: "pass", Details: "no policy values shadowed by secrets"}
+}
+
+func parseFlySecretNames(output []byte) ([]string, error) {
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return nil, fmt.Errorf("could not parse Fly response as a secret list")
+	}
+	var records []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(trimmed, &records); err != nil {
+		return nil, fmt.Errorf("could not parse Fly response as a secret list")
+	}
+	names := make([]string, 0, len(records))
+	for _, record := range records {
+		name := strings.TrimSpace(record.Name)
+		if name == "" {
+			return nil, fmt.Errorf("Fly secret response contains a record without a name")
+		}
+		names = append(names, name)
+	}
+	return names, nil
 }
 
 func doctorHetzner(firewallID string, run commandRunner) []doctorCheck {

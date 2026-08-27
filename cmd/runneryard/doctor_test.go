@@ -48,6 +48,45 @@ func TestDoctorRejectsControllerSecretThatShadowsPolicy(t *testing.T) {
 	}
 }
 
+func TestDoctorRejectsUnusableFlySecretResponses(t *testing.T) {
+	for name, response := range map[string]string{
+		"null":         `null`,
+		"missing name": `[{"digest":"abc"}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			run := func(command string, args ...string) ([]byte, error) {
+				if command == "fly" && len(args) > 3 && args[0] == "secrets" {
+					if args[3] == "control" {
+						return []byte(response), nil
+					}
+					return []byte(`[]`), nil
+				}
+				return []byte("ready"), nil
+			}
+			checks := doctor("fly", "control", "workers", "", run)
+			if !hasDoctorStatus(checks, "controller policy source", "fail") {
+				t.Fatalf("checks = %#v", checks)
+			}
+		})
+	}
+}
+
+func TestDoctorRejectsNullWorkerSecretResponse(t *testing.T) {
+	run := func(command string, args ...string) ([]byte, error) {
+		if command == "fly" && len(args) > 3 && args[0] == "secrets" {
+			if args[3] == "workers" {
+				return []byte(`null`), nil
+			}
+			return []byte(`[]`), nil
+		}
+		return []byte("ready"), nil
+	}
+	checks := doctor("fly", "control", "workers", "", run)
+	if !hasDoctorStatus(checks, "worker app secrets", "fail") {
+		t.Fatalf("checks = %#v", checks)
+	}
+}
+
 func TestDoctorRequiresBothAppsToProveIsolation(t *testing.T) {
 	run := func(name string, args ...string) ([]byte, error) {
 		if name == "fly" && len(args) > 1 && args[0] == "secrets" {

@@ -20,6 +20,11 @@ type sessionCloser interface {
 	Close(context.Context) error
 }
 
+type messageSession interface {
+	listener.Client
+	sessionCloser
+}
+
 type Config struct {
 	GitHubURL    string
 	ScaleSetName string
@@ -124,13 +129,17 @@ func (c *Controller) Run(ctx context.Context) error {
 		budget:         budget,
 		logger:         cfg.Logger.WithGroup("scaler"),
 	}
+	return runControllerSession(ctx, session, scaler, cfg, scaleSet.ID)
+}
+
+func runControllerSession(ctx context.Context, session messageSession, scaler *scaler, cfg Config, scaleSetID int) error {
 	defer shutdownController(session, scaler, cfg.Logger)
 	if err := scaler.recover(ctx); err != nil {
 		return fmt.Errorf("recover workers: %w", err)
 	}
 
 	queue, err := listener.New(session, listener.Config{
-		ScaleSetID: scaleSet.ID,
+		ScaleSetID: scaleSetID,
 		MaxRunners: cfg.MaxWorkers,
 		Logger:     cfg.Logger.WithGroup("listener"),
 	})
