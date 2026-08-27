@@ -56,7 +56,7 @@ func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, assignedJobs int)
 	}
 	s.logger.Info("scaling down idle workers", "current", current, "target", target, "count", removable)
 	for _, record := range s.state.idle(removable) {
-		if err := s.compute.Destroy(ctx, record.Worker.ID); err != nil {
+		if err := s.destroyWorker(ctx, record.Worker); err != nil {
 			return s.state.count(), fmt.Errorf("delete idle worker %s: %w", record.Name, err)
 		}
 		if err := s.budget.settle(record.Worker.LeaseID, time.Now()); err != nil {
@@ -80,7 +80,7 @@ func (s *scaler) reconcile(ctx context.Context) error {
 	present := make(map[string]struct{}, len(workers))
 	for _, worker := range workers {
 		if !worker.CreatedAt.IsZero() && time.Since(worker.CreatedAt) > s.maxLifetime {
-			if err := s.compute.Destroy(ctx, worker.ID); err != nil {
+			if err := s.destroyWorker(ctx, worker); err != nil {
 				return fmt.Errorf("delete worker %s after maximum lifetime: %w", worker.RunnerName, err)
 			}
 			if err := s.budget.settle(worker.LeaseID, time.Now()); err != nil {
@@ -128,7 +128,7 @@ func (s *scaler) HandleJobCompleted(ctx context.Context, job *scaleset.JobComple
 		s.logger.Warn("job completed on worker not present in local state", "runner", job.RunnerName, "job_id", job.JobID)
 		return nil
 	}
-	if err := s.compute.Destroy(ctx, record.Worker.ID); err != nil {
+	if err := s.destroyWorker(ctx, record.Worker); err != nil {
 		return fmt.Errorf("delete completed worker %s: %w", job.RunnerName, err)
 	}
 	if err := s.budget.settle(record.Worker.LeaseID, time.Now()); err != nil {
@@ -177,7 +177,7 @@ func (s *scaler) startWorker(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if err := s.budget.adopt(leaseID, worker.CreatedAt); err != nil {
-		cleanupErr := s.compute.Destroy(context.WithoutCancel(ctx), worker.ID)
+		cleanupErr := s.destroyWorker(context.WithoutCancel(ctx), worker)
 		budgetErr := s.budget.forfeit(leaseID, time.Now())
 		return false, errors.Join(
 			fmt.Errorf("confirm launched worker in runner usage budget: %w", err),
@@ -193,7 +193,7 @@ func (s *scaler) startWorker(ctx context.Context) (bool, error) {
 func (s *scaler) cleanupAmbiguousLaunch(ctx context.Context, leaseID string, launchErr error) error {
 	var partial *provider.PartialLaunchError
 	if errors.As(launchErr, &partial) && partial.Worker.ID != "" {
-		if err := s.compute.Destroy(ctx, partial.Worker.ID); err != nil {
+		if err := s.destroyWorker(ctx, partial.Worker); err != nil {
 			return errors.Join(launchErr, fmt.Errorf("clean up partial worker %s: %w", partial.Worker.ID, err))
 		}
 	}
@@ -205,7 +205,7 @@ func (s *scaler) cleanupAmbiguousLaunch(ctx context.Context, leaseID string, lau
 		if worker.LeaseID != leaseID || (partial != nil && worker.ID == partial.Worker.ID) {
 			continue
 		}
-		if err := s.compute.Destroy(ctx, worker.ID); err != nil {
+		if err := s.destroyWorker(ctx, worker); err != nil {
 			return errors.Join(launchErr, fmt.Errorf("clean up ambiguous worker %s: %w", worker.ID, err))
 		}
 	}
@@ -236,7 +236,7 @@ func (s *scaler) recover(ctx context.Context) error {
 
 func (s *scaler) shutdown(ctx context.Context) {
 	for _, record := range s.state.idle(-1) {
-		if err := s.compute.Destroy(ctx, record.Worker.ID); err != nil {
+		if err := s.destroyWorker(ctx, record.Worker); err != nil {
 			s.logger.Error("failed to delete idle worker during shutdown", "runner", record.Name, "error", err)
 			continue
 		}
@@ -246,6 +246,29 @@ func (s *scaler) shutdown(ctx context.Context) {
 		}
 		s.state.remove(record.Name)
 	}
+}
+
+// destroyWorker resolves an ambiguous provider error against authoritative
+// inventory. A delete request can time out after the provider accepted it; in
+// that case restarting the scale-set listener would interrupt unrelated jobs
+// even though the worker is already gone. A worker still present in inventory
+// remains a hard error so reconciliation continues to fail closed.
+func (s *scaler) destroyWorker(ctx context.Context, worker provider.Worker) error {
+	deleteErr := s.compute.Destroy(ctx, worker.ID)
+	if deleteErr == nil {
+		return nil
+	}
+	workers, inventoryErr := s.compute.Inventory(ctx)
+	if inventoryErr != nil {
+		return errors.Join(deleteErr, fmt.Errorf("confirm deletion of worker %s: %w", worker.ID, inventoryErr))
+	}
+	for _, present := range workers {
+		if present.ID == worker.ID {
+			return deleteErr
+		}
+	}
+	s.logger.Warn("provider reported a deletion error after worker disappeared", "runner", worker.RunnerName, "worker_id", worker.ID, "error", deleteErr)
+	return nil
 }
 
 var _ listener.Scaler = (*scaler)(nil)

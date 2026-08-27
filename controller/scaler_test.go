@@ -13,9 +13,10 @@ import (
 )
 
 type fakeCompute struct {
-	workers    []provider.Worker
-	destroyErr error
-	destroyed  []string
+	workers             []provider.Worker
+	destroyErr          error
+	removeBeforeDestroy bool
+	destroyed           []string
 }
 
 func (f *fakeCompute) Launch(_ context.Context, _ provider.Lease) (provider.Worker, error) {
@@ -27,6 +28,15 @@ func (f *fakeCompute) Inventory(_ context.Context) ([]provider.Worker, error) {
 }
 
 func (f *fakeCompute) Destroy(_ context.Context, id string) error {
+	if f.removeBeforeDestroy {
+		remaining := f.workers[:0]
+		for _, worker := range f.workers {
+			if worker.ID != id {
+				remaining = append(remaining, worker)
+			}
+		}
+		f.workers = remaining
+	}
 	if f.destroyErr != nil {
 		return f.destroyErr
 	}
@@ -77,15 +87,37 @@ func TestReconcileDestroysExpiredWorker(t *testing.T) {
 }
 
 func TestCompletionKeepsStateWhenDeletionFails(t *testing.T) {
-	compute := &fakeCompute{destroyErr: errors.New("temporary provider failure")}
+	worker := provider.Worker{ID: "worker-one", RunnerName: "runner-one"}
+	compute := &fakeCompute{
+		workers:    []provider.Worker{worker},
+		destroyErr: errors.New("temporary provider failure"),
+	}
 	state := newWorkerState()
-	state.add(provider.Worker{ID: "worker-one", RunnerName: "runner-one"}, true)
+	state.add(worker, true)
 	scaler := testScaler(t, state, compute)
 	if err := scaler.HandleJobCompleted(context.Background(), &scaleset.JobCompleted{RunnerName: "runner-one"}); err == nil {
 		t.Fatal("expected deletion failure")
 	}
 	if _, ok := state.get("runner-one"); !ok {
 		t.Fatal("state was forgotten before deletion succeeded")
+	}
+}
+
+func TestCompletionAcceptsAmbiguousDeletionWhenInventoryConfirmsAbsence(t *testing.T) {
+	worker := provider.Worker{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-one"}
+	compute := &fakeCompute{
+		workers:             []provider.Worker{worker},
+		destroyErr:          errors.New("provider timeout after accepting delete"),
+		removeBeforeDestroy: true,
+	}
+	state := newWorkerState()
+	state.add(worker, true)
+	scaler := testScaler(t, state, compute)
+	if err := scaler.HandleJobCompleted(context.Background(), &scaleset.JobCompleted{RunnerName: "runner-one"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state.get("runner-one"); ok {
+		t.Fatal("confirmed deleted worker remained in local state")
 	}
 }
 
