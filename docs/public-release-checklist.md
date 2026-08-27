@@ -20,9 +20,9 @@ Use this checklist before changing repository visibility or publishing a tag.
 - [ ] Configure npm trusted publishing for the `publish-npm` job in
   `.github/workflows/release.yml`.
 - [ ] Confirm the `runneryard` package name is still available on npm.
-- [ ] Tag `v0.1.0` from a fully qualified commit.
+- [ ] Tag `v<version>` from a fully qualified commit.
 - [ ] Verify every release checksum and all four binary targets.
-- [ ] Run `npx runneryard@0.1.0 version` on macOS and Linux from an empty npm
+- [ ] Run `npx runneryard@<version> version` on macOS and Linux from an empty npm
   cache.
 - [ ] Verify the published image contains GitHub CLI, Node, Git, Git LFS, Docker,
   and the pinned Actions runner.
