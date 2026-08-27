@@ -116,7 +116,13 @@ Configure shape and cost through `RUNNER_CPUS`, `RUNNER_MEMORY_MB`,
 `RUNNER_ROOTFS_GB`, `MIN_RUNNERS`, `MAX_RUNNERS`, and
 `RUNNER_MAX_LIFETIME`, `RUNNER_USAGE_BUDGET`, and `RUNNER_BUDGET_WINDOW`.
 The generated controller mounts `runneryard_state` at `/var/lib/runneryard`
-for a fail-closed durable usage ledger.
+for a fail-closed durable usage ledger and private fleet status snapshot. Read
+the latter without exposing a network endpoint:
+
+```sh
+fly ssh console --app acme-ci-controller \
+  --command '/usr/local/bin/runneryard status'
+```
 
 ## Rollback
 

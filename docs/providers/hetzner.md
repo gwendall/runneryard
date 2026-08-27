@@ -143,6 +143,14 @@ docker compose -f .runneryard/hetzner.controller.compose.yml up -d
 docker compose -f .runneryard/hetzner.controller.compose.yml logs -f controller
 ```
 
+Read the private status snapshot through the controller host rather than
+opening an inbound metrics port:
+
+```sh
+docker compose -f .runneryard/hetzner.controller.compose.yml \
+  exec controller /usr/local/bin/runneryard status
+```
+
 The controller host can be a small Hetzner VM, another VPS, or an existing
 isolated Docker host. It needs durable storage and outbound HTTPS to GitHub,
 GHCR, and the Hetzner Cloud API. It never needs inbound access to worker VMs.

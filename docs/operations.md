@@ -46,6 +46,50 @@ unbounded cloud bill. Increase the ceiling from observed job concurrency, not
 PR count. Split workload classes into separate scale sets when they need
 different trust boundaries or machine shapes.
 
+## Fleet status
+
+The controller writes `/var/lib/runneryard/status.json` atomically with mode
+`0600` and refreshes it every 30 seconds. Read it inside the authenticated
+controller boundary:
+
+```sh
+runneryard status
+runneryard status --json
+```
+
+On Fly, no public status service is required:
+
+```sh
+fly ssh console --app acme-ci-controller \
+  --command '/usr/local/bin/runneryard status --json'
+```
+
+On a Docker controller such as Hetzner:
+
+```sh
+docker compose -f .runneryard/hetzner.controller.compose.yml \
+  exec controller /usr/local/bin/runneryard status --json
+```
+
+Healthy interpretation:
+
+- `ready` with a recent `updated_at` means the controller heartbeat is alive.
+- `actual + starting == maximum` is normal under load but means capacity is
+  saturated; compare assigned jobs and assignment latency before raising the
+  cap.
+- provider create latency measures infrastructure boot. Assignment latency
+  measures the separate interval from worker creation to GitHub job start.
+- idle means a created JIT worker has not emitted `JobStarted`; it is not safe
+  to delete opportunistically because assignment may already be in flight.
+- any orphan candidate or stable failure reason makes health `degraded`.
+- budget used is settled compute, reserved is worst-case time held by active
+  workers, and remaining is admission headroom. `usage_budget_exhausted` means
+  new jobs intentionally stay queued.
+
+The schema contains aggregate counters only. It never writes job IDs,
+repository payloads, runner names, JIT configuration, tokens, or secrets. The
+latency aggregates have fixed fields and no user-controlled metric labels.
+
 ## Hard usage budget
 
 `RUNNER_USAGE_BUDGET` is the maximum worker runtime inside the rolling

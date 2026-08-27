@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/actions/scaleset"
@@ -36,6 +37,8 @@ type Config struct {
 	UsageBudget  time.Duration
 	BudgetWindow time.Duration
 	BudgetFile   string
+	StatusFile   string
+	Provider     string
 	Version      string
 	CommitSHA    string
 	Logger       *slog.Logger
@@ -66,6 +69,15 @@ func New(cfg Config, github *scaleset.Client, compute provider.Compute) (*Contro
 	if cfg.Logger == nil {
 		cfg.Logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	}
+	if cfg.StatusFile == "" {
+		cfg.StatusFile = filepath.Join(filepath.Dir(cfg.BudgetFile), "status.json")
+	}
+	if cfg.StatusFile == cfg.BudgetFile {
+		return nil, fmt.Errorf("fleet status and runner usage budget must use different files")
+	}
+	if cfg.Provider == "" {
+		cfg.Provider = "unknown"
+	}
 	return &Controller{config: cfg, github: github, compute: compute}, nil
 }
 
@@ -75,10 +87,17 @@ func (c *Controller) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	reporter, err := newStatusReporter(cfg, budget.snapshot(time.Now()))
+	if err != nil {
+		return err
+	}
+	reporter.start(ctx, budget)
+	defer reporter.close()
 	runnerGroupID := 1
 	if cfg.RunnerGroup != scaleset.DefaultRunnerGroup {
 		group, err := c.github.GetRunnerGroupByName(ctx, cfg.RunnerGroup)
 		if err != nil {
+			reporter.degraded("github_runner_group_failed")
 			return fmt.Errorf("resolve runner group: %w", err)
 		}
 		runnerGroupID = group.ID
@@ -86,6 +105,7 @@ func (c *Controller) Run(ctx context.Context) error {
 
 	scaleSet, err := c.github.GetRunnerScaleSet(ctx, runnerGroupID, cfg.ScaleSetName)
 	if err != nil {
+		reporter.degraded("github_scale_set_failed")
 		return fmt.Errorf("find runner scale set: %w", err)
 	}
 	desired := &scaleset.RunnerScaleSet{
@@ -97,12 +117,14 @@ func (c *Controller) Run(ctx context.Context) error {
 	if scaleSet == nil {
 		scaleSet, err = c.github.CreateRunnerScaleSet(ctx, desired)
 		if err != nil {
+			reporter.degraded("github_scale_set_failed")
 			return fmt.Errorf("create runner scale set: %w", err)
 		}
 		cfg.Logger.Info("created runner scale set", "name", scaleSet.Name, "id", scaleSet.ID)
 	} else {
 		scaleSet, err = c.github.UpdateRunnerScaleSet(ctx, scaleSet.ID, desired)
 		if err != nil {
+			reporter.degraded("github_scale_set_failed")
 			return fmt.Errorf("update runner scale set: %w", err)
 		}
 		cfg.Logger.Info("using existing runner scale set", "name", scaleSet.Name, "id", scaleSet.ID)
@@ -115,8 +137,10 @@ func (c *Controller) Run(ctx context.Context) error {
 	}
 	session, err := c.github.MessageSessionClient(ctx, scaleSet.ID, hostname)
 	if err != nil {
+		reporter.degraded("github_session_failed")
 		return fmt.Errorf("create message session: %w", err)
 	}
+	reporter.githubActivity("session_created")
 
 	scaler := &scaler{
 		state:          newWorkerState(),
@@ -127,6 +151,7 @@ func (c *Controller) Run(ctx context.Context) error {
 		maxWorkers:     cfg.MaxWorkers,
 		maxLifetime:    cfg.MaxLifetime,
 		budget:         budget,
+		reporter:       reporter,
 		logger:         cfg.Logger.WithGroup("scaler"),
 	}
 	return runControllerSession(ctx, session, scaler, cfg, scaleSet.ID)
@@ -137,6 +162,7 @@ func runControllerSession(ctx context.Context, session messageSession, scaler *s
 	if err := scaler.recover(ctx); err != nil {
 		return fmt.Errorf("recover workers: %w", err)
 	}
+	scaler.reporter.recovered()
 
 	queue, err := listener.New(session, listener.Config{
 		ScaleSetID: scaleSetID,
@@ -144,10 +170,12 @@ func runControllerSession(ctx context.Context, session messageSession, scaler *s
 		Logger:     cfg.Logger.WithGroup("listener"),
 	})
 	if err != nil {
+		scaler.reporter.degraded("github_listener_failed")
 		return fmt.Errorf("create scale set listener: %w", err)
 	}
 	cfg.Logger.Info("controller ready", "github", cfg.GitHubURL, "scale_set", cfg.ScaleSetName, "min_workers", cfg.MinWorkers, "max_workers", cfg.MaxWorkers)
 	if err := queue.Run(ctx, scaler); err != nil && !errors.Is(err, context.Canceled) {
+		scaler.reporter.degraded("github_listener_failed")
 		return fmt.Errorf("run scale set listener: %w", err)
 	}
 	return nil

@@ -32,6 +32,20 @@ func (s *workerState) count() int {
 	return len(s.workers)
 }
 
+func (s *workerState) summary() (actual, busy, idle int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	actual = len(s.workers)
+	for _, record := range s.workers {
+		if record.Busy {
+			busy++
+		} else {
+			idle++
+		}
+	}
+	return actual, busy, idle
+}
+
 func (s *workerState) all() map[string]workerRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()
