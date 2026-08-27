@@ -16,6 +16,13 @@ controller and worker apps. The CLI doctor treats any worker-app secret as a
 failure. Every worker process also sets `ignore_app_secrets=true`, so a future
 operator mistake cannot inject worker-app secrets into job code.
 
+On Hetzner Cloud, use a dedicated project and attach a firewall with no inbound
+rules to every worker. The project token stays on the controller. Cloud-init
+receives only the short-lived JIT configuration and deadline, encoded into a
+root-only lease file. Encoding is not encryption. The bootstrap creates the
+runner container, erases the host lease file before starting it, and shuts down
+the VM when the container exits. Never add a permanent credential to user data.
+
 Use a dedicated worker network. Do not peer it with production VPCs, databases,
 internal dashboards, metadata services, or the controller. Egress to GitHub,
 package registries, and explicitly required test services should be the only
@@ -38,6 +45,10 @@ An adapter credential should be limited to one worker project, app, account, or
 resource group. The controller tags every worker with its own controller ID and
 ignores foreign inventory. `Destroy` is idempotent and only receives worker IDs
 returned through the owned inventory path.
+
+Hetzner Cloud firewalls protect public networking only. Do not attach workers
+to a private network that can reach production. A separate Cloud project is the
+safest default boundary.
 
 ## Supply chain
 

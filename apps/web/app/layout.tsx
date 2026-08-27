@@ -8,13 +8,20 @@ const mono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 export const metadata: Metadata = {
   metadataBase: new URL("https://runneryard.com"),
   title: "RunnerYard | GitHub Actions runners on your cloud",
-  description: "Run isolated, ephemeral GitHub Actions workers on infrastructure you control, with explicit security and runtime limits.",
+  description: "Run one disposable GitHub Actions worker per job on infrastructure you control. No Kubernetes or hosted control plane.",
+  openGraph: {
+    title: "RunnerYard | GitHub Actions runners on your cloud",
+    description: "One clean worker per job, on infrastructure you control.",
+    url: "https://runneryard.com",
+    siteName: "RunnerYard",
+    type: "website",
+  },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body className={`${geist.variable} ${mono.variable} font-[family-name:var(--font-geist)] antialiased`}>
+      <body className={`${geist.variable} ${mono.variable}`}>
         {children}
       </body>
     </html>

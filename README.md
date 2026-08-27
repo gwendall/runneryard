@@ -7,7 +7,8 @@ then destroy it. Zero idle workers by default, no Kubernetes required.
 
 `runneryard` is a small Go controller built on GitHub's official
 [`actions/scaleset`](https://github.com/actions/scaleset) client. Its compute
-interface is provider-neutral; the first bundled adapter targets Fly Machines.
+interface is provider-neutral. Fly Machines is available and Hetzner Cloud is
+included as a preview adapter.
 The controller ships as a standalone binary, a container image, and a
 checksum-verifying npm launcher.
 
@@ -23,7 +24,8 @@ The public release supports this setup flow:
 npx runneryard init --github https://github.com/acme/widgets
 ```
 
-This creates three reviewable files and never uploads a credential:
+This creates three reviewable files for the default Fly provider and never
+uploads a credential:
 
 - `.runneryard/controller.env.example`
 - `.runneryard/fly.controller.toml`
@@ -42,6 +44,17 @@ Initialize the durable usage ledger once, deploy the controller, and trigger
 the generated canary. A successful canary has three receipts: GitHub reports a
 green job, the controller records the complete lifecycle, and provider
 inventory returns to zero workers.
+
+For Hetzner Cloud, generate its provider-specific scaffold and follow the
+[Hetzner guide](docs/providers/hetzner.md):
+
+```sh
+npx runneryard init --provider hetzner \
+  --github https://github.com/acme/widgets
+```
+
+Hetzner support is preview quality until it has completed a public release
+canary in a real Hetzner project. Keep the first workload low-risk and private.
 
 Read the complete [quickstart](docs/quickstart.md) before routing production CI.
 
