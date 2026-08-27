@@ -44,6 +44,9 @@ ENV HOME=/home/runner
 ENV RUNNER_TOOL_CACHE=/opt/hostedtoolcache
 ENV ImageOS=ubuntu24
 RUN set -eux; \
+  expected_node_version="v${NODE_VERSION}"; \
+  actual_node_version="$(/usr/local/bin/node --version)"; \
+  test "${actual_node_version}" = "${expected_node_version}"; \
   case "${TARGETARCH}" in \
     amd64) toolcache_arch=x64 ;; \
     arm64) toolcache_arch=arm64 ;; \

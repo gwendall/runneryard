@@ -35,5 +35,5 @@ jobs:
       - run: go vet ./...
       - run: pnpm check
       - run: pnpm build
-      - run: bash -n controller-entrypoint runner-entrypoint
+      - run: bash -n controller-entrypoint runner-entrypoint scripts/verify-runtime-toolcache.sh
       - run: git diff --check

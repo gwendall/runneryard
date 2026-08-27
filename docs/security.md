@@ -95,7 +95,7 @@ by digest. The bootstrap runtime keeps shell-based planners compatible and
 publishes that same pinned Node version through the GitHub runner toolcache on
 both x64 and arm64. Workflows should still use `actions/setup-node`: the pinned
 version resolves locally, while any other requested version follows the action's
-normal verified download path.
+normal managed download path.
 Release binaries ship with SHA-256 checksums; the npm launcher verifies them
 before execution. GitHub Actions dependencies are pinned to commit SHAs. Public
 npm publishing is configured for OIDC trusted publishing and provenance,
