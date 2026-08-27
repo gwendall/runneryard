@@ -97,6 +97,33 @@ func TestReleaseRunsPinnedSetupNodeToolcacheCanaryOffline(t *testing.T) {
 	}
 }
 
+func TestReleasePublishesImmutableArtifactsFailClosed(t *testing.T) {
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(workflow)
+	for _, required := range []string{
+		`gh api --paginate`,
+		`Organization) package_owner_path="orgs/${GITHUB_REPOSITORY_OWNER}"`,
+		`grep -Fxq "$version" "$existing_tags"`,
+		`Refusing to overwrite immutable GHCR tag`,
+		`draft: true`,
+		`gh release edit "$VERSION" --draft=false --verify-tag`,
+		`--jq .immutable`,
+	} {
+		if !strings.Contains(contents, required) {
+			t.Fatalf("release workflow does not fail closed on immutable artifacts: missing %q", required)
+		}
+	}
+
+	draft := strings.Index(contents, "draft: true")
+	publish := strings.Index(contents, `gh release edit "$VERSION" --draft=false --verify-tag`)
+	if draft == -1 || publish == -1 || draft >= publish {
+		t.Fatal("release workflow must attach every asset to a draft before publishing it")
+	}
+}
+
 func TestDockerContextIncludesEveryGoPackage(t *testing.T) {
 	dockerignore, err := os.ReadFile(filepath.Join("..", "..", ".dockerignore"))
 	if err != nil {

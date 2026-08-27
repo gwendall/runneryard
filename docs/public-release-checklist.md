@@ -4,6 +4,7 @@ Use this checklist before changing repository visibility or publishing a tag.
 
 ## Repository
 
+- [ ] Confirm GitHub immutable releases are enabled before creating a tag.
 - [ ] Review the complete Git history, not only the current tree, for secrets,
   private deployment names, internal repository links, personal data, and large
   generated files. Rewrite or replace the history before publication if needed.

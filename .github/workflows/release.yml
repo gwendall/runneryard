@@ -56,11 +56,27 @@ jobs:
       - name: Publish versioned controller and worker image
         env:
           GHCR_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           version="${VERSION#v}"
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/runneryard"
+          owner_type="$(gh api "/users/${GITHUB_REPOSITORY_OWNER}" --jq .type)"
+          case "$owner_type" in
+            User) package_owner_path="users/${GITHUB_REPOSITORY_OWNER}" ;;
+            Organization) package_owner_path="orgs/${GITHUB_REPOSITORY_OWNER}" ;;
+            *) echo "::error::Unsupported GitHub owner type: $owner_type"; exit 1 ;;
+          esac
+          existing_tags="$(mktemp)"
+          trap 'rm -f "$existing_tags"' EXIT
+          gh api --paginate \
+            "/${package_owner_path}/packages/container/runneryard/versions?per_page=100" \
+            --jq '.[] | .metadata.container.tags[]?' >"$existing_tags"
+          if grep -Fxq "$version" "$existing_tags"; then
+            echo "::error::Refusing to overwrite immutable GHCR tag $image:$version"
+            exit 1
+          fi
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           docker build --platform linux/amd64 \
             --build-arg VERSION="$version" \
@@ -69,12 +85,21 @@ jobs:
           bash scripts/verify-runtime-toolcache.sh \
             "$image:$version" .canary/setup-node 22.22.3
           docker push "$image:$version"
-      - name: Publish immutable GitHub release
+      - name: Create immutable GitHub release draft with every asset
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
+          draft: true
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: dist/*
+      - name: Publish and verify the immutable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release edit "$VERSION" --draft=false --verify-tag
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" --jq .immutable)" = true
 
   publish-npm:
     needs: release
