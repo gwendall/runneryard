@@ -85,11 +85,15 @@ func TestReleaseRunsPinnedSetupNodeToolcacheCanaryOffline(t *testing.T) {
 	contents = string(canary)
 	for _, required := range []string{
 		"--network none",
+		`workflow_commands_token="runneryard-$(openssl rand -hex 32)"`,
+		`echo "::stop-commands::$workflow_commands_token"`,
 		`$setup_node_directory:/action:ro`,
 		`x86_64) toolcache_arch=x64`,
 		`aarch64|arm64) toolcache_arch=arm64`,
 		`node /action/dist/setup/index.js`,
 		`grep -Fx "$expected_path" "$GITHUB_PATH"`,
+		`echo "::$workflow_commands_token::"`,
+		`exit "$canary_status"`,
 	} {
 		if !strings.Contains(contents, required) {
 			t.Fatalf("runtime toolcache canary is incomplete: missing %q", required)
