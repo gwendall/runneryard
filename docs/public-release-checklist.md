@@ -31,7 +31,7 @@ Use this checklist before changing repository visibility or publishing a tag.
 
 - [ ] Follow `docs/quickstart.md` from a fresh GitHub repository and a fresh
   provider account.
-- [ ] Confirm `init` creates only the three documented files.
+- [ ] Confirm each provider's `init` command creates only the files documented in its guide.
 - [ ] Confirm Fly `doctor` rejects a shared controller/worker app and any
   worker-app secret.
 - [ ] Confirm Hetzner `doctor` rejects missing or inbound-permitting firewalls.

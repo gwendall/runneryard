@@ -40,19 +40,23 @@ type Config struct {
 	FirewallID   int64
 	NetworkID    int64
 	HTTPClient   *http.Client
+	// ActionPollInterval controls how often asynchronous Hetzner actions are
+	// checked. It is primarily configurable so tests do not have to sleep.
+	ActionPollInterval time.Duration
 }
 
 type Adapter struct {
-	baseURL      string
-	token        string
-	location     string
-	serverType   string
-	serverImage  string
-	runnerImage  string
-	controllerID string
-	firewallID   int64
-	networkID    int64
-	httpClient   *http.Client
+	baseURL            string
+	token              string
+	location           string
+	serverType         string
+	serverImage        string
+	runnerImage        string
+	controllerID       string
+	firewallID         int64
+	networkID          int64
+	httpClient         *http.Client
+	actionPollInterval time.Duration
 }
 
 func New(cfg Config) (*Adapter, error) {
@@ -74,17 +78,21 @@ func New(cfg Config) (*Adapter, error) {
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: defaultHTTPTimeout}
 	}
+	if cfg.ActionPollInterval <= 0 {
+		cfg.ActionPollInterval = 500 * time.Millisecond
+	}
 	return &Adapter{
-		baseURL:      strings.TrimRight(cfg.APIBaseURL, "/"),
-		token:        cfg.APIToken,
-		location:     cfg.Location,
-		serverType:   cfg.ServerType,
-		serverImage:  cfg.ServerImage,
-		runnerImage:  cfg.RunnerImage,
-		controllerID: cfg.ControllerID,
-		firewallID:   cfg.FirewallID,
-		networkID:    cfg.NetworkID,
-		httpClient:   cfg.HTTPClient,
+		baseURL:            strings.TrimRight(cfg.APIBaseURL, "/"),
+		token:              cfg.APIToken,
+		location:           cfg.Location,
+		serverType:         cfg.ServerType,
+		serverImage:        cfg.ServerImage,
+		runnerImage:        cfg.RunnerImage,
+		controllerID:       cfg.ControllerID,
+		firewallID:         cfg.FirewallID,
+		networkID:          cfg.NetworkID,
+		httpClient:         cfg.HTTPClient,
+		actionPollInterval: cfg.ActionPollInterval,
 	}, nil
 }
 
@@ -94,6 +102,23 @@ type server struct {
 	Status    string            `json:"status"`
 	CreatedAt time.Time         `json:"created"`
 	Labels    map[string]string `json:"labels"`
+	PublicNet struct {
+		Firewalls []serverFirewall `json:"firewalls"`
+	} `json:"public_net"`
+}
+
+type serverFirewall struct {
+	ID     int64  `json:"id"`
+	Status string `json:"status"`
+}
+
+type action struct {
+	ID     int64  `json:"id"`
+	Status string `json:"status"`
+	Error  *struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
 }
 
 type createServerRequest struct {
@@ -119,7 +144,17 @@ type createServerPublicNet struct {
 }
 
 type createServerResponse struct {
+	Server      server   `json:"server"`
+	Action      action   `json:"action"`
+	NextActions []action `json:"next_actions"`
+}
+
+type serverResponse struct {
 	Server server `json:"server"`
+}
+
+type actionResponse struct {
+	Action action `json:"action"`
 }
 
 type serverListResponse struct {
@@ -166,7 +201,22 @@ func (a *Adapter) Launch(ctx context.Context, lease provider.Lease) (provider.Wo
 	if created.Server.ID == 0 {
 		return provider.Worker{}, fmt.Errorf("create Hetzner worker %s: response did not include a server id", lease.RunnerName)
 	}
-	return toWorker(created.Server), nil
+	worker := toWorker(created.Server)
+	actions := append([]action{created.Action}, created.NextActions...)
+	if err := a.waitActions(ctx, actions); err != nil {
+		return provider.Worker{}, &provider.PartialLaunchError{Worker: worker, Err: fmt.Errorf("qualify Hetzner worker: %w", err)}
+	}
+	var qualified serverResponse
+	if err := a.doJSON(ctx, http.MethodGet, a.baseURL+"/servers/"+strconv.FormatInt(created.Server.ID, 10), nil, &qualified); err != nil {
+		return provider.Worker{}, &provider.PartialLaunchError{Worker: worker, Err: fmt.Errorf("verify Hetzner worker firewall: %w", err)}
+	}
+	if !firewallApplied(qualified.Server, a.firewallID) {
+		return provider.Worker{}, &provider.PartialLaunchError{
+			Worker: worker,
+			Err:    fmt.Errorf("required firewall %d is not applied", a.firewallID),
+		}
+	}
+	return toWorker(qualified.Server), nil
 }
 
 func (a *Adapter) Inventory(ctx context.Context) ([]provider.Worker, error) {
@@ -224,7 +274,71 @@ func (a *Adapter) Destroy(ctx context.Context, workerID string) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return responseError(resp)
 	}
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	var deleted actionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&deleted); err != nil {
+		return fmt.Errorf("decode Hetzner delete action: %w", err)
+	}
+	if err := a.waitActions(ctx, []action{deleted.Action}); err != nil {
+		return fmt.Errorf("delete Hetzner worker %s: %w", workerID, err)
+	}
 	return nil
+}
+
+func firewallApplied(item server, firewallID int64) bool {
+	for _, firewall := range item.PublicNet.Firewalls {
+		if firewall.ID == firewallID && firewall.Status == "applied" {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Adapter) waitActions(ctx context.Context, actions []action) error {
+	for _, current := range actions {
+		if current.ID < 1 {
+			return fmt.Errorf("Hetzner response did not include an action id")
+		}
+		if err := a.waitAction(ctx, current); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *Adapter) waitAction(ctx context.Context, current action) error {
+	for {
+		switch current.Status {
+		case "success":
+			return nil
+		case "error":
+			if current.Error != nil {
+				return fmt.Errorf("Hetzner action %d failed (%s): %s", current.ID, current.Error.Code, current.Error.Message)
+			}
+			return fmt.Errorf("Hetzner action %d failed", current.ID)
+		case "running", "":
+		default:
+			return fmt.Errorf("Hetzner action %d has unknown status %q", current.ID, current.Status)
+		}
+
+		timer := time.NewTimer(a.actionPollInterval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+
+		var response actionResponse
+		if err := a.doJSON(ctx, http.MethodGet, a.baseURL+"/actions/"+strconv.FormatInt(current.ID, 10), nil, &response); err != nil {
+			return fmt.Errorf("poll Hetzner action %d: %w", current.ID, err)
+		}
+		current = response.Action
+	}
 }
 
 func toWorker(item server) provider.Worker {
