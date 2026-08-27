@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -46,6 +47,7 @@ type appConfig struct {
 	RunnerUsageBudget  time.Duration
 	RunnerBudgetWindow time.Duration
 	RunnerBudgetFile   string
+	RunnerStatusFile   string
 	LogLevel           slog.Level
 }
 
@@ -70,6 +72,7 @@ func loadConfig() (appConfig, error) {
 		RunnerImage:        envOr("RUNNER_IMAGE", os.Getenv("FLY_IMAGE_REF")),
 		RunnerCPUKind:      envOr("RUNNER_CPU_KIND", "shared"),
 		RunnerBudgetFile:   strings.TrimSpace(os.Getenv("RUNNER_BUDGET_FILE")),
+		RunnerStatusFile:   strings.TrimSpace(os.Getenv("RUNNER_STATUS_FILE")),
 		LogLevel:           parseLogLevel(envOr("LOG_LEVEL", "info")),
 	}
 
@@ -103,6 +106,9 @@ func loadConfig() (appConfig, error) {
 	}
 	if cfg.RunnerBudgetWindow, err = envDuration("RUNNER_BUDGET_WINDOW", 30*24*time.Hour); err != nil {
 		return appConfig{}, err
+	}
+	if cfg.RunnerStatusFile == "" && cfg.RunnerBudgetFile != "" {
+		cfg.RunnerStatusFile = filepath.Join(filepath.Dir(cfg.RunnerBudgetFile), "status.json")
 	}
 
 	installationID, err := envInt64("GITHUB_APP_INSTALLATION_ID", 0)
@@ -177,6 +183,9 @@ func (c appConfig) validate() error {
 	if c.RunnerBudgetFile == "" {
 		return fmt.Errorf("RUNNER_BUDGET_FILE must point to durable controller storage")
 	}
+	if c.RunnerStatusFile == "" || c.RunnerStatusFile == c.RunnerBudgetFile {
+		return fmt.Errorf("RUNNER_STATUS_FILE must be set and differ from RUNNER_BUDGET_FILE")
+	}
 	return nil
 }
 
@@ -240,6 +249,8 @@ func (c appConfig) controllerConfig(logger *slog.Logger) controller.Config {
 		UsageBudget:  c.RunnerUsageBudget,
 		BudgetWindow: c.RunnerBudgetWindow,
 		BudgetFile:   c.RunnerBudgetFile,
+		StatusFile:   c.RunnerStatusFile,
+		Provider:     c.ComputeProvider,
 		Version:      version,
 		CommitSHA:    commitSHA,
 		Logger:       logger,

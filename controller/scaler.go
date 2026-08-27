@@ -22,14 +22,16 @@ type scaler struct {
 	maxWorkers     int
 	maxLifetime    time.Duration
 	budget         *usageBudget
+	reporter       *statusReporter
 	logger         *slog.Logger
 }
 
 func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, assignedJobs int) (int, error) {
+	target := min(s.maxWorkers, s.minWorkers+assignedJobs)
+	s.reporter.desired(assignedJobs, target)
 	if err := s.reconcile(ctx); err != nil {
 		return s.state.count(), err
 	}
-	target := min(s.maxWorkers, s.minWorkers+assignedJobs)
 	current := s.state.count()
 	if target == current {
 		return current, nil
@@ -61,9 +63,11 @@ func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, assignedJobs int)
 func (s *scaler) reconcile(ctx context.Context) error {
 	workers, err := s.compute.Inventory(ctx)
 	if err != nil {
+		s.reporter.degraded("provider_inventory_failed")
 		return fmt.Errorf("inventory compute workers: %w", err)
 	}
 	local := s.state.all()
+	s.reporter.orphans(orphanCandidateCount(workers, local, s.maxLifetime, time.Now()))
 	localByWorker := make(map[string]struct{}, len(local))
 	for _, record := range local {
 		localByWorker[record.Worker.ID] = struct{}{}
@@ -72,9 +76,11 @@ func (s *scaler) reconcile(ctx context.Context) error {
 	for _, worker := range workers {
 		if !worker.CreatedAt.IsZero() && time.Since(worker.CreatedAt) > s.maxLifetime {
 			if err := s.destroyWorker(ctx, worker); err != nil {
+				s.reporter.degraded("provider_delete_failed")
 				return fmt.Errorf("delete worker %s after maximum lifetime: %w", worker.RunnerName, err)
 			}
 			if err := s.budget.settle(worker.LeaseID, time.Now()); err != nil {
+				s.reporter.degraded("usage_budget_write_failed")
 				return fmt.Errorf("settle runner usage budget for %s: %w", worker.RunnerName, err)
 			}
 			s.state.remove(worker.RunnerName)
@@ -86,6 +92,7 @@ func (s *scaler) reconcile(ctx context.Context) error {
 			continue
 		}
 		if err := s.budget.adopt(worker.LeaseID, worker.CreatedAt); err != nil {
+			s.reporter.degraded("usage_budget_write_failed")
 			return fmt.Errorf("adopt runner usage budget for %s: %w", worker.RunnerName, err)
 		}
 		s.state.add(worker, true)
@@ -97,35 +104,51 @@ func (s *scaler) reconcile(ctx context.Context) error {
 		}
 		s.state.remove(name)
 		if err := s.budget.settle(record.Worker.LeaseID, time.Now()); err != nil {
+			s.reporter.degraded("usage_budget_write_failed")
 			return fmt.Errorf("settle runner usage budget for disappeared worker %s: %w", name, err)
 		}
 		s.logger.Warn("worker disappeared before completion", "runner", name, "worker_id", record.Worker.ID)
 	}
+	s.reporter.orphans(0)
+	s.reportState()
+	s.reporter.budget(s.budget.snapshot(time.Now()))
+	s.reporter.recovered()
 	return nil
 }
 
 func (s *scaler) HandleJobStarted(_ context.Context, job *scaleset.JobStarted) error {
+	s.reporter.githubActivity("job_started")
 	if !s.state.markBusy(job.RunnerName) {
 		s.logger.Warn("job started on worker not present in local state", "runner", job.RunnerName, "job_id", job.JobID)
 		return nil
 	}
+	if record, ok := s.state.get(job.RunnerName); ok && !record.Worker.CreatedAt.IsZero() {
+		s.reporter.latency(false, time.Since(record.Worker.CreatedAt), false)
+	}
+	s.reportState()
 	s.logger.Info("job started", "runner", job.RunnerName, "job_id", job.JobID, "repository", job.RepositoryName)
 	return nil
 }
 
 func (s *scaler) HandleJobCompleted(ctx context.Context, job *scaleset.JobCompleted) error {
+	s.reporter.githubActivity("job_completed")
 	record, ok := s.state.get(job.RunnerName)
 	if !ok {
 		s.logger.Warn("job completed on worker not present in local state", "runner", job.RunnerName, "job_id", job.JobID)
 		return nil
 	}
 	if err := s.destroyWorker(ctx, record.Worker); err != nil {
+		s.reporter.degraded("provider_delete_failed")
 		return fmt.Errorf("delete completed worker %s: %w", job.RunnerName, err)
 	}
 	if err := s.budget.settle(record.Worker.LeaseID, time.Now()); err != nil {
+		s.reporter.degraded("usage_budget_write_failed")
 		return fmt.Errorf("settle runner usage budget for %s: %w", job.RunnerName, err)
 	}
 	s.state.remove(job.RunnerName)
+	s.reportState()
+	s.reporter.budget(s.budget.snapshot(time.Now()))
+	s.reporter.recovered()
 	s.logger.Info("job completed", "runner", job.RunnerName, "job_id", job.JobID, "result", job.Result)
 	return nil
 }
@@ -135,8 +158,10 @@ func (s *scaler) startWorker(ctx context.Context) (bool, error) {
 	name := "runner-" + leaseID[:8]
 	allowed, next, err := s.budget.reserve(leaseID, time.Now(), s.maxLifetime)
 	if err != nil {
+		s.reporter.degraded("usage_budget_write_failed")
 		return false, fmt.Errorf("reserve runner usage budget: %w", err)
 	}
+	s.reporter.budget(s.budget.snapshot(time.Now()))
 	if !allowed {
 		s.logger.Warn("runner usage budget exhausted; leaving jobs queued", "next_release", next, "budget_window", s.budget.window, "budget", s.budget.limit)
 		return false, nil
@@ -147,29 +172,40 @@ func (s *scaler) startWorker(ctx context.Context) (bool, error) {
 	}, s.scaleSetID)
 	if err != nil {
 		if budgetErr := s.budget.release(leaseID); budgetErr != nil {
+			s.reporter.degraded("usage_budget_write_failed")
 			return false, errors.Join(fmt.Errorf("generate JIT config: %w", err), fmt.Errorf("release unused runner usage reservation: %w", budgetErr))
 		}
+		s.reporter.budget(s.budget.snapshot(time.Now()))
 		return false, fmt.Errorf("generate JIT config: %w", err)
 	}
+	s.reporter.starting(1)
+	launchStarted := time.Now()
 	worker, err := s.compute.Launch(ctx, provider.Lease{
 		ID:         leaseID,
 		RunnerName: name,
 		JITConfig:  jit.EncodedJITConfig,
 		Deadline:   time.Now().Add(s.maxLifetime - 30*time.Second),
 	})
+	s.reporter.starting(-1)
+	s.reporter.latency(true, time.Since(launchStarted), err != nil)
 	if err != nil {
+		s.reporter.degraded("provider_launch_failed")
 		cleanupErr := s.cleanupAmbiguousLaunch(context.WithoutCancel(ctx), leaseID, err)
 		if cleanupErr != nil {
 			return false, cleanupErr
 		}
 		if budgetErr := s.budget.forfeit(leaseID, time.Now()); budgetErr != nil {
+			s.reporter.degraded("usage_budget_write_failed")
 			return false, errors.Join(err, fmt.Errorf("record failed launch against runner usage budget: %w", budgetErr))
 		}
+		s.reporter.budget(s.budget.snapshot(time.Now()))
 		return false, err
 	}
 	if err := s.budget.adopt(leaseID, worker.CreatedAt); err != nil {
+		s.reporter.degraded("usage_budget_write_failed")
 		cleanupErr := s.destroyWorker(context.WithoutCancel(ctx), worker)
 		budgetErr := s.budget.forfeit(leaseID, time.Now())
+		s.reporter.budget(s.budget.snapshot(time.Now()))
 		return false, errors.Join(
 			fmt.Errorf("confirm launched worker in runner usage budget: %w", err),
 			cleanupErr,
@@ -177,6 +213,9 @@ func (s *scaler) startWorker(ctx context.Context) (bool, error) {
 		)
 	}
 	s.state.add(worker, false)
+	s.reportState()
+	s.reporter.budget(s.budget.snapshot(time.Now()))
+	s.reporter.recovered()
 	s.logger.Info("worker created", "runner", name, "worker_id", worker.ID)
 	return true, nil
 }
@@ -206,22 +245,29 @@ func (s *scaler) cleanupAmbiguousLaunch(ctx context.Context, leaseID string, lau
 func (s *scaler) recover(ctx context.Context) error {
 	workers, err := s.compute.Inventory(ctx)
 	if err != nil {
+		s.reporter.degraded("provider_inventory_failed")
 		return err
 	}
+	s.reporter.orphans(len(workers))
 	activeLeases := make(map[string]struct{}, len(workers))
 	for _, worker := range workers {
 		if err := s.budget.adopt(worker.LeaseID, worker.CreatedAt); err != nil {
+			s.reporter.degraded("usage_budget_write_failed")
 			return err
 		}
 		activeLeases[worker.LeaseID] = struct{}{}
 		s.state.add(worker, true)
 	}
 	if err := s.budget.reconcile(activeLeases, time.Now()); err != nil {
+		s.reporter.degraded("usage_budget_write_failed")
 		return fmt.Errorf("reconcile runner usage budget: %w", err)
 	}
 	if len(workers) > 0 {
 		s.logger.Info("recovered existing workers", "count", len(workers))
 	}
+	s.reporter.orphans(0)
+	s.reportState()
+	s.reporter.budget(s.budget.snapshot(time.Now()))
 	return nil
 }
 
@@ -257,6 +303,28 @@ func (s *scaler) destroyWorker(ctx context.Context, worker provider.Worker) erro
 	}
 	s.logger.Warn("provider reported a deletion error after worker disappeared", "runner", worker.RunnerName, "worker_id", worker.ID, "error", deleteErr)
 	return nil
+}
+
+func (s *scaler) reportState() {
+	actual, busy, idle := s.state.summary()
+	s.reporter.workers(actual, busy, idle)
+}
+
+func orphanCandidateCount(workers []provider.Worker, local map[string]workerRecord, maximumLifetime time.Duration, now time.Time) int {
+	known := make(map[string]struct{}, len(local))
+	for _, record := range local {
+		known[record.Worker.ID] = struct{}{}
+	}
+	candidates := 0
+	for _, worker := range workers {
+		_, present := known[worker.ID]
+		expired := !worker.CreatedAt.IsZero() && now.Sub(worker.CreatedAt) > maximumLifetime
+		invalid := worker.ID == "" || worker.LeaseID == "" || worker.RunnerName == "" || worker.CreatedAt.IsZero()
+		if !present || expired || invalid {
+			candidates++
+		}
+	}
+	return candidates
 }
 
 var _ listener.Scaler = (*scaler)(nil)

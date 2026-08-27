@@ -41,6 +41,8 @@ func run(args []string) error {
 		return runAuth(args)
 	case "route":
 		return runRoute(args)
+	case "status":
+		return runStatus(args)
 	case "budget":
 		return runBudget(args)
 	case "version", "--version", "-v":
@@ -89,6 +91,7 @@ Usage:
   runneryard doctor [flags]   Check credentials, isolation, and tooling
   runneryard auth github      Create or import a dedicated GitHub App
   runneryard route            Inspect or switch Linux runner routing
+  runneryard status           Read the controller fleet snapshot
   runneryard budget init      Initialize the durable usage ledger once
   runneryard serve            Run the fleet controller (default)
   runneryard version          Print version information

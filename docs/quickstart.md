@@ -122,6 +122,11 @@ three receipts:
    one runner.
 3. Provider inventory contains no managed worker after completion.
 
+Inspect the controller receipt before routing broader jobs. Use
+`runneryard status --json` inside the controller, `fly ssh console --command`
+for Fly, or `docker compose exec controller` for Hetzner. It separates provider
+create time, GitHub assignment time, capacity, orphan candidates, and budget.
+
 ## 6. Migrate gradually
 
 Route one low-risk Linux job first. Keep hosted runners as a repository-variable

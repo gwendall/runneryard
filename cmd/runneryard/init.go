@@ -187,6 +187,7 @@ RUNNER_MAX_LIFETIME=2h
 RUNNER_USAGE_BUDGET=166h40m
 RUNNER_BUDGET_WINDOW=720h
 RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json
+RUNNER_STATUS_FILE=/var/lib/runneryard/status.json
 
 # Set only on the controller. The GitHub App is installed separately with
 # runneryard auth github create --controller-app %s
@@ -213,6 +214,7 @@ RUNNER_MAX_LIFETIME=2h
 RUNNER_USAGE_BUDGET=166h40m
 RUNNER_BUDGET_WINDOW=720h
 RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json
+RUNNER_STATUS_FILE=/var/lib/runneryard/status.json
 
 # Set only on the controller. GitHub App values are supplied by the generated
 # github-app.env and github-app.pem files.
@@ -257,6 +259,7 @@ primary_region = %q
   RUNNER_USAGE_BUDGET = "166h40m"
   RUNNER_BUDGET_WINDOW = "720h"
   RUNNER_BUDGET_FILE = "/var/lib/runneryard/budget.json"
+  RUNNER_STATUS_FILE = "/var/lib/runneryard/status.json"
 
 [[mounts]]
   source = "runneryard_state"

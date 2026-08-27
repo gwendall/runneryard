@@ -21,7 +21,7 @@ func TestRunInitCreatesSafeScaffold(t *testing.T) {
 		t.Fatal(err)
 	}
 	contents := string(env)
-	for _, expected := range []string{"GITHUB_CONFIG_URL=https://github.com/acme/widgets", "FLY_APP_NAME=acme-ci-controller", "RUNNER_FLY_APP=acme-ci-runners", "MAX_RUNNERS=3", "RUNNER_IMAGE=ghcr.io/gwendall/runneryard:9.8.7", "RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json"} {
+	for _, expected := range []string{"GITHUB_CONFIG_URL=https://github.com/acme/widgets", "FLY_APP_NAME=acme-ci-controller", "RUNNER_FLY_APP=acme-ci-runners", "MAX_RUNNERS=3", "RUNNER_IMAGE=ghcr.io/gwendall/runneryard:9.8.7", "RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json", "RUNNER_STATUS_FILE=/var/lib/runneryard/status.json"} {
 		if !strings.Contains(contents, expected) {
 			t.Fatalf("generated env missing %q", expected)
 		}
@@ -103,6 +103,7 @@ func TestRunInitCreatesHetznerScaffold(t *testing.T) {
 		"RUNNER_HETZNER_IMAGE=docker-ce",
 		"RUNNER_HETZNER_FIREWALL_ID=",
 		"HCLOUD_TOKEN=",
+		"RUNNER_STATUS_FILE=/var/lib/runneryard/status.json",
 		"RUNNER_IMAGE=ghcr.io/gwendall/runneryard:9.8.7",
 	} {
 		if !strings.Contains(contents, expected) {

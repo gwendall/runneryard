@@ -138,6 +138,10 @@ caches it, and forwards arguments and process signals.
 between a qualified scale-set label and `ubuntu-latest`. It uses the operator's
 existing `gh` login; no GitHub token is copied into RunnerYard.
 
+`runneryard status [--json]` reads a private, atomic controller snapshot with
+capacity, two distinct latency measures, orphan candidates, and budget. It is
+accessed through provider SSH; RunnerYard opens no monitoring port.
+
 ## Development
 
 Requirements: Go 1.25+, Node 24+, pnpm 10, and Docker for image tests.

@@ -306,6 +306,35 @@ func (b *usageBudget) usedSeconds() int64 {
 	return total
 }
 
+func (b *usageBudget) snapshot(now time.Time) BudgetStatus {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	cutoff := now.Add(-b.window)
+	var used, reserved int64
+	for _, entry := range b.entries {
+		if !entry.Active && entry.ChargedAt.Before(cutoff) {
+			continue
+		}
+		if entry.Active {
+			reserved += entry.Seconds
+		} else {
+			used += entry.Seconds
+		}
+	}
+	limit := durationSeconds(b.limit)
+	remaining := max(int64(0), limit-used-reserved)
+	status := BudgetStatus{
+		LimitSeconds: limit, UsedSeconds: used, ReservedSeconds: reserved,
+		RemainingSeconds: remaining, WindowSeconds: durationSeconds(b.window),
+	}
+	if remaining < durationSeconds(b.reservation) {
+		status.RefusalReason = "usage_budget_exhausted"
+		status.NextAvailableAt = b.nextAvailable(now).UTC()
+	}
+	return status
+}
+
 func (b *usageBudget) validate() error {
 	seen := make(map[string]struct{}, len(b.entries))
 	var total int64
