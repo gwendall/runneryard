@@ -222,10 +222,11 @@ func Bootstrap(ctx context.Context, options Options) (Result, error) {
 	fmt.Fprintf(options.Output, "RunnerYard will create a private GitHub App owned by %s.\n", options.Target.Owner)
 	fmt.Fprintln(options.Output, permissionExplanation(options.Target))
 	fmt.Fprintln(options.Output, "The app subscribes to no webhooks and RunnerYard receives no credential.")
-	if options.NoBrowser {
-		fmt.Fprintf(options.Output, "Open this local URL to continue: %s\n", startURL)
-	} else if err := options.Browser.Open(startURL); err != nil {
-		return Result{}, fmt.Errorf("open browser: %w; rerun with --no-browser", err)
+	fmt.Fprintf(options.Output, "Local setup URL (safe fallback if the browser opens elsewhere): %s\n", startURL)
+	if !options.NoBrowser {
+		if err := options.Browser.Open(startURL); err != nil {
+			return Result{}, fmt.Errorf("open browser: %w; rerun with --no-browser", err)
+		}
 	}
 
 	code, err := waitValue(setupCtx, callbackCodes, serveDone, "GitHub App creation")
@@ -242,10 +243,11 @@ func Bootstrap(ctx context.Context, options Options) (Result, error) {
 		return Result{}, err
 	}
 	fmt.Fprintln(options.Output, "GitHub App created. Approve its installation only for the requested target.")
-	if options.NoBrowser {
-		fmt.Fprintf(options.Output, "Open this GitHub URL to install it: %s\n", installURL)
-	} else if err := options.Browser.Open(installURL); err != nil {
-		return Result{}, fmt.Errorf("open installation page: %w; rerun with --no-browser", err)
+	fmt.Fprintf(options.Output, "GitHub installation URL (safe fallback if the browser opens elsewhere): %s\n", installURL)
+	if !options.NoBrowser {
+		if err := options.Browser.Open(installURL); err != nil {
+			return Result{}, fmt.Errorf("open installation page: %w; rerun with --no-browser", err)
+		}
 	}
 
 	installationID, err := api.WaitForInstallation(setupCtx, credentials, options.Target, 2*time.Second)

@@ -140,7 +140,9 @@ func TestBootstrapCreatesVerifiesAndStoresWithoutPrintingASecret(t *testing.T) {
 	}))
 	defer apiServer.Close()
 
+	var openedURLs []string
 	browser := browserFunc(func(openURL string) error {
+		openedURLs = append(openedURLs, openURL)
 		if strings.Contains(openURL, "/start") {
 			response, err := http.Get(openURL)
 			if err != nil {
@@ -182,6 +184,14 @@ func TestBootstrapCreatesVerifiesAndStoresWithoutPrintingASecret(t *testing.T) {
 	}
 	if result.InstallationID != 77 || sink.credentials.InstallationID != 77 {
 		t.Fatalf("result=%#v credentials=%#v", result, sink.credentials)
+	}
+	if len(openedURLs) != 2 {
+		t.Fatalf("opened URLs = %#v", openedURLs)
+	}
+	for _, openedURL := range openedURLs {
+		if !strings.Contains(output.String(), openedURL) {
+			t.Fatalf("browser fallback URL %q missing from output", openedURL)
+		}
 	}
 	if strings.Contains(output.String(), "BEGIN RSA PRIVATE KEY") || strings.Contains(output.String(), privateKey) {
 		t.Fatal("private key appeared in user output")
