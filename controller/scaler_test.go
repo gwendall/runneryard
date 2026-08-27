@@ -17,6 +17,7 @@ type fakeCompute struct {
 	destroyErr          error
 	removeBeforeDestroy bool
 	destroyed           []string
+	events              *[]string
 }
 
 func (f *fakeCompute) Launch(_ context.Context, _ provider.Lease) (provider.Worker, error) {
@@ -41,6 +42,18 @@ func (f *fakeCompute) Destroy(_ context.Context, id string) error {
 		return f.destroyErr
 	}
 	f.destroyed = append(f.destroyed, id)
+	if f.events != nil {
+		*f.events = append(*f.events, "worker")
+	}
+	return nil
+}
+
+type fakeSessionCloser struct {
+	events *[]string
+}
+
+func (f *fakeSessionCloser) Close(context.Context) error {
+	*f.events = append(*f.events, "session")
 	return nil
 }
 
@@ -118,6 +131,19 @@ func TestCompletionAcceptsAmbiguousDeletionWhenInventoryConfirmsAbsence(t *testi
 	}
 	if _, ok := state.get("runner-one"); ok {
 		t.Fatal("confirmed deleted worker remained in local state")
+	}
+}
+
+func TestShutdownReleasesSessionBeforeWorkerCleanup(t *testing.T) {
+	events := make([]string, 0, 2)
+	compute := &fakeCompute{events: &events}
+	state := newWorkerState()
+	state.add(provider.Worker{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-one"}, false)
+	scaler := testScaler(t, state, compute)
+
+	shutdownController(&fakeSessionCloser{events: &events}, scaler, slog.New(slog.DiscardHandler))
+	if len(events) != 2 || events[0] != "session" || events[1] != "worker" {
+		t.Fatalf("shutdown order = %#v, want session then worker", events)
 	}
 }
 

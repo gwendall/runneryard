@@ -45,8 +45,9 @@ fly volumes create runneryard_state \\
 
 fly deploy --app acme-ci-controller \\
   --config .runneryard/fly.controller.toml \\
-  --image ghcr.io/gwendall/runneryard:0.2.0 --ha=false`}</CodeBlock>
+  --image ghcr.io/gwendall/runneryard:0.2.1 --ha=false`}</CodeBlock>
               <p>Initialize the durable budget ledger once before the controller starts. The <a href={`${docsUrl}/providers/fly.md`}>complete Fly guide</a> includes credentials, the exact ledger command, and rollback.</p>
+              <p>Keep limits such as <code>MAX_RUNNERS</code> in the generated config, not in Fly secrets. The doctor rejects secret values that would silently override those limits.</p>
             </div>
           </section>
           <section className="provider-section">

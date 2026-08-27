@@ -32,6 +32,22 @@ func TestDoctorRejectsSharedApp(t *testing.T) {
 	}
 }
 
+func TestDoctorRejectsControllerSecretThatShadowsPolicy(t *testing.T) {
+	run := func(name string, args ...string) ([]byte, error) {
+		if name == "fly" && len(args) > 3 && args[0] == "secrets" {
+			if args[3] == "control" {
+				return []byte(`[{"name":"FLY_API_TOKEN"},{"name":"MAX_RUNNERS"}]`), nil
+			}
+			return []byte(`[]`), nil
+		}
+		return []byte("ready"), nil
+	}
+	checks := doctor("fly", "control", "workers", "", run)
+	if !hasDoctorStatus(checks, "controller policy source", "fail") {
+		t.Fatalf("checks = %#v", checks)
+	}
+}
+
 func TestDoctorRequiresBothAppsToProveIsolation(t *testing.T) {
 	run := func(name string, args ...string) ([]byte, error) {
 		if name == "fly" && len(args) > 1 && args[0] == "secrets" {

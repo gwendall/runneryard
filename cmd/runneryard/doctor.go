@@ -69,7 +69,7 @@ func doctor(providerName, controllerApp, workerApp, firewallID string, run comma
 }
 
 func doctorFly(controllerApp, workerApp string, run commandRunner) []doctorCheck {
-	checks := make([]doctorCheck, 0, 4)
+	checks := make([]doctorCheck, 0, 5)
 	checks = append(checks, commandCheck(run, "Fly CLI", "fly", "auth", "whoami"))
 	if workerApp == "" {
 		return append(checks, doctorCheck{Name: "worker app", Status: "fail", Details: "pass --worker-app to verify secret isolation"})
@@ -80,6 +80,9 @@ func doctorFly(controllerApp, workerApp string, run commandRunner) []doctorCheck
 		checks = append(checks, doctorCheck{Name: "control/worker isolation", Status: "fail", Details: "controller and workers use the same app"})
 	} else {
 		checks = append(checks, doctorCheck{Name: "control/worker isolation", Status: "pass", Details: "apps are separate"})
+	}
+	if controllerApp != "" {
+		checks = append(checks, controllerPolicySecretCheck(controllerApp, run))
 	}
 	output, err := run("fly", "secrets", "list", "--app", workerApp, "--json")
 	if err != nil {
@@ -95,6 +98,41 @@ func doctorFly(controllerApp, workerApp string, run commandRunner) []doctorCheck
 		}
 	}
 	return checks
+}
+
+var flyPolicyEnvironment = map[string]struct{}{
+	"COMPUTE_PROVIDER": {}, "CONTROLLER_ID": {}, "GITHUB_CONFIG_URL": {},
+	"LOG_LEVEL": {}, "MAX_RUNNERS": {}, "MIN_RUNNERS": {}, "RUNNER_BUDGET_FILE": {},
+	"RUNNER_BUDGET_WINDOW": {}, "RUNNER_CPUS": {}, "RUNNER_CPU_KIND": {},
+	"RUNNER_FLY_APP": {}, "RUNNER_FLY_REGION": {}, "RUNNER_GROUP": {},
+	"RUNNER_IMAGE": {}, "RUNNER_MAX_LIFETIME": {}, "RUNNER_MEMORY_MB": {},
+	"RUNNER_ROOTFS_GB": {}, "RUNNER_USAGE_BUDGET": {}, "SCALE_SET_NAME": {},
+}
+
+func controllerPolicySecretCheck(controllerApp string, run commandRunner) doctorCheck {
+	output, err := run("fly", "secrets", "list", "--app", controllerApp, "--json")
+	if err != nil {
+		return doctorCheck{Name: "controller policy source", Status: "fail", Details: compactError(output, err)}
+	}
+	var secrets []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(output, &secrets); err != nil {
+		return doctorCheck{Name: "controller policy source", Status: "fail", Details: "could not parse Fly response"}
+	}
+	shadows := make([]string, 0)
+	for _, secret := range secrets {
+		if _, exists := flyPolicyEnvironment[secret.Name]; exists {
+			shadows = append(shadows, secret.Name)
+		}
+	}
+	if len(shadows) > 0 {
+		return doctorCheck{
+			Name: "controller policy source", Status: "fail",
+			Details: "app secrets override non-secret policy: " + strings.Join(shadows, ", "),
+		}
+	}
+	return doctorCheck{Name: "controller policy source", Status: "pass", Details: "no policy values shadowed by secrets"}
 }
 
 func doctorHetzner(firewallID string, run commandRunner) []doctorCheck {

@@ -91,7 +91,7 @@ RUNNER_HETZNER_LOCATION=fsn1
 RUNNER_HETZNER_SERVER_TYPE=cpx32
 RUNNER_HETZNER_IMAGE=docker-ce
 RUNNER_HETZNER_FIREWALL_ID=123456
-RUNNER_IMAGE=ghcr.io/gwendall/runneryard:0.2.0
+RUNNER_IMAGE=ghcr.io/gwendall/runneryard:0.2.1
 GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/github-app.pem
 ```
 
