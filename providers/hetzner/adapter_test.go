@@ -18,6 +18,8 @@ import (
 
 func TestLaunchCreatesIsolatedDisposableServer(t *testing.T) {
 	polls := make(map[string]int)
+	serverReads := 0
+	poweredOn := false
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer hcloud-token" {
 			t.Fatalf("unexpected authorization header %q", got)
@@ -29,11 +31,24 @@ func TestLaunchCreatesIsolatedDisposableServer(t *testing.T) {
 			return
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/servers/123" {
-			qualified := server{ID: 123, Name: "runner-one", Status: "running", Labels: map[string]string{
+			serverReads++
+			status := "off"
+			if poweredOn {
+				status = "running"
+			}
+			qualified := server{ID: 123, Name: "runner-one", Status: status, Labels: map[string]string{
 				leaseIDKey: "lease-one", runnerNameKey: "runner-one",
 			}}
 			qualified.PublicNet.Firewalls = []serverFirewall{{ID: 42, Status: "applied"}}
 			_ = json.NewEncoder(w).Encode(serverResponse{Server: qualified})
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/servers/123/actions/poweron" {
+			if serverReads != 1 {
+				t.Fatalf("worker powered on before firewall qualification: %d server reads", serverReads)
+			}
+			poweredOn = true
+			_ = json.NewEncoder(w).Encode(actionResponse{Action: action{ID: 20, Status: "running"}})
 			return
 		}
 		if r.Method != http.MethodPost || r.URL.Path != "/servers" {
@@ -43,7 +58,7 @@ func TestLaunchCreatesIsolatedDisposableServer(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
 		}
-		if request.Image != "docker-ce" || request.ServerType != "cpx32" || request.Location != "fsn1" || !request.StartAfterCreate {
+		if request.Image != "docker-ce" || request.ServerType != "cpx32" || request.Location != "fsn1" || request.StartAfterCreate {
 			t.Fatalf("unexpected server shape: %#v", request)
 		}
 		if len(request.Firewalls) != 1 || request.Firewalls[0].Firewall != 42 {
@@ -74,8 +89,11 @@ func TestLaunchCreatesIsolatedDisposableServer(t *testing.T) {
 	if worker.ID != "123" || worker.LeaseID != "lease-one" || worker.RunnerName != "runner-one" {
 		t.Fatalf("unexpected worker %#v", worker)
 	}
-	if polls["/actions/10"] != 1 || polls["/actions/11"] != 1 {
+	if polls["/actions/10"] != 1 || polls["/actions/11"] != 1 || polls["/actions/20"] != 1 {
 		t.Fatalf("create actions were not qualified: %#v", polls)
+	}
+	if !poweredOn || serverReads != 2 {
+		t.Fatalf("unexpected qualification order: powered_on=%t server_reads=%d", poweredOn, serverReads)
 	}
 }
 
@@ -147,6 +165,35 @@ func TestLaunchRejectsWorkerWithoutAppliedFirewall(t *testing.T) {
 	}
 }
 
+func TestLaunchBoundsStuckCreateAction(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/servers" {
+			_ = json.NewEncoder(w).Encode(createServerResponse{
+				Server: server{ID: 123, Name: "runner-one", Labels: map[string]string{leaseIDKey: "lease-one"}},
+				Action: action{ID: 10, Status: "running"},
+			})
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/actions/10" {
+			_ = json.NewEncoder(w).Encode(actionResponse{Action: action{ID: 10, Status: "running"}})
+			return
+		}
+		t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+	}))
+	defer api.Close()
+
+	adapter := testAdapter(t, api)
+	adapter.actionTimeout = 8 * time.Millisecond
+	_, err := adapter.Launch(context.Background(), provider.Lease{
+		ID: "lease-one", RunnerName: "runner-one", JITConfig: "jit-secret", Deadline: time.Now().Add(time.Hour),
+	})
+	var partial *provider.PartialLaunchError
+	if !errors.As(err, &partial) || !errors.Is(err, context.DeadlineExceeded) || partial.Worker.ID != "123" {
+		t.Fatalf("expected bounded partial launch, got %v", err)
+	}
+}
+
 func TestInventoryPaginatesAndExcludesForeignServers(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		query, _ := url.QueryUnescape(r.URL.Query().Get("label_selector"))
@@ -211,6 +258,28 @@ func TestDestroyWaitsForDeleteAction(t *testing.T) {
 	}
 }
 
+func TestDestroyBoundsStuckDeleteAction(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodDelete && r.URL.Path == "/servers/123" {
+			_ = json.NewEncoder(w).Encode(actionResponse{Action: action{ID: 12, Status: "running"}})
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/actions/12" {
+			_ = json.NewEncoder(w).Encode(actionResponse{Action: action{ID: 12, Status: "running"}})
+			return
+		}
+		t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+	}))
+	defer api.Close()
+
+	adapter := testAdapter(t, api)
+	adapter.actionTimeout = 8 * time.Millisecond
+	if err := adapter.Destroy(context.Background(), "123"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected bounded delete, got %v", err)
+	}
+}
+
 func TestDestroyRejectsForeignIdentifier(t *testing.T) {
 	adapter, err := New(Config{
 		APIToken: "token", Location: "fsn1", ServerType: "cpx32", ServerImage: "docker-ce",
@@ -268,7 +337,7 @@ func testAdapter(t *testing.T, server *httptest.Server) *Adapter {
 		APIBaseURL: server.URL, APIToken: "hcloud-token", Location: "fsn1", ServerType: "cpx32",
 		ServerImage: "docker-ce", RunnerImage: "ghcr.io/gwendall/runneryard:0.1.1",
 		ControllerID: "test-controller", FirewallID: 42, NetworkID: 84, HTTPClient: server.Client(),
-		ActionPollInterval: time.Millisecond,
+		ActionPollInterval: time.Millisecond, ActionTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)

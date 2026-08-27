@@ -20,11 +20,12 @@ import (
 )
 
 const (
-	managedByKey       = "runneryard-managed-by"
-	controllerIDKey    = "runneryard-controller"
-	leaseIDKey         = "runneryard-lease-id"
-	runnerNameKey      = "runneryard-runner-name"
-	defaultHTTPTimeout = 30 * time.Second
+	managedByKey         = "runneryard-managed-by"
+	controllerIDKey      = "runneryard-controller"
+	leaseIDKey           = "runneryard-lease-id"
+	runnerNameKey        = "runneryard-runner-name"
+	defaultHTTPTimeout   = 30 * time.Second
+	defaultActionTimeout = 3 * time.Minute
 )
 
 var safeLabelValue = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
@@ -43,6 +44,8 @@ type Config struct {
 	// ActionPollInterval controls how often asynchronous Hetzner actions are
 	// checked. It is primarily configurable so tests do not have to sleep.
 	ActionPollInterval time.Duration
+	// ActionTimeout bounds the complete provider-side qualification sequence.
+	ActionTimeout time.Duration
 }
 
 type Adapter struct {
@@ -57,6 +60,7 @@ type Adapter struct {
 	networkID          int64
 	httpClient         *http.Client
 	actionPollInterval time.Duration
+	actionTimeout      time.Duration
 }
 
 func New(cfg Config) (*Adapter, error) {
@@ -81,6 +85,9 @@ func New(cfg Config) (*Adapter, error) {
 	if cfg.ActionPollInterval <= 0 {
 		cfg.ActionPollInterval = 500 * time.Millisecond
 	}
+	if cfg.ActionTimeout <= 0 {
+		cfg.ActionTimeout = defaultActionTimeout
+	}
 	return &Adapter{
 		baseURL:            strings.TrimRight(cfg.APIBaseURL, "/"),
 		token:              cfg.APIToken,
@@ -93,6 +100,7 @@ func New(cfg Config) (*Adapter, error) {
 		networkID:          cfg.NetworkID,
 		httpClient:         cfg.HTTPClient,
 		actionPollInterval: cfg.ActionPollInterval,
+		actionTimeout:      cfg.ActionTimeout,
 	}, nil
 }
 
@@ -177,7 +185,7 @@ func (a *Adapter) Launch(ctx context.Context, lease provider.Lease) (provider.Wo
 		Image:            a.serverImage,
 		Location:         a.location,
 		UserData:         userData,
-		StartAfterCreate: true,
+		StartAfterCreate: false,
 		Labels: map[string]string{
 			managedByKey:    "true",
 			controllerIDKey: a.controllerID,
@@ -202,12 +210,14 @@ func (a *Adapter) Launch(ctx context.Context, lease provider.Lease) (provider.Wo
 		return provider.Worker{}, fmt.Errorf("create Hetzner worker %s: response did not include a server id", lease.RunnerName)
 	}
 	worker := toWorker(created.Server)
+	qualifyCtx, cancelQualification := context.WithTimeout(ctx, a.actionTimeout)
+	defer cancelQualification()
 	actions := append([]action{created.Action}, created.NextActions...)
-	if err := a.waitActions(ctx, actions); err != nil {
+	if err := a.waitActions(qualifyCtx, actions); err != nil {
 		return provider.Worker{}, &provider.PartialLaunchError{Worker: worker, Err: fmt.Errorf("qualify Hetzner worker: %w", err)}
 	}
 	var qualified serverResponse
-	if err := a.doJSON(ctx, http.MethodGet, a.baseURL+"/servers/"+strconv.FormatInt(created.Server.ID, 10), nil, &qualified); err != nil {
+	if err := a.doJSON(qualifyCtx, http.MethodGet, a.baseURL+"/servers/"+strconv.FormatInt(created.Server.ID, 10), nil, &qualified); err != nil {
 		return provider.Worker{}, &provider.PartialLaunchError{Worker: worker, Err: fmt.Errorf("verify Hetzner worker firewall: %w", err)}
 	}
 	if !firewallApplied(qualified.Server, a.firewallID) {
@@ -216,7 +226,24 @@ func (a *Adapter) Launch(ctx context.Context, lease provider.Lease) (provider.Wo
 			Err:    fmt.Errorf("required firewall %d is not applied", a.firewallID),
 		}
 	}
-	return toWorker(qualified.Server), nil
+	var poweredOn actionResponse
+	if err := a.doJSON(qualifyCtx, http.MethodPost, a.baseURL+"/servers/"+strconv.FormatInt(created.Server.ID, 10)+"/actions/poweron", nil, &poweredOn); err != nil {
+		return provider.Worker{}, &provider.PartialLaunchError{Worker: worker, Err: fmt.Errorf("power on qualified Hetzner worker: %w", err)}
+	}
+	if err := a.waitActions(qualifyCtx, []action{poweredOn.Action}); err != nil {
+		return provider.Worker{}, &provider.PartialLaunchError{Worker: worker, Err: fmt.Errorf("power on qualified Hetzner worker: %w", err)}
+	}
+	var running serverResponse
+	if err := a.doJSON(qualifyCtx, http.MethodGet, a.baseURL+"/servers/"+strconv.FormatInt(created.Server.ID, 10), nil, &running); err != nil {
+		return provider.Worker{}, &provider.PartialLaunchError{Worker: worker, Err: fmt.Errorf("confirm powered-on Hetzner worker: %w", err)}
+	}
+	if running.Server.Status != "running" {
+		return provider.Worker{}, &provider.PartialLaunchError{
+			Worker: worker,
+			Err:    fmt.Errorf("powered-on Hetzner worker has status %q", running.Server.Status),
+		}
+	}
+	return toWorker(running.Server), nil
 }
 
 func (a *Adapter) Inventory(ctx context.Context) ([]provider.Worker, error) {
@@ -281,7 +308,9 @@ func (a *Adapter) Destroy(ctx context.Context, workerID string) error {
 	if err := json.NewDecoder(resp.Body).Decode(&deleted); err != nil {
 		return fmt.Errorf("decode Hetzner delete action: %w", err)
 	}
-	if err := a.waitActions(ctx, []action{deleted.Action}); err != nil {
+	actionCtx, cancelAction := context.WithTimeout(ctx, a.actionTimeout)
+	defer cancelAction()
+	if err := a.waitActions(actionCtx, []action{deleted.Action}); err != nil {
 		return fmt.Errorf("delete Hetzner worker %s: %w", workerID, err)
 	}
 	return nil

@@ -67,6 +67,7 @@ docker compose -f .runneryard/hetzner.controller.compose.yml up -d`}</CodeBlock>
             <div className="provider-content">
               <ul>
                 <li>The Hetzner token and GitHub App key remain on the controller.</li>
+                <li>The VM stays powered off until its deny-inbound firewall is confirmed.</li>
                 <li>The VM receives only one JIT configuration and a deadline.</li>
                 <li>The JIT file is erased before the runner container starts.</li>
                 <li>Ownership labels let reconciliation ignore foreign servers.</li>

@@ -153,6 +153,10 @@ The adapter creates each server with:
 - public IPv4 and IPv6 for outbound CI traffic;
 - cloud-init containing only a base64-encoded JIT lease and deadline.
 
+The VM is created powered off. RunnerYard waits for every create and attachment
+action, confirms that the required firewall is applied, and only then powers on
+the VM. It also waits for the power-on action before accepting the worker.
+
 Base64 is transport encoding, not encryption. The JIT configuration is the only
 credential allowed on a worker and is valid for one runner registration. The
 bootstrap creates the runtime container, erases the root-only host lease file
