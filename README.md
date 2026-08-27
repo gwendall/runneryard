@@ -17,7 +17,7 @@ checksum-verifying npm launcher.
 
 ## Quick start
 
-The first public release will support this setup flow:
+The public release supports this setup flow:
 
 ```sh
 npx runneryard init --github https://github.com/acme/widgets
