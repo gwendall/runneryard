@@ -7,10 +7,10 @@ const mono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://runneryard.com"),
-  title: "RunnerYard | GitHub Actions runners on your cloud",
-  description: "Run one disposable GitHub Actions worker per job on infrastructure you control. No Kubernetes or hosted control plane.",
+  title: "RunnerYard | Disposable GitHub Actions runners",
+  description: "Run one disposable GitHub Actions worker per job on your cloud. No Kubernetes, hosted control plane, or GitHub token copy-paste.",
   openGraph: {
-    title: "RunnerYard | GitHub Actions runners on your cloud",
+    title: "RunnerYard | Disposable GitHub Actions runners",
     description: "One clean worker per job, on infrastructure you control.",
     url: "https://runneryard.com",
     siteName: "RunnerYard",

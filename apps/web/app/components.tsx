@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Command } from "./command";
 
 export const repositoryUrl = "https://github.com/gwendall/runneryard";
 export const docsUrl = `${repositoryUrl}/blob/main/docs`;
@@ -10,8 +11,9 @@ export function SiteHeader() {
       <header className="site-header shell">
         <Link className="wordmark" href="/">RunnerYard</Link>
         <nav aria-label="Primary navigation">
+          <Link href="/setup">Setup</Link>
           <Link href="/providers">Providers</Link>
-          <Link href="/#security">Security</Link>
+          <Link href="/security">Security</Link>
           <a href={repositoryUrl}>GitHub</a>
         </nav>
       </header>
@@ -24,8 +26,8 @@ export function SiteFooter() {
     <footer className="site-footer shell">
       <span>Open source. Runs in your account.</span>
       <nav aria-label="Footer navigation">
-        <a href={`${docsUrl}/quickstart.md`}>Docs</a>
-        <a href={`${docsUrl}/security.md`}>Security</a>
+        <Link href="/setup">Setup</Link>
+        <Link href="/security">Security</Link>
         <a href={repositoryUrl}>Source</a>
       </nav>
     </footer>
@@ -33,7 +35,7 @@ export function SiteFooter() {
 }
 
 export function CodeBlock({ children }: { children: string }) {
-  return <pre className="code-block"><code>{children}</code></pre>;
+  return <Command>{children}</Command>;
 }
 
 export function ProviderRow({
@@ -74,6 +76,32 @@ export function ProviderHero({
         <span className="status">{status}</span>
       </div>
       <p>{description}</p>
+    </section>
+  );
+}
+
+export function SetupStep({
+  number,
+  title,
+  description,
+  receipt,
+  children,
+}: {
+  number: string;
+  title: string;
+  description: string;
+  receipt: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <section className="setup-step">
+      <div className="step-number" aria-hidden="true">{number}</div>
+      <div className="step-content">
+        <h2>{title}</h2>
+        <p>{description}</p>
+        {children}
+        <p className="step-receipt"><span>Ready when</span>{receipt}</p>
+      </div>
     </section>
   );
 }
