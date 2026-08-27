@@ -134,6 +134,10 @@ The npm package contains no controller implementation. It downloads the exact
 release matching its package version, verifies the published SHA-256 checksum,
 caches it, and forwards arguments and process signals.
 
+`runneryard route status|enable|disable` provides an explicit, idempotent switch
+between a qualified scale-set label and `ubuntu-latest`. It uses the operator's
+existing `gh` login; no GitHub token is copied into RunnerYard.
+
 ## Development
 
 Requirements: Go 1.25+, Node 24+, pnpm 10, and Docker for image tests.

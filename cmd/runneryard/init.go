@@ -111,9 +111,9 @@ func runInit(args []string) error {
 	}
 	fmt.Printf("Created RunnerYard configuration for %s\n\n", options.githubURL)
 	if options.provider == "fly" {
-		fmt.Printf("Next:\n  1. Review .runneryard/controller.env.example\n  2. Follow docs/providers/fly.md to create the isolated apps and durable volume\n  3. Run: runneryard auth github create --controller-app %s\n  4. Run: runneryard doctor --provider fly --controller-app %s --worker-app %s\n  5. Deploy the controller, then trigger .github/workflows/runneryard-canary.yml\n", controllerApp, controllerApp, workerApp)
+		fmt.Printf("Next:\n  1. Review .runneryard/controller.env.example\n  2. Follow docs/providers/fly.md to create the isolated apps and durable volume\n  3. Run: runneryard auth github create --controller-app %s\n  4. Run: runneryard doctor --provider fly --controller-app %s --worker-app %s\n  5. Deploy the controller, then trigger .github/workflows/runneryard-canary.yml\n  6. Run: runneryard route enable --github %s --label %s --confirm-canary\n", controllerApp, controllerApp, workerApp, options.githubURL, options.scaleSet)
 	} else {
-		fmt.Print("Next:\n  1. Create a dedicated Hetzner project and a firewall with no inbound rules\n  2. Run: runneryard auth github create --sink file\n  3. Fill .runneryard/controller.env from the generated example\n  4. Run: runneryard doctor --provider hetzner --firewall-id <id>\n  5. Follow docs/providers/hetzner.md, then trigger .github/workflows/runneryard-canary.yml\n")
+		fmt.Printf("Next:\n  1. Create a dedicated Hetzner project and a firewall with no inbound rules\n  2. Run: runneryard auth github create --sink file\n  3. Fill .runneryard/controller.env from the generated example\n  4. Run: runneryard doctor --provider hetzner --firewall-id <id>\n  5. Follow docs/providers/hetzner.md, then trigger .github/workflows/runneryard-canary.yml\n  6. Run: runneryard route enable --github %s --label %s --confirm-canary\n", options.githubURL, options.scaleSet)
 	}
 	return nil
 }

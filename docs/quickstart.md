@@ -125,12 +125,29 @@ three receipts:
 ## 6. Migrate gradually
 
 Route one low-risk Linux job first. Keep hosted runners as a repository-variable
-fallback during the pilot:
+switch during the pilot:
 
 ```yaml
 runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
 ```
 
-Set `CI_LINUX_RUNNER` to the scale-set name after the canary passes. Keep macOS,
-GPU, and workloads that rely on GitHub-hosted images on their current runners
-until equivalent images are qualified.
+The YAML fallback applies only when the variable is absent; it cannot detect an
+unavailable fleet. After `doctor` and the canary pass, deliberately enable the
+qualified label:
+
+```sh
+npx runneryard route enable \
+  --github https://github.com/acme/widgets \
+  --label acme-linux \
+  --confirm-canary
+```
+
+Inspect or preview either direction without changing GitHub:
+
+```sh
+npx runneryard route status --github https://github.com/acme/widgets
+npx runneryard route disable --github https://github.com/acme/widgets --dry-run
+```
+
+Keep macOS, GPU, and workloads that rely on GitHub-hosted images on their
+current runners until equivalent images are qualified.

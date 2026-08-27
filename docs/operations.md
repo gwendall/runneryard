@@ -30,7 +30,14 @@ allow its GitHub message session to close before starting its replacement; two
 listeners cannot own one scale set concurrently. Existing workers are preserved
 for the successor and can finish because their entrypoint is self-contained.
 The replacement adopts them from provider inventory. Run the canary and only
-then update broader workflow routing.
+then recover broader workflow routing with an explicit receipt:
+
+```sh
+npx runneryard route enable \
+  --github https://github.com/acme/widgets \
+  --label acme-linux \
+  --confirm-canary
+```
 
 ## Capacity
 
@@ -58,12 +65,22 @@ storage, and network costs.
 
 ## Incident response
 
-If workers leak, stop new routing, then stop the controller. Inventory the
-provider using the controller metadata; do not bulk-delete foreign machines.
+If workers leak, stop new routing first:
+
+```sh
+npx runneryard route disable --github https://github.com/acme/widgets
+```
+
+This removes `CI_LINUX_RUNNER`, so workflows using
+`${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}` select the hosted runner. The
+expression is a configuration fallback, not an availability detector. Verify
+the receipt with `runneryard route status`, then stop the controller. Inventory
+the provider using the controller metadata; do not bulk-delete foreign machines.
 Workers are intentionally preserved across controller shutdown and remain
 bounded by their provider lease. Revoke the provider token if ownership is
 uncertain.
 
 If the controller is unavailable, jobs targeting its label queue safely on
-GitHub. Set the repository runner variable back to `ubuntu-latest` to restore a
-hosted fallback, subject to GitHub billing availability.
+GitHub. Run `route disable` to restore the hosted fallback, subject to GitHub
+billing availability. The command is idempotent, supports `--dry-run`, uses the
+existing local `gh` identity, and never asks for or prints its token.
