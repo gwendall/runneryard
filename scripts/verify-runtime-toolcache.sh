@@ -17,6 +17,13 @@ fi
 
 setup_node_directory=$(cd "$setup_node_directory" && pwd -P)
 
+workflow_commands_token=
+if [[ ${GITHUB_ACTIONS:-} == true ]]; then
+  workflow_commands_token="runneryard-$(openssl rand -hex 32)"
+  echo "::stop-commands::$workflow_commands_token"
+fi
+
+set +e
 docker run --rm --network none --entrypoint /bin/bash \
   -v "$setup_node_directory:/action:ro" \
   -e "INPUT_NODE-VERSION=$node_version" \
@@ -44,3 +51,11 @@ docker run --rm --network none --entrypoint /bin/bash \
     grep -Fx "$expected_path" "$GITHUB_PATH"
     test "$("$expected_path/node" --version)" = "v$RUNTIME_NODE_VERSION"
   '
+canary_status=$?
+set -e
+
+if [[ -n $workflow_commands_token ]]; then
+  echo "::$workflow_commands_token::"
+fi
+
+exit "$canary_status"
