@@ -3,7 +3,7 @@ import { CodeBlock, docsUrl, ProviderHero, SiteFooter, SiteHeader } from "../../
 
 export const metadata: Metadata = {
   title: "Hetzner Cloud provider | RunnerYard",
-  description: "Run disposable GitHub Actions workers as isolated Hetzner Cloud Docker servers.",
+  description: "Run disposable GitHub Actions workers as isolated Hetzner Cloud Docker servers from a persistent controller host.",
 };
 
 export default function HetznerProviderPage() {
@@ -11,74 +11,89 @@ export default function HetznerProviderPage() {
     <>
       <SiteHeader />
       <main id="content">
-        <ProviderHero
-          title="Run on Hetzner Cloud."
-          status="Preview"
-          description="Keep the controller on any persistent Linux host. RunnerYard creates a clean Hetzner Docker server for each job and deletes it afterward."
-        />
+        <ProviderHero title="Run on Hetzner Cloud." status="Preview" description="Put the controller on any persistent Docker host. It starts a clean Hetzner server for each job, verifies its deny-inbound firewall, and deletes it afterward." />
         <div className="provider-main shell">
           <section className="provider-section">
-            <h2>Before you start</h2>
+            <h2>01 · Isolate</h2>
             <div className="provider-content">
-              <ul>
-                <li>Create a dedicated Hetzner project that cannot reach production.</li>
-                <li>Install <code>hcloud</code> and export a project-scoped <code>HCLOUD_TOKEN</code>.</li>
-                <li>Use a private GitHub repository for the first canary.</li>
-              </ul>
-            </div>
-          </section>
-          <section className="provider-section">
-            <h2>Block inbound traffic</h2>
-            <div className="provider-content">
-              <p>A Hetzner firewall with no rules drops all inbound traffic and permits outbound traffic. RunnerYard requires its ID and attaches it to every worker.</p>
+              <p>Create a dedicated Hetzner project that cannot reach production. Install <code>hcloud</code>, authenticate to that project, and create a worker firewall with no inbound rules.</p>
               <CodeBlock>{`hcloud firewall create --name runneryard-workers
 hcloud firewall describe runneryard-workers -o json | jq .id`}</CodeBlock>
+              <p className="step-receipt"><span>Ready when</span>The project is dedicated to CI and the worker firewall contains zero inbound rules.</p>
             </div>
           </section>
+
           <section className="provider-section">
-            <h2>Generate the setup</h2>
+            <h2>02 · Scaffold</h2>
             <div className="provider-content">
               <CodeBlock>{`npx runneryard init \\
   --provider hetzner \\
   --region fsn1 \\
-  --github https://github.com/acme/widgets
-
-cp .runneryard/controller.env.example \\
-  .runneryard/controller.env`}</CodeBlock>
-              <p>Fill the GitHub App values, <code>HCLOUD_TOKEN</code>, and <code>RUNNER_HETZNER_FIREWALL_ID</code>. Put the App key at <code>.runneryard/github-app.pem</code>. The default worker is <code>cpx32</code> on Hetzner&apos;s official <code>docker-ce</code> image.</p>
+  --github https://github.com/acme/widgets`}</CodeBlock>
+              <p>The generated Compose setup keeps durable state on the controller host and mounts the GitHub App key read-only.</p>
+              <p className="step-receipt"><span>Ready when</span>The generated diff contains Compose, an environment template, ignores for secret files, and the canary.</p>
             </div>
           </section>
+
           <section className="provider-section">
-            <h2>Verify, then deploy</h2>
+            <h2>03 · Connect GitHub</h2>
             <div className="provider-content">
-              <CodeBlock>{`npx runneryard doctor --provider hetzner \\
-  --firewall-id 123456
+              <p>Run this on the controller checkout. GitHub opens in your browser; the verified one-time App key is written directly to mode-0600 ignored files. No browser secret is copied into a terminal.</p>
+              <CodeBlock>{`npx runneryard auth github create \\
+  --github https://github.com/acme/widgets \\
+  --sink file`}</CodeBlock>
+              <p className="step-receipt"><span>Ready when</span><code>.runneryard/github-app.pem</code> and <code>github-app.env</code> are private and ignored.</p>
+            </div>
+          </section>
+
+          <section className="provider-section">
+            <h2>04 · Configure compute</h2>
+            <div className="provider-content">
+              <p>Create <code>.runneryard/controller.env</code> on the controller host. Add only a read/write token from the dedicated Hetzner project and the firewall ID. Keep the file mode <code>0600</code>.</p>
+              <CodeBlock>{`cp .runneryard/controller.env.example .runneryard/controller.env
+chmod 600 .runneryard/controller.env
+
+# Set on the controller host only:
+# HCLOUD_TOKEN, RUNNER_HETZNER_FIREWALL_ID`}</CodeBlock>
+              <p className="step-receipt"><span>Ready when</span>The controller files are private; no token or PEM is committed.</p>
+            </div>
+          </section>
+
+          <section className="provider-section">
+            <h2>05 · Verify and start</h2>
+            <div className="provider-content">
+              <CodeBlock>{`npx runneryard doctor --provider hetzner --firewall-id 123456
 
 docker compose -f .runneryard/hetzner.controller.compose.yml \\
   run --rm controller budget init \\
   --file /var/lib/runneryard/budget.json
 
 docker compose -f .runneryard/hetzner.controller.compose.yml up -d`}</CodeBlock>
-              <p>The controller host needs durable Docker storage and outbound access to GitHub and Hetzner. It does not need access to worker VMs.</p>
+              <p className="step-receipt"><span>Ready when</span>Doctor passes and the private status receipt reports a healthy controller.</p>
             </div>
           </section>
+
           <section className="provider-section">
-            <h2>Security boundary</h2>
+            <h2>06 · Canary and route</h2>
             <div className="provider-content">
-              <ul>
-                <li>The Hetzner token and GitHub App key remain on the controller.</li>
-                <li>The VM stays powered off until its deny-inbound firewall is confirmed.</li>
-                <li>The VM receives only one JIT configuration and a deadline.</li>
-                <li>The JIT file is erased before the runner container starts.</li>
-                <li>Ownership labels let reconciliation ignore foreign servers.</li>
-              </ul>
-              <p>Preview means the adapter has unit and integration-seam coverage but still needs a public release canary on a real Hetzner project. Read the <a href={`${docsUrl}/providers/hetzner.md`}>complete Hetzner guide</a> before using it for production CI.</p>
+              <CodeBlock>{`gh workflow run runneryard-canary.yml --repo acme/widgets
+
+docker compose -f .runneryard/hetzner.controller.compose.yml \\
+  exec controller /usr/local/bin/runneryard status
+hcloud server list --selector runneryard-managed-by=true
+
+npx runneryard route enable \\
+  --github https://github.com/acme/widgets \\
+  --label acme-linux --confirm-canary`}</CodeBlock>
+              <p>Preview means the adapter has seam coverage but still needs a public release canary in a real Hetzner project. Use only trusted, low-risk workloads until then. <a href={`${docsUrl}/providers/hetzner.md`}>Read the complete Hetzner guide</a>.</p>
             </div>
           </section>
+
           <section className="provider-section">
-            <h2>Outboarding</h2>
+            <h2>Outboard</h2>
             <div className="provider-content">
-              <p>Route workflows back to a hosted label, stop the controller, delete any server carrying the RunnerYard ownership labels, revoke the project token, then remove the controller and worker firewalls.</p>
+              <p>Disable the route, stop the controller, delete owned servers, and revoke both the project token and GitHub App keys. Then uninstall the App and delete the dedicated project.</p>
+              <CodeBlock>npx runneryard route disable --github https://github.com/acme/widgets</CodeBlock>
             </div>
           </section>
         </div>

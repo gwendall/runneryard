@@ -12,8 +12,9 @@ export default function ProvidersPage() {
       <SiteHeader />
       <main id="content">
         <section className="provider-hero shell">
+          <p className="eyebrow">Compute adapters</p>
           <div className="provider-title-row"><h1>Choose where jobs run.</h1></div>
-          <p>Every adapter uses the same controller, security boundary, cost ceiling, and one-job worker lifecycle.</p>
+          <p>The controller owns GitHub, security policy, budgets, and cleanup. The adapter only translates one disposable worker into your infrastructure.</p>
         </section>
         <section className="provider-main shell">
           <div className="provider-list">
@@ -21,13 +22,13 @@ export default function ProvidersPage() {
               href="/providers/fly"
               name="Fly Machines"
               status="Available"
-              description="Smallest setup surface and the current live production pilot."
+              description="The shortest production-piloted setup path."
             />
             <ProviderRow
               href="/providers/hetzner"
               name="Hetzner Cloud"
               status="Preview"
-              description="Disposable Docker VMs with a project token and deny-inbound firewall."
+              description="Disposable Docker VMs in a dedicated, deny-inbound project."
             />
             <ProviderRow
               href="/providers/adapter"
