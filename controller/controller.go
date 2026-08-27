@@ -154,8 +154,8 @@ func runControllerSession(ctx context.Context, session messageSession, scaler *s
 }
 
 func shutdownController(session sessionCloser, scaler *scaler, logger *slog.Logger) {
-	// Release GitHub's single active scale-set session before provider cleanup.
-	// Cleanup may be slow or blocked; a stale session would prevent the next
+	// Release GitHub's single active scale-set session before handing existing
+	// workers to the successor. A stale session would prevent the next
 	// controller process from starting after a deployment.
 	closeCtx, cancelClose := context.WithTimeout(context.Background(), sessionCloseTimeout)
 	if err := session.Close(closeCtx); err != nil {

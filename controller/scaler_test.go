@@ -164,8 +164,8 @@ func TestCompletionAcceptsAmbiguousDeletionWhenInventoryConfirmsAbsence(t *testi
 	}
 }
 
-func TestShutdownReleasesSessionBeforeWorkerCleanup(t *testing.T) {
-	events := make([]string, 0, 2)
+func TestShutdownReleasesSessionBeforePreservingWorkers(t *testing.T) {
+	events := make([]string, 0, 1)
 	compute := &fakeCompute{events: &events}
 	state := newWorkerState()
 	state.add(provider.Worker{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-one"}, false)
@@ -173,11 +173,17 @@ func TestShutdownReleasesSessionBeforeWorkerCleanup(t *testing.T) {
 
 	session := &fakeSessionCloser{events: &events, closeErr: errors.New("session API unavailable")}
 	shutdownController(session, scaler, slog.New(slog.DiscardHandler))
-	if len(events) != 2 || events[0] != "session" || events[1] != "worker" {
-		t.Fatalf("shutdown order = %#v, want session then worker", events)
+	if len(events) != 1 || events[0] != "session" {
+		t.Fatalf("shutdown events = %#v, want session only", events)
 	}
 	if !session.hadDeadline || session.deadlineWindow <= 0 || session.deadlineWindow > sessionCloseTimeout {
 		t.Fatalf("session close deadline = %s, present=%t", session.deadlineWindow, session.hadDeadline)
+	}
+	if len(compute.destroyed) != 0 {
+		t.Fatalf("shutdown destroyed runners: %#v", compute.destroyed)
+	}
+	if state.count() != 1 {
+		t.Fatalf("runner state count = %d, want 1", state.count())
 	}
 }
 
@@ -193,6 +199,31 @@ func TestRecoveryFailureStillReleasesSession(t *testing.T) {
 	}
 	if len(events) != 1 || events[0] != "session" {
 		t.Fatalf("recovery failure did not release session: %#v", events)
+	}
+}
+
+func TestDesiredCountDoesNotDestroyApparentlyIdleWorkers(t *testing.T) {
+	workers := []provider.Worker{
+		{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-one", CreatedAt: time.Now()},
+		{ID: "worker-two", LeaseID: "lease-two", RunnerName: "runner-two", CreatedAt: time.Now()},
+	}
+	compute := &fakeCompute{workers: workers}
+	state := newWorkerState()
+	for _, worker := range workers {
+		state.add(worker, false)
+	}
+	scaler := testScaler(t, state, compute)
+	scaler.maxWorkers = 4
+
+	count, err := scaler.HandleDesiredRunnerCount(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != len(workers) {
+		t.Fatalf("runner count = %d, want %d", count, len(workers))
+	}
+	if len(compute.destroyed) != 0 {
+		t.Fatalf("desired-count update destroyed runners: %#v", compute.destroyed)
 	}
 }
 

@@ -11,6 +11,12 @@ adopts managed workers created by the same controller after a restart, removes
 local records for disappeared workers, and destroys workers older than
 `RUNNER_MAX_LIFETIME`.
 
+Desired-count updates only scale up. They never opportunistically delete an
+apparently idle JIT runner: GitHub may already be assigning that runner while
+the corresponding `JobStarted` message is still in flight. One-job workers are
+removed synchronously on `JobCompleted`; unused workers remain bounded by their
+provider lease and `RUNNER_MAX_LIFETIME`.
+
 Worker deletion is idempotent and confirmed against provider inventory when a
 delete request returns an ambiguous transport error. If the worker is already
 absent, the controller settles its lease and keeps serving the scale-set
@@ -19,10 +25,12 @@ local record is retained for reconciliation.
 
 ## Safe upgrades
 
-Pin the runtime image to a release version. Deploy the controller first; new
-workers then use that exact image. Existing one-job workers can finish because
-their entrypoint is self-contained. Run the canary and only then update broader
-workflow routing.
+Pin the runtime image to a release version. Stop the old controller cleanly and
+allow its GitHub message session to close before starting its replacement; two
+listeners cannot own one scale set concurrently. Existing workers are preserved
+for the successor and can finish because their entrypoint is self-contained.
+The replacement adopts them from provider inventory. Run the canary and only
+then update broader workflow routing.
 
 ## Capacity
 
@@ -50,9 +58,10 @@ storage, and network costs.
 
 ## Incident response
 
-If workers leak, stop new routing, then stop the controller only after its
-shutdown cleanup runs. Inventory the provider using the controller metadata;
-do not bulk-delete foreign machines. Revoke the provider token if ownership is
+If workers leak, stop new routing, then stop the controller. Inventory the
+provider using the controller metadata; do not bulk-delete foreign machines.
+Workers are intentionally preserved across controller shutdown and remain
+bounded by their provider lease. Revoke the provider token if ownership is
 uncertain.
 
 If the controller is unavailable, jobs targeting its label queue safely on

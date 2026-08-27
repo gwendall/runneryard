@@ -50,21 +50,12 @@ func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, assignedJobs int)
 		return s.state.count(), nil
 	}
 
-	removable := min(current-target, len(s.state.idle(-1)))
-	if removable == 0 {
-		return current, nil
-	}
-	s.logger.Info("scaling down idle workers", "current", current, "target", target, "count", removable)
-	for _, record := range s.state.idle(removable) {
-		if err := s.destroyWorker(ctx, record.Worker); err != nil {
-			return s.state.count(), fmt.Errorf("delete idle worker %s: %w", record.Name, err)
-		}
-		if err := s.budget.settle(record.Worker.LeaseID, time.Now()); err != nil {
-			return s.state.count(), fmt.Errorf("settle runner usage budget for %s: %w", record.Name, err)
-		}
-		s.state.remove(record.Name)
-	}
-	return s.state.count(), nil
+	// Do not scale down from a desired-count update. GitHub can assign a job to
+	// an apparently idle JIT runner immediately before the JobStarted message is
+	// delivered. Destroying that runner here strands the assigned job until
+	// GitHub's timeout. JobCompleted removes one-job runners synchronously; a
+	// runner that never receives a job is bounded by its provider lease.
+	return current, nil
 }
 
 func (s *scaler) reconcile(ctx context.Context) error {
@@ -234,17 +225,14 @@ func (s *scaler) recover(ctx context.Context) error {
 	return nil
 }
 
-func (s *scaler) shutdown(ctx context.Context) {
-	for _, record := range s.state.idle(-1) {
-		if err := s.destroyWorker(ctx, record.Worker); err != nil {
-			s.logger.Error("failed to delete idle worker during shutdown", "runner", record.Name, "error", err)
-			continue
-		}
-		if err := s.budget.settle(record.Worker.LeaseID, time.Now()); err != nil {
-			s.logger.Error("failed to settle runner usage during shutdown", "runner", record.Name, "error", err)
-			continue
-		}
-		s.state.remove(record.Name)
+func (s *scaler) shutdown(_ context.Context) {
+	// Preserve workers across controller replacement. "Idle" only means that a
+	// JobStarted event has not arrived yet, so deleting those workers during a
+	// deploy has the same assignment race as desired-count scale-down. Workers
+	// remain bounded by their one-job JIT configuration and provider deadline;
+	// the successor adopts them from inventory.
+	if count := s.state.count(); count > 0 {
+		s.logger.Info("preserving workers for controller successor", "count", count)
 	}
 }
 
