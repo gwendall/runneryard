@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -108,8 +108,17 @@ async function main() {
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+async function isEntrypoint(modulePath = fileURLToPath(import.meta.url), argumentPath = process.argv[1]) {
+  if (!argumentPath) return false;
+  try {
+    return (await realpath(modulePath)) === (await realpath(argumentPath));
+  } catch {
+    return modulePath === argumentPath;
+  }
+}
+
+if (await isEntrypoint()) {
   await main();
 }
 
-export { expectedChecksum, forwardSignals, main, targetFor };
+export { expectedChecksum, forwardSignals, isEntrypoint, main, targetFor };
