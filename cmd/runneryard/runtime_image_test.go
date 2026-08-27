@@ -27,11 +27,73 @@ func TestRuntimeImageIncludesPinnedNodeBootstrap(t *testing.T) {
 		t.Fatal(err)
 	}
 	contents := string(dockerfile)
-	if !strings.Contains(contents, "ARG NODE_IMAGE=node:22.22.3-bookworm-slim@sha256:") {
+	if !strings.Contains(contents, "ARG NODE_VERSION=22.22.3") ||
+		!strings.Contains(contents, "ARG NODE_IMAGE=node:${NODE_VERSION}-bookworm-slim@sha256:") {
 		t.Fatal("runtime image must pin the Node 22 bootstrap image by digest")
 	}
 	if !strings.Contains(contents, "COPY --from=node-runtime /usr/local/ /usr/local/") {
 		t.Fatal("runtime image must expose Node to shell steps that run before setup-node")
+	}
+}
+
+func TestRuntimeImagePrewarmsPinnedNodeToolcache(t *testing.T) {
+	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(dockerfile)
+	for _, required := range []string{
+		"ARG NODE_VERSION=22.22.3",
+		"ARG TARGETARCH",
+		`amd64) toolcache_arch=x64`,
+		`arm64) toolcache_arch=arm64`,
+		`test "${actual_node_version}" = "${expected_node_version}"`,
+		`/opt/hostedtoolcache/node/${NODE_VERSION}/${toolcache_arch}`,
+		`/opt/hostedtoolcache/node/${NODE_VERSION}/${toolcache_arch}.complete`,
+		`chown -R runner:docker /opt/hostedtoolcache`,
+	} {
+		if !strings.Contains(contents, required) {
+			t.Fatalf("runtime image does not prewarm the pinned Node toolcache: missing %q", required)
+		}
+	}
+	if strings.Contains(contents, "curl") && strings.Contains(contents, "node-v${NODE_VERSION}") {
+		t.Fatal("toolcache prewarming must reuse the digest-pinned Node stage instead of downloading Node again")
+	}
+}
+
+func TestReleaseRunsPinnedSetupNodeToolcacheCanaryOffline(t *testing.T) {
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(workflow)
+	for _, required := range []string{
+		"repository: actions/setup-node",
+		"ref: 820762786026740c76f36085b0efc47a31fe5020",
+		"persist-credentials: false",
+		"bash scripts/verify-runtime-toolcache.sh",
+	} {
+		if !strings.Contains(contents, required) {
+			t.Fatalf("release workflow does not enforce the setup-node canary: missing %q", required)
+		}
+	}
+
+	canary, err := os.ReadFile(filepath.Join("..", "..", "scripts", "verify-runtime-toolcache.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents = string(canary)
+	for _, required := range []string{
+		"--network none",
+		`$setup_node_directory:/action:ro`,
+		`x86_64) toolcache_arch=x64`,
+		`aarch64|arm64) toolcache_arch=arm64`,
+		`node /action/dist/setup/index.js`,
+		`grep -Fx "$expected_path" "$GITHUB_PATH"`,
+	} {
+		if !strings.Contains(contents, required) {
+			t.Fatalf("runtime toolcache canary is incomplete: missing %q", required)
+		}
 	}
 }
 

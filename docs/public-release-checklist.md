@@ -26,6 +26,8 @@ Use this checklist before changing repository visibility or publishing a tag.
   cache.
 - [ ] Verify the published image contains GitHub CLI, Node, Git, Git LFS, Docker,
   and the pinned Actions runner.
+- [ ] Confirm the offline `actions/setup-node` release canary resolves the pinned
+  Node version from `/opt/hostedtoolcache` on every published architecture.
 
 ## First-user journey
 

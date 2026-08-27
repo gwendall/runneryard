@@ -19,6 +19,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Checkout pinned setup-node canary
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: actions/setup-node
+          ref: 820762786026740c76f36085b0efc47a31fe5020
+          path: .canary/setup-node
+          persist-credentials: false
       - name: Verify release version before publishing
         env:
           VERSION: ${{ github.ref_name }}
@@ -59,6 +66,8 @@ jobs:
             --build-arg VERSION="$version" \
             --build-arg COMMIT_SHA="$GITHUB_SHA" \
             -t "$image:$version" .
+          bash scripts/verify-runtime-toolcache.sh \
+            "$image:$version" .canary/setup-node 22.22.3
           docker push "$image:$version"
       - name: Publish immutable GitHub release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
