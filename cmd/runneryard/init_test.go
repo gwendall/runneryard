@@ -103,7 +103,6 @@ func TestRunInitCreatesHetznerScaffold(t *testing.T) {
 		"RUNNER_HETZNER_IMAGE=docker-ce",
 		"RUNNER_HETZNER_FIREWALL_ID=",
 		"HCLOUD_TOKEN=",
-		"GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/github-app.pem",
 		"RUNNER_IMAGE=ghcr.io/gwendall/runneryard:9.8.7",
 	} {
 		if !strings.Contains(contents, expected) {
@@ -114,7 +113,7 @@ func TestRunInitCreatesHetznerScaffold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(compose), "ghcr.io/gwendall/runneryard:9.8.7") || !strings.Contains(string(compose), "runneryard_state") || !strings.Contains(string(compose), "./github-app.pem:/run/secrets/github-app.pem:ro") {
+	if !strings.Contains(string(compose), "ghcr.io/gwendall/runneryard:9.8.7") || !strings.Contains(string(compose), "runneryard_state") || !strings.Contains(string(compose), "github-app.env") || !strings.Contains(string(compose), "./github-app.pem:/run/secrets/github-app.pem:ro") {
 		t.Fatalf("unexpected compose scaffold:\n%s", compose)
 	}
 	if _, err := os.Stat(filepath.Join(directory, ".runneryard", "fly.controller.toml")); !os.IsNotExist(err) {
@@ -124,7 +123,7 @@ func TestRunInitCreatesHetznerScaffold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(ignore) != "controller.env\ngithub-app.pem\n" {
+	if string(ignore) != "controller.env\ngithub-app.env\ngithub-app.pem\n" {
 		t.Fatalf("unexpected secret ignore file %q", ignore)
 	}
 }

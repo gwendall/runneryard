@@ -111,11 +111,11 @@ func loadConfig() (appConfig, error) {
 	}
 	privateKey := os.Getenv("GITHUB_APP_PRIVATE_KEY")
 	if keyPath := strings.TrimSpace(os.Getenv("GITHUB_APP_PRIVATE_KEY_FILE")); privateKey == "" && keyPath != "" {
-		contents, readErr := os.ReadFile(keyPath)
+		contents, readErr := readPrivateKeyFile(keyPath)
 		if readErr != nil {
 			return appConfig{}, fmt.Errorf("read GITHUB_APP_PRIVATE_KEY_FILE: %w", readErr)
 		}
-		privateKey = string(contents)
+		privateKey = contents
 	}
 	cfg.GitHubApp = scaleset.GitHubAppAuth{
 		ClientID:       strings.TrimSpace(os.Getenv("GITHUB_APP_CLIENT_ID")),
@@ -147,14 +147,14 @@ func (c appConfig) validate() error {
 	switch c.ComputeProvider {
 	case "fly":
 		if c.FlyAPIToken == "" || c.FlyWorkerApp == "" || c.FlyRegion == "" || c.RunnerImage == "" {
-			return fmt.Errorf("Fly adapter requires FLY_API_TOKEN, RUNNER_FLY_APP, RUNNER_FLY_REGION, and RUNNER_IMAGE")
+			return fmt.Errorf("fly adapter requires FLY_API_TOKEN, RUNNER_FLY_APP, RUNNER_FLY_REGION, and RUNNER_IMAGE")
 		}
 		if c.ControllerFlyApp != "" && c.ControllerFlyApp == c.FlyWorkerApp {
 			return fmt.Errorf("controller and worker Fly apps must be different so app secrets cannot reach jobs")
 		}
 	case "hetzner":
 		if c.HetznerAPIToken == "" || c.HetznerLocation == "" || c.HetznerServerType == "" || c.HetznerServerImage == "" || c.HetznerFirewallID < 1 || c.RunnerImage == "" {
-			return fmt.Errorf("Hetzner adapter requires HCLOUD_TOKEN, RUNNER_HETZNER_LOCATION, RUNNER_HETZNER_SERVER_TYPE, RUNNER_HETZNER_IMAGE, RUNNER_HETZNER_FIREWALL_ID, and RUNNER_IMAGE")
+			return fmt.Errorf("hetzner adapter requires HCLOUD_TOKEN, RUNNER_HETZNER_LOCATION, RUNNER_HETZNER_SERVER_TYPE, RUNNER_HETZNER_IMAGE, RUNNER_HETZNER_FIREWALL_ID, and RUNNER_IMAGE")
 		}
 		if c.HetznerNetworkID < 0 {
 			return fmt.Errorf("RUNNER_HETZNER_NETWORK_ID cannot be negative")

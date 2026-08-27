@@ -32,7 +32,19 @@ uploads a credential:
 - `.github/workflows/runneryard-canary.yml`
 
 Next, create the isolated provider resources described in the
-[Fly guide](docs/providers/fly.md), then verify their boundary before deploying:
+[Fly guide](docs/providers/fly.md). Create a private GitHub App owned by the
+target account and send its one-time key directly to the controller secret
+store:
+
+```sh
+npx runneryard auth github create \
+  --github https://github.com/acme/widgets \
+  --controller-app acme-ci-controller
+```
+
+The browser shows the owner and exact permission before creating or installing
+anything. No GitHub token or private key is copied into the terminal, and no
+credential is sent to RunnerYard. Then verify the provider boundary:
 
 ```sh
 npx runneryard doctor --provider fly \
@@ -101,7 +113,8 @@ bootstrap, metadata, and lifecycle translation. See the
 - `RUNNER_USAGE_BUDGET` is a durable rolling compute-time ceiling. New jobs
   queue when it is exhausted.
 - Ownership metadata prevents one controller from deleting foreign machines.
-- GitHub App authentication is preferred over a personal access token.
+- A dedicated GitHub App owned by the operator is the default. The setup flow
+  requests no webhook and sends its key directly to controller storage.
 
 Jobs execute repository code. Put workers in a cloud scope and network that
 cannot reach production. Read the complete [security model](docs/security.md)

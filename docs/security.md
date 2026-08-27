@@ -39,6 +39,44 @@ Do not expose self-hosted runners to public fork pull requests. A workflow from
 a fork can execute arbitrary commands with the worker's network and filesystem
 access even when no repository secret is provided.
 
+### GitHub App ownership
+
+The safest self-hosted default is one private GitHub App owned by the operator
+and installed only on the repositories served by that fleet. RunnerYard's
+manifest flow runs through a random-state callback bound to `127.0.0.1`, has a
+maximum one-hour lifetime, requests no webhook events, and asks only for the
+runner-management permission required by repository or organization scope.
+The returned installation is verified before any credential is stored.
+[GitHub documents the manifest handshake, its one-hour limit, and the `state`
+protection](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest).
+
+The one-time private key is never printed. The Fly sink sends a triple-quoted
+secret document to `fly secrets import` over stdin, not in process arguments.
+The file sink refuses symlinked credential paths, writes files and its
+directory with private modes, and adds those files to `.runneryard/.gitignore`.
+
+There is intentionally no shared RunnerYard GitHub App. Giving every
+self-hosted controller the private key of one central app would let any
+controller sign as that app and attempt to reach other installations. A
+central app is safe only when a hosted credential broker retains the private
+key, authorizes each installation, mints short-lived tokens, and is operated as
+a security-sensitive control plane. RunnerYard does not currently run that
+service.
+
+Bring-your-own mode accepts a client or app ID, installation ID, and a private
+key file. It verifies the app identity, target account, installation, and
+required permission before passing the credential to the same sinks. A private
+key file readable by group or others, or any symlinked key path, is rejected.
+
+### Rotation
+
+Create a second GitHub App private key before removing the first. Run
+`runneryard auth github import --force` with the new mode `0600` PEM and the
+same installation. The Fly sink imports all three values as one update. The
+file sink backs up the existing credential pair during replacement and
+restores it if either new file cannot be installed. Deploy or restart the
+controller, run the canary, then revoke the old key in GitHub.
+
 ## Provider scope
 
 An adapter credential should be limited to one worker project, app, account, or
@@ -81,8 +119,9 @@ separately.
 
 1. Route workflows back to a hosted runner label.
 2. Stop the controller and verify worker inventory is empty.
-3. Revoke the provider token and GitHub App private key.
-4. Uninstall or delete the GitHub App.
+3. Revoke the provider token and every GitHub App private key.
+4. Uninstall and delete the dedicated GitHub App, or remove the installation
+   when bring-your-own mode shares the app intentionally.
 5. Delete the worker and controller apps, projects, or resource groups.
 6. Remove generated config and repository variables.
 

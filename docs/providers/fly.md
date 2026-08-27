@@ -64,11 +64,22 @@ controller secret shadows a policy value.
 
 ## GitHub App
 
-Create and install a GitHub App only on the repositories that will use this
-fleet. Repository-scoped scale sets need Metadata read and Administration
-read/write. The app does not need a webhook. Generate one private key and keep
-its client ID, installation ID, and private key only in the controller's secret
-scope.
+Create and install a dedicated app after both Fly apps exist:
+
+```sh
+npx runneryard auth github create \
+  --github https://github.com/acme/widgets \
+  --controller-app acme-ci-controller
+```
+
+GitHub shows the exact owner and Repository Administration write permission
+before approval. The generated app is private, has no webhook events, and
+should be installed only on selected repositories. The manifest key is
+verified locally, then passed to `fly secrets import` over stdin. It never
+appears in a command argument or RunnerYard service.
+
+Use `auth github import` with `--private-key-file` to bring an existing app.
+Do not pass a PEM value directly on the command line.
 
 ## Deploy
 
@@ -78,10 +89,7 @@ entrypoint for workers and passes only their JIT configuration.
 
 ```sh
 fly secrets set --app acme-ci-controller \
-  FLY_API_TOKEN='<worker-app token>' \
-  GITHUB_APP_CLIENT_ID='<client id>' \
-  GITHUB_APP_INSTALLATION_ID='<installation id>' \
-  GITHUB_APP_PRIVATE_KEY='<private key PEM>'
+  FLY_API_TOKEN='<worker-app token>'
 
 fly deploy \
   --app acme-ci-controller \

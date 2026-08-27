@@ -83,7 +83,7 @@ func doctorFly(controllerApp, workerApp string, run commandRunner) []doctorCheck
 		checks = append(checks, doctorCheck{Name: "control/worker isolation", Status: "pass", Details: "apps are separate"})
 	}
 	if controllerApp != "" {
-		checks = append(checks, controllerPolicySecretCheck(controllerApp, run))
+		checks = append(checks, controllerSecretChecks(controllerApp, run)...)
 	}
 	output, err := run("fly", "secrets", "list", "--app", workerApp, "--json")
 	if err != nil {
@@ -110,14 +110,21 @@ var flyPolicyEnvironment = map[string]struct{}{
 	"RUNNER_ROOTFS_GB": {}, "RUNNER_USAGE_BUDGET": {}, "SCALE_SET_NAME": {},
 }
 
-func controllerPolicySecretCheck(controllerApp string, run commandRunner) doctorCheck {
+func controllerSecretChecks(controllerApp string, run commandRunner) []doctorCheck {
 	output, err := run("fly", "secrets", "list", "--app", controllerApp, "--json")
 	if err != nil {
-		return doctorCheck{Name: "controller policy source", Status: "fail", Details: compactError(output, err)}
+		details := compactError(output, err)
+		return []doctorCheck{
+			{Name: "controller policy source", Status: "fail", Details: details},
+			{Name: "controller GitHub auth", Status: "fail", Details: details},
+		}
 	}
 	secrets, err := parseFlySecretNames(output)
 	if err != nil {
-		return doctorCheck{Name: "controller policy source", Status: "fail", Details: err.Error()}
+		return []doctorCheck{
+			{Name: "controller policy source", Status: "fail", Details: err.Error()},
+			{Name: "controller GitHub auth", Status: "fail", Details: err.Error()},
+		}
 	}
 	shadows := make([]string, 0)
 	for _, name := range secrets {
@@ -126,12 +133,42 @@ func controllerPolicySecretCheck(controllerApp string, run commandRunner) doctor
 		}
 	}
 	if len(shadows) > 0 {
-		return doctorCheck{
+		return []doctorCheck{{
 			Name: "controller policy source", Status: "fail",
 			Details: "app secrets override non-secret policy: " + strings.Join(shadows, ", "),
+		}, githubAuthSecretCheck(secrets)}
+	}
+	return []doctorCheck{
+		{Name: "controller policy source", Status: "pass", Details: "no policy values shadowed by secrets"},
+		githubAuthSecretCheck(secrets),
+	}
+}
+
+func githubAuthSecretCheck(secrets []string) doctorCheck {
+	present := map[string]bool{}
+	for _, name := range secrets {
+		present[name] = true
+	}
+	appNames := []string{"GITHUB_APP_CLIENT_ID", "GITHUB_APP_INSTALLATION_ID", "GITHUB_APP_PRIVATE_KEY"}
+	appCount := 0
+	for _, name := range appNames {
+		if present[name] {
+			appCount++
 		}
 	}
-	return doctorCheck{Name: "controller policy source", Status: "pass", Details: "no policy values shadowed by secrets"}
+	if present["GITHUB_TOKEN"] && appCount > 0 {
+		return doctorCheck{Name: "controller GitHub auth", Status: "fail", Details: "both a user token and GitHub App credentials are configured"}
+	}
+	if appCount > 0 && appCount < len(appNames) {
+		return doctorCheck{Name: "controller GitHub auth", Status: "fail", Details: "GitHub App secret set is incomplete"}
+	}
+	if appCount == len(appNames) {
+		return doctorCheck{Name: "controller GitHub auth", Status: "pass", Details: "dedicated GitHub App secret set is complete"}
+	}
+	if present["GITHUB_TOKEN"] {
+		return doctorCheck{Name: "controller GitHub auth", Status: "warn", Details: "user token configured; migrate with runneryard auth github create"}
+	}
+	return doctorCheck{Name: "controller GitHub auth", Status: "fail", Details: "no GitHub App credentials or fallback user token configured"}
 }
 
 func parseFlySecretNames(output []byte) ([]string, error) {
@@ -149,7 +186,7 @@ func parseFlySecretNames(output []byte) ([]string, error) {
 	for _, record := range records {
 		name := strings.TrimSpace(record.Name)
 		if name == "" {
-			return nil, fmt.Errorf("Fly secret response contains a record without a name")
+			return nil, fmt.Errorf("fly secret response contains a record without a name")
 		}
 		names = append(names, name)
 	}
@@ -212,5 +249,18 @@ func compactError(output []byte, err error) string {
 }
 
 func execCommand(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
+	// Only fixed diagnostic binaries are allowed. Arguments are passed directly
+	// without a shell; dynamic app and firewall values are individual arguments.
+	var command *exec.Cmd
+	switch name {
+	case "git":
+		command = exec.Command("git", args...) // #nosec G204 G702 -- fixed executable, discrete arguments, no shell
+	case "fly":
+		command = exec.Command("fly", args...) // #nosec G204 G702 -- fixed executable, discrete arguments, no shell
+	case "hcloud":
+		command = exec.Command("hcloud", args...) // #nosec G204 G702 -- fixed executable, discrete arguments, no shell
+	default:
+		return nil, fmt.Errorf("diagnostic command %q is not allowed", name)
+	}
+	return command.CombinedOutput()
 }

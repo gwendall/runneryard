@@ -94,7 +94,7 @@ func runInit(args []string) error {
 		files = append(files,
 			generatedFile{path: filepath.Join(projectDir, ".runneryard", "controller.env.example"), contents: renderHetznerEnv(options), mode: 0o600},
 			generatedFile{path: filepath.Join(projectDir, ".runneryard", "hetzner.controller.compose.yml"), contents: renderHetznerCompose(), mode: 0o644},
-			generatedFile{path: filepath.Join(projectDir, ".runneryard", ".gitignore"), contents: "controller.env\ngithub-app.pem\n", mode: 0o644},
+			generatedFile{path: filepath.Join(projectDir, ".runneryard", ".gitignore"), contents: "controller.env\ngithub-app.env\ngithub-app.pem\n", mode: 0o644},
 		)
 	}
 	for _, file := range files {
@@ -111,15 +111,16 @@ func runInit(args []string) error {
 	}
 	fmt.Printf("Created RunnerYard configuration for %s\n\n", options.githubURL)
 	if options.provider == "fly" {
-		fmt.Printf("Next:\n  1. Review .runneryard/controller.env.example\n  2. Follow docs/providers/fly.md to create the isolated apps and durable volume\n  3. Run: runneryard doctor --provider fly --controller-app %s --worker-app %s\n  4. Deploy the controller, then trigger .github/workflows/runneryard-canary.yml\n", controllerApp, workerApp)
+		fmt.Printf("Next:\n  1. Review .runneryard/controller.env.example\n  2. Follow docs/providers/fly.md to create the isolated apps and durable volume\n  3. Run: runneryard auth github create --controller-app %s\n  4. Run: runneryard doctor --provider fly --controller-app %s --worker-app %s\n  5. Deploy the controller, then trigger .github/workflows/runneryard-canary.yml\n", controllerApp, controllerApp, workerApp)
 	} else {
-		fmt.Print("Next:\n  1. Create a dedicated Hetzner project and a firewall with no inbound rules\n  2. Fill .runneryard/controller.env from the generated example\n  3. Run: runneryard doctor --provider hetzner --firewall-id <id>\n  4. Follow docs/providers/hetzner.md, then trigger .github/workflows/runneryard-canary.yml\n")
+		fmt.Print("Next:\n  1. Create a dedicated Hetzner project and a firewall with no inbound rules\n  2. Run: runneryard auth github create --sink file\n  3. Fill .runneryard/controller.env from the generated example\n  4. Run: runneryard doctor --provider hetzner --firewall-id <id>\n  5. Follow docs/providers/hetzner.md, then trigger .github/workflows/runneryard-canary.yml\n")
 	}
 	return nil
 }
 
 func inferGitHubURL(directory string) string {
-	output, err := exec.Command("git", "-C", directory, "config", "--get", "remote.origin.url").Output()
+	// directory is one argument to git; no shell is involved.
+	output, err := exec.Command("git", "-C", directory, "config", "--get", "remote.origin.url").Output() // #nosec G204
 	if err != nil {
 		return ""
 	}
@@ -161,7 +162,7 @@ type generatedFile struct {
 }
 
 func writeGenerated(path, contents string, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
 	return os.WriteFile(path, []byte(contents), mode)
@@ -187,12 +188,10 @@ RUNNER_USAGE_BUDGET=166h40m
 RUNNER_BUDGET_WINDOW=720h
 RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json
 
-# Set only on the controller:
+# Set only on the controller. The GitHub App is installed separately with
+# runneryard auth github create --controller-app %s
 FLY_API_TOKEN=
-GITHUB_APP_CLIENT_ID=
-GITHUB_APP_INSTALLATION_ID=
-GITHUB_APP_PRIVATE_KEY=
-`, options.githubURL, options.scaleSet, options.scaleSet, controllerApp, workerApp, options.region, version, options.maxRunners)
+`, options.githubURL, options.scaleSet, options.scaleSet, controllerApp, workerApp, options.region, version, options.maxRunners, controllerApp)
 }
 
 func renderHetznerEnv(options initOptions) string {
@@ -215,11 +214,9 @@ RUNNER_USAGE_BUDGET=166h40m
 RUNNER_BUDGET_WINDOW=720h
 RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json
 
-# Set only on the controller:
+# Set only on the controller. GitHub App values are supplied by the generated
+# github-app.env and github-app.pem files.
 HCLOUD_TOKEN=
-GITHUB_APP_CLIENT_ID=
-GITHUB_APP_INSTALLATION_ID=
-GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/github-app.pem
 `, options.githubURL, options.scaleSet, options.scaleSet, options.region, version, options.maxRunners)
 }
 
@@ -230,6 +227,7 @@ func renderHetznerCompose() string {
     restart: unless-stopped
     env_file:
       - controller.env
+      - github-app.env
     volumes:
       - runneryard_state:/var/lib/runneryard
       - ./github-app.pem:/run/secrets/github-app.pem:ro

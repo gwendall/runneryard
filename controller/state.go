@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"sort"
 	"sync"
 
 	"github.com/gwendall/runneryard/provider"
@@ -68,33 +67,4 @@ func (s *workerState) remove(name string) (workerRecord, bool) {
 	record, ok := s.workers[name]
 	delete(s.workers, name)
 	return record, ok
-}
-
-func (s *workerState) idle(limit int) []struct {
-	Name string
-	workerRecord
-} {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	names := make([]string, 0, len(s.workers))
-	for name, record := range s.workers {
-		if !record.Busy {
-			names = append(names, name)
-		}
-	}
-	sort.Strings(names)
-	if limit >= 0 && len(names) > limit {
-		names = names[:limit]
-	}
-	result := make([]struct {
-		Name string
-		workerRecord
-	}, 0, len(names))
-	for _, name := range names {
-		result = append(result, struct {
-			Name string
-			workerRecord
-		}{Name: name, workerRecord: s.workers[name]})
-	}
-	return result
 }

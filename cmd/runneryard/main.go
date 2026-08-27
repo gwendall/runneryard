@@ -37,6 +37,8 @@ func run(args []string) error {
 		return runInit(args)
 	case "doctor":
 		return runDoctor(args)
+	case "auth":
+		return runAuth(args)
 	case "budget":
 		return runBudget(args)
 	case "version", "--version", "-v":
@@ -83,6 +85,7 @@ func printHelp() {
 Usage:
   runneryard init [flags]     Create a safe starter configuration
   runneryard doctor [flags]   Check credentials, isolation, and tooling
+  runneryard auth github      Create or import a dedicated GitHub App
   runneryard budget init      Initialize the durable usage ledger once
   runneryard serve            Run the fleet controller (default)
   runneryard version          Print version information
