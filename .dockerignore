@@ -7,6 +7,8 @@
 !cmd/**
 !controller/
 !controller/**
+!githubapp/
+!githubapp/**
 !provider/
 !provider/**
 !providers/
