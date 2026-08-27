@@ -124,10 +124,10 @@ func (c *Controller) Run(ctx context.Context) error {
 		budget:         budget,
 		logger:         cfg.Logger.WithGroup("scaler"),
 	}
+	defer shutdownController(session, scaler, cfg.Logger)
 	if err := scaler.recover(ctx); err != nil {
 		return fmt.Errorf("recover workers: %w", err)
 	}
-	defer shutdownController(session, scaler, cfg.Logger)
 
 	queue, err := listener.New(session, listener.Config{
 		ScaleSetID: scaleSet.ID,
