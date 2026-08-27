@@ -222,11 +222,14 @@ func Bootstrap(ctx context.Context, options Options) (Result, error) {
 	fmt.Fprintf(options.Output, "RunnerYard will create a private GitHub App owned by %s.\n", options.Target.Owner)
 	fmt.Fprintln(options.Output, permissionExplanation(options.Target))
 	fmt.Fprintln(options.Output, "The app subscribes to no webhooks and RunnerYard receives no credential.")
-	fmt.Fprintf(options.Output, "Local setup URL (safe fallback if the browser opens elsewhere): %s\n", startURL)
-	if !options.NoBrowser {
-		if err := options.Browser.Open(startURL); err != nil {
-			return Result{}, fmt.Errorf("open browser: %w; rerun with --no-browser", err)
-		}
+	if err := exposeAndOpen(
+		options.Output,
+		options.Browser,
+		options.NoBrowser,
+		"Local setup URL (safe fallback if the browser opens elsewhere)",
+		startURL,
+	); err != nil {
+		return Result{}, fmt.Errorf("open browser: %w; rerun with --no-browser", err)
 	}
 
 	code, err := waitValue(setupCtx, callbackCodes, serveDone, "GitHub App creation")
@@ -243,11 +246,14 @@ func Bootstrap(ctx context.Context, options Options) (Result, error) {
 		return Result{}, err
 	}
 	fmt.Fprintln(options.Output, "GitHub App created. Approve its installation only for the requested target.")
-	fmt.Fprintf(options.Output, "GitHub installation URL (safe fallback if the browser opens elsewhere): %s\n", installURL)
-	if !options.NoBrowser {
-		if err := options.Browser.Open(installURL); err != nil {
-			return Result{}, fmt.Errorf("open installation page: %w; rerun with --no-browser", err)
-		}
+	if err := exposeAndOpen(
+		options.Output,
+		options.Browser,
+		options.NoBrowser,
+		"GitHub installation URL (safe fallback if the browser opens elsewhere)",
+		installURL,
+	); err != nil {
+		return Result{}, fmt.Errorf("open installation page: %w; rerun with --no-browser", err)
 	}
 
 	installationID, err := api.WaitForInstallation(setupCtx, credentials, options.Target, 2*time.Second)
@@ -266,6 +272,14 @@ func Bootstrap(ctx context.Context, options Options) (Result, error) {
 		InstallationID:  credentials.InstallationID,
 		SinkDescription: options.Sink.Description(),
 	}, nil
+}
+
+func exposeAndOpen(output io.Writer, browser Browser, noBrowser bool, label, target string) error {
+	fmt.Fprintf(output, "%s: %s\n", label, target)
+	if noBrowser {
+		return nil
+	}
+	return browser.Open(target)
 }
 
 func permissionExplanation(target Target) string {

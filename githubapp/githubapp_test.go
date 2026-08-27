@@ -140,8 +140,12 @@ func TestBootstrapCreatesVerifiesAndStoresWithoutPrintingASecret(t *testing.T) {
 	}))
 	defer apiServer.Close()
 
+	var output strings.Builder
 	var openedURLs []string
 	browser := browserFunc(func(openURL string) error {
+		if !strings.Contains(output.String(), openURL) {
+			t.Fatalf("browser opened %q before the fallback URL was printed", openURL)
+		}
 		openedURLs = append(openedURLs, openURL)
 		if strings.Contains(openURL, "/start") {
 			response, err := http.Get(openURL)
@@ -173,7 +177,6 @@ func TestBootstrapCreatesVerifiesAndStoresWithoutPrintingASecret(t *testing.T) {
 		return errors.New("unexpected browser URL")
 	})
 	sink := &captureSink{}
-	var output strings.Builder
 	result, err := Bootstrap(context.Background(), Options{
 		Target: Target{ConfigURL: "https://github.com/octo/repo", Owner: "octo", Repository: "repo", OwnerKind: OwnerOrganization},
 		Sink:   sink, Browser: browser, Timeout: time.Second, APIBaseURL: apiServer.URL,
@@ -195,6 +198,21 @@ func TestBootstrapCreatesVerifiesAndStoresWithoutPrintingASecret(t *testing.T) {
 	}
 	if strings.Contains(output.String(), "BEGIN RSA PRIVATE KEY") || strings.Contains(output.String(), privateKey) {
 		t.Fatal("private key appeared in user output")
+	}
+}
+
+func TestExposeAndOpenNoBrowserPrintsWithoutOpening(t *testing.T) {
+	var output strings.Builder
+	browser := browserFunc(func(openURL string) error {
+		t.Fatalf("browser unexpectedly opened %q", openURL)
+		return nil
+	})
+	const fallbackURL = "http://127.0.0.1:54321/start"
+	if err := exposeAndOpen(&output, browser, true, "Local setup URL", fallbackURL); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), fallbackURL) {
+		t.Fatalf("fallback URL missing from output: %q", output.String())
 	}
 }
 
