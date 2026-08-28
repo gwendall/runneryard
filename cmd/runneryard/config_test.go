@@ -66,6 +66,7 @@ func TestConfigWiresDefaultFlyShapeToLaunch(t *testing.T) {
 		CPUKind string
 		CPUs    int
 		Memory  int
+		DNS     string
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
@@ -75,6 +76,9 @@ func TestConfigWiresDefaultFlyShapeToLaunch(t *testing.T) {
 					CPUs    int    `json:"cpus"`
 					Memory  int    `json:"memory_mb"`
 				} `json:"guest"`
+				Processes []struct {
+					Env map[string]string `json:"env"`
+				} `json:"processes"`
 			} `json:"config"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -83,6 +87,7 @@ func TestConfigWiresDefaultFlyShapeToLaunch(t *testing.T) {
 		launched.CPUKind = request.Config.Guest.CPUKind
 		launched.CPUs = request.Config.Guest.CPUs
 		launched.Memory = request.Config.Guest.Memory
+		launched.DNS = request.Config.Processes[0].Env["RUNNERYARD_DOCKER_DNS"]
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"id": "machine-id", "name": "runner-one"})
 	}))
@@ -104,7 +109,7 @@ func TestConfigWiresDefaultFlyShapeToLaunch(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if launched.CPUKind != "performance" || launched.CPUs != 2 || launched.Memory != 8192 {
+	if launched.CPUKind != "performance" || launched.CPUs != 2 || launched.Memory != 8192 || launched.DNS != "1.1.1.1,8.8.8.8" {
 		t.Fatalf("unexpected launched Fly worker shape: %#v", launched)
 	}
 }

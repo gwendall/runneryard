@@ -28,6 +28,14 @@ internal dashboards, metadata services, or the controller. Egress to GitHub,
 package registries, and explicitly required test services should be the only
 default path.
 
+Fly workers pass a non-secret, validated list of public resolver IPs to their
+nested Docker daemon because Fly's host-side private resolver is not reliably
+reachable from the inner bridge. RunnerYard accepts only one to three literal
+IP addresses and validates the value at both the trusted controller and
+untrusted worker boundary. Do not point this setting at a production or
+internal resolver: job code controls its DNS queries, and the worker network
+must remain unable to reach private services.
+
 ## GitHub scope
 
 Prefer a GitHub App installed only on selected repositories. Repository runner

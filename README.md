@@ -140,6 +140,8 @@ bootstrap, metadata, and lifecycle translation. See the
 - Controller and worker infrastructure must be separate.
 - The worker scope must contain zero permanent app secrets.
 - Workers are one-job, auto-destroying, non-restarting instances.
+- Fly job containers receive a validated public DNS policy so nested BuildKit
+  steps cannot silently inherit an unreachable host-only resolver.
 - `MAX_RUNNERS` is a hard concurrency ceiling.
 - `RUNNER_MAX_LIFETIME` forces cleanup of hung or disconnected workers.
 - `RUNNER_USAGE_BUDGET` is a durable rolling compute-time ceiling. New jobs

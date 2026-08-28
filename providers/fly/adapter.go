@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -27,6 +28,7 @@ const (
 	deadlineKey         = "runneryard-deadline"
 	runnerEntrypoint    = "/usr/local/bin/runner-entrypoint"
 	defaultHTTPTimeout  = 30 * time.Second
+	defaultDockerDNS    = "1.1.1.1,8.8.8.8"
 )
 
 type Config struct {
@@ -40,6 +42,7 @@ type Config struct {
 	CPUs         int
 	MemoryMB     int
 	RootFSGB     int
+	DockerDNS    string
 	HTTPClient   *http.Client
 }
 
@@ -54,6 +57,7 @@ type Adapter struct {
 	cpus         int
 	memoryMB     int
 	rootFSGB     int
+	dockerDNS    string
 	httpClient   *http.Client
 }
 
@@ -66,6 +70,10 @@ func New(cfg Config) (*Adapter, error) {
 	}
 	if cfg.CPUs < 1 || cfg.MemoryMB < 512 || cfg.RootFSGB < 10 {
 		return nil, fmt.Errorf("fly worker shape must have at least 1 CPU, 512 MB RAM, and 10 GB rootfs")
+	}
+	dockerDNS, err := normalizeDockerDNS(cfg.DockerDNS)
+	if err != nil {
+		return nil, err
 	}
 	if cfg.APIBaseURL == "" {
 		cfg.APIBaseURL = "https://api.machines.dev"
@@ -84,8 +92,34 @@ func New(cfg Config) (*Adapter, error) {
 		cpus:         cfg.CPUs,
 		memoryMB:     cfg.MemoryMB,
 		rootFSGB:     cfg.RootFSGB,
+		dockerDNS:    dockerDNS,
 		httpClient:   cfg.HTTPClient,
 	}, nil
+}
+
+func normalizeDockerDNS(value string) (string, error) {
+	if strings.TrimSpace(value) == "" {
+		value = defaultDockerDNS
+	}
+	items := strings.Split(value, ",")
+	if len(items) < 1 || len(items) > 3 {
+		return "", fmt.Errorf("fly Docker DNS must contain between one and three comma-separated IP addresses")
+	}
+	normalized := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		ip := net.ParseIP(strings.TrimSpace(item))
+		if ip == nil {
+			return "", fmt.Errorf("fly Docker DNS entry %q must be a literal IP address", item)
+		}
+		canonical := ip.String()
+		if _, exists := seen[canonical]; exists {
+			return "", fmt.Errorf("fly Docker DNS contains duplicate address %q", canonical)
+		}
+		seen[canonical] = struct{}{}
+		normalized = append(normalized, canonical)
+	}
+	return strings.Join(normalized, ","), nil
 }
 
 type machine struct {
@@ -168,6 +202,7 @@ func (a *Adapter) Launch(ctx context.Context, lease provider.Lease) (provider.Wo
 				Env: map[string]string{
 					"ACTIONS_RUNNER_INPUT_JITCONFIG": lease.JITConfig,
 					"RUNNERYARD_DEADLINE":            lease.Deadline.UTC().Format(time.RFC3339),
+					"RUNNERYARD_DOCKER_DNS":          a.dockerDNS,
 				},
 				IgnoreAppSecrets: true,
 			}},

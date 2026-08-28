@@ -60,6 +60,7 @@ for warm workers.
 | `RUNNER_CPUS` | CPUs per worker. | `2` |
 | `RUNNER_MEMORY_MB` | Memory per worker. | `8192` |
 | `RUNNER_ROOTFS_GB` | Ephemeral root filesystem per worker. | `30` |
+| `RUNNER_DOCKER_DNS` | One to three comma-separated resolver IPs for containers on Fly's nested Docker bridge. | `1.1.1.1,8.8.8.8` |
 
 `FLY_API_TOKEN` is a deploy token scoped only to the worker app and belongs only
 on the controller. `FLY_APP_NAME` identifies the separate controller app.
@@ -71,6 +72,15 @@ allowance is consumed. Performance CPUs receive their full allocation
 continuously, so measure cost per successful job and rerun rate rather than
 comparing only the per-second price. Explicit `RUNNER_CPU_KIND=shared` remains
 supported for genuinely bursty workloads.
+
+Fly exposes its Machine resolver to the host over the private IPv6 network.
+That address is not reliably reachable from a Docker daemon's nested bridge,
+even though daemon-level image pulls still work. RunnerYard therefore gives
+job containers explicit public resolvers on Fly. Values must be literal IP
+addresses; hostnames, empty entries, duplicates, and lists longer than three
+fail before a worker is launched. Override the generated pair only when the
+replacement resolver is deliberately reachable from the isolated worker
+network. This setting is not applied to Hetzner workers.
 
 For a conservative first canary, generate a lower hard ceiling:
 
