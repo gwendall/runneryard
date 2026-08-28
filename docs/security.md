@@ -94,8 +94,10 @@ The runtime pins the official GitHub Actions runner and Node 22 bootstrap images
 by digest. The bootstrap runtime keeps shell-based planners compatible and
 publishes that same pinned Node version through the GitHub runner toolcache on
 both x64 and arm64. Workflows should still use `actions/setup-node`: the pinned
-version resolves locally, while any other requested version follows the action's
-normal managed download path.
+patch resolves locally, while a floating major or any other requested version
+may follow the action's normal managed download path. Operators should update
+the digest-pinned runtime first, then pin repository workflows to that exact
+patch; a pull request must never choose the worker image itself.
 Release binaries ship with SHA-256 checksums; the npm launcher verifies them
 before execution. GitHub Actions dependencies are pinned to commit SHAs. Public
 npm publishing is configured for OIDC trusted publishing and provenance,

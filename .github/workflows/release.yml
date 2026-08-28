@@ -78,12 +78,17 @@ jobs:
             exit 1
           fi
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          node_version="$(sed -n 's/^ARG NODE_VERSION=//p' Dockerfile)"
+          if [[ -z "$node_version" ]]; then
+            echo "::error::Dockerfile does not declare ARG NODE_VERSION"
+            exit 1
+          fi
           docker build --platform linux/amd64 \
             --build-arg VERSION="$version" \
             --build-arg COMMIT_SHA="$GITHUB_SHA" \
             -t "$image:$version" .
           bash scripts/verify-runtime-toolcache.sh \
-            "$image:$version" .canary/setup-node 22.22.3
+            "$image:$version" .canary/setup-node "$node_version"
           docker push "$image:$version"
       - name: Create immutable GitHub release draft with every asset
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228

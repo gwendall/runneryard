@@ -11,6 +11,8 @@ import (
 	"testing"
 )
 
+const expectedNodeRuntimeVersion = "22.23.2"
+
 func TestRuntimeImageIncludesGitHubCLI(t *testing.T) {
 	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "Dockerfile"))
 	if err != nil {
@@ -27,7 +29,7 @@ func TestRuntimeImageIncludesPinnedNodeBootstrap(t *testing.T) {
 		t.Fatal(err)
 	}
 	contents := string(dockerfile)
-	if !strings.Contains(contents, "ARG NODE_VERSION=22.22.3") ||
+	if !strings.Contains(contents, "ARG NODE_VERSION="+expectedNodeRuntimeVersion) ||
 		!strings.Contains(contents, "ARG NODE_IMAGE=node:${NODE_VERSION}-bookworm-slim@sha256:") {
 		t.Fatal("runtime image must pin the Node 22 bootstrap image by digest")
 	}
@@ -43,7 +45,7 @@ func TestRuntimeImagePrewarmsPinnedNodeToolcache(t *testing.T) {
 	}
 	contents := string(dockerfile)
 	for _, required := range []string{
-		"ARG NODE_VERSION=22.22.3",
+		"ARG NODE_VERSION=" + expectedNodeRuntimeVersion,
 		"ARG TARGETARCH",
 		`amd64) toolcache_arch=x64`,
 		`arm64) toolcache_arch=arm64`,
@@ -71,7 +73,10 @@ func TestReleaseRunsPinnedSetupNodeToolcacheCanaryOffline(t *testing.T) {
 		"repository: actions/setup-node",
 		"ref: 820762786026740c76f36085b0efc47a31fe5020",
 		"persist-credentials: false",
+		`node_version="$(sed -n 's/^ARG NODE_VERSION=//p' Dockerfile)"`,
+		`Dockerfile does not declare ARG NODE_VERSION`,
 		"bash scripts/verify-runtime-toolcache.sh",
+		`"$image:$version" .canary/setup-node "$node_version"`,
 	} {
 		if !strings.Contains(contents, required) {
 			t.Fatalf("release workflow does not enforce the setup-node canary: missing %q", required)
