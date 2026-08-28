@@ -21,7 +21,8 @@ Worker retirement converges both control planes: provider compute is confirmed
 absent, then the matching GitHub runner registration is removed. The intent is
 written first to a durable `retirements.json` journal beside the budget ledger,
 so a controller restart or transient GitHub API failure cannot lose cleanup.
-Removal is restricted to RunnerYard names in the controller's exact scale set.
+Removal is restricted to the journaled GitHub registration ID and scale-set ID;
+the matching lease and registration proof also travel in provider metadata.
 If provider ownership is ambiguous, cleanup fails closed and remains pending.
 
 ## Safe upgrades
@@ -109,7 +110,9 @@ restart.
 The retirement journal is controller state, not a cache. Keep it on the same
 durable private volume as the budget ledger. Missing state is initialized once;
 corrupt or unwritable state stops retirement before provider deletion. Do not
-edit or reset it while a fleet is active.
+edit or reset it while a fleet is active. Upgrading from a non-empty legacy
+journal is intentionally refused: let the previous controller drain it first,
+then upgrade with an empty fleet and journal.
 
 Queued jobs are the intended failure mode. Raise the budget from observed
 qualified workload, and account separately for the small always-on controller,

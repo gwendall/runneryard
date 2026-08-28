@@ -29,7 +29,7 @@ func TestLaunchIsEphemeralAndReceivesOnlyJITCredential(t *testing.T) {
 		if len(request.Config.Processes[0].Env) != 2 || request.Config.Processes[0].Env["ACTIONS_RUNNER_INPUT_JITCONFIG"] != "jit-secret" || request.Config.Processes[0].Env["RUNNERYARD_DEADLINE"] == "" {
 			t.Fatalf("worker received unexpected process environment: %#v", request.Config.Processes[0].Env)
 		}
-		if request.Config.Metadata[controllerIDKey] != "test-controller" || request.Config.Metadata[leaseIDKey] != "lease-one" {
+		if request.Config.Metadata[controllerIDKey] != "test-controller" || request.Config.Metadata[leaseIDKey] != "lease-one" || request.Config.Metadata[runnerIDKey] != "42" || request.Config.Metadata[runnerScaleSetIDKey] != "7" {
 			t.Fatal("ownership metadata missing")
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -41,12 +41,13 @@ func TestLaunchIsEphemeralAndReceivesOnlyJITCredential(t *testing.T) {
 
 	adapter := testAdapter(t, server)
 	worker, err := adapter.Launch(context.Background(), provider.Lease{
-		ID: "lease-one", RunnerName: "runner-one", JITConfig: "jit-secret", Deadline: time.Now().Add(time.Hour),
+		ID: "lease-one", RunnerName: "runner-one", RunnerID: 42, RunnerScaleSetID: 7,
+		JITConfig: "jit-secret", Deadline: time.Now().Add(time.Hour),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if worker.ID != "machine-id" || worker.LeaseID != "lease-one" {
+	if worker.ID != "machine-id" || worker.LeaseID != "lease-one" || worker.RunnerID != 42 || worker.RunnerScaleSetID != 7 {
 		t.Fatalf("unexpected worker %#v", worker)
 	}
 }

@@ -10,19 +10,23 @@ import (
 // Lease is the provider-neutral instruction for one ephemeral GitHub runner.
 // JITConfig is the only credential that may be delivered to the worker.
 type Lease struct {
-	ID         string
-	RunnerName string
-	JITConfig  string
-	Deadline   time.Time
+	ID               string
+	RunnerName       string
+	RunnerID         int64
+	RunnerScaleSetID int
+	JITConfig        string
+	Deadline         time.Time
 }
 
 // Worker is the provider-neutral inventory record used for reconciliation.
 type Worker struct {
-	ID         string
-	LeaseID    string
-	RunnerName string
-	State      string
-	CreatedAt  time.Time
+	ID               string
+	LeaseID          string
+	RunnerName       string
+	RunnerID         int64
+	RunnerScaleSetID int
+	State            string
+	CreatedAt        time.Time
 }
 
 // Compute launches, inventories, and destroys workers owned by one controller.

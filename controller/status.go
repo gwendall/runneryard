@@ -420,7 +420,7 @@ func (status FleetStatus) validate() error {
 	if status.Health != "starting" && status.Health != "ready" && status.Health != "degraded" {
 		return errors.New("fleet status contains an invalid health value")
 	}
-	workerValues := []int{status.Workers.Actual, status.Workers.Starting, status.Workers.Busy, status.Workers.Idle, status.Workers.OrphanCandidates, status.Workers.Maximum}
+	workerValues := []int{status.Workers.Actual, status.Workers.Starting, status.Workers.Busy, status.Workers.Idle, status.Workers.OrphanCandidates, status.Workers.PendingRetirements, status.Workers.Maximum}
 	for _, value := range workerValues {
 		if value < 0 {
 			return errors.New("fleet status contains a negative worker count")

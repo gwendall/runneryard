@@ -135,6 +135,23 @@ func TestFleetStatusFileIsPrivateAtomicAndRejectsSymlinks(t *testing.T) {
 	}
 }
 
+func TestFleetStatusRejectsNegativePendingRetirements(t *testing.T) {
+	statusFile := filepath.Join(t.TempDir(), "status.json")
+	now := time.Now().UTC()
+	status := FleetStatus{
+		SchemaVersion: 1, UpdatedAt: now, StartedAt: now, Health: "ready",
+		Controller: ControllerStatus{ID: "one", Provider: "fly"},
+		Workers:    WorkerStatus{Maximum: 4, PendingRetirements: -1},
+		Budget:     BudgetStatus{LimitSeconds: 1, RemainingSeconds: 1, WindowSeconds: 1},
+	}
+	if err := writeStatusFile(statusFile, status); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadStatus(statusFile); err == nil {
+		t.Fatal("expected negative pending retirements to be rejected")
+	}
+}
+
 func TestFleetStatusSchemaContainsNoWorkloadOrCredentialFields(t *testing.T) {
 	now := time.Now().UTC()
 	status := FleetStatus{SchemaVersion: 1, UpdatedAt: now, StartedAt: now, Health: "ready"}
