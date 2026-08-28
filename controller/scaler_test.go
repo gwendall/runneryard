@@ -318,6 +318,39 @@ func TestRegistrationCleanupFailureRemainsRetryable(t *testing.T) {
 	}
 }
 
+func TestCompletionDefersBusyGitHubRegistrationWithoutStoppingListener(t *testing.T) {
+	worker := provider.Worker{
+		ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-00000001",
+		RunnerID: 42, RunnerScaleSetID: 1,
+	}
+	compute := &fakeCompute{workers: []provider.Worker{worker}, removeBeforeDestroy: true}
+	state := newWorkerState()
+	state.add(worker, true)
+	scaler := testScaler(t, state, compute)
+	github := &fakeRunnerScaleSetClient{
+		runners: map[string]*scaleset.RunnerReference{
+			worker.RunnerName: {ID: 42, Name: worker.RunnerName, RunnerScaleSetID: 1},
+		},
+		removeErr: scaleset.JobStillRunningError,
+	}
+	scaler.scaleSetClient = github
+
+	if err := scaler.HandleJobCompleted(context.Background(), &scaleset.JobCompleted{RunnerName: worker.RunnerName}); err != nil {
+		t.Fatalf("busy registration stopped the listener: %v", err)
+	}
+	if scaler.retirements.count() != 1 || state.count() != 1 || len(compute.workers) != 0 {
+		t.Fatalf("deferred completion state: pending=%d state=%d workers=%#v", scaler.retirements.count(), state.count(), compute.workers)
+	}
+
+	github.removeErr = nil
+	if err := scaler.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if scaler.retirements.count() != 0 || state.count() != 0 || len(github.removed) != 1 {
+		t.Fatalf("deferred completion did not converge: pending=%d state=%d removed=%#v", scaler.retirements.count(), state.count(), github.removed)
+	}
+}
+
 func TestRegistrationCleanupRefusesUnexpectedScaleSet(t *testing.T) {
 	worker := provider.Worker{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-00000001"}
 	compute := &fakeCompute{workers: []provider.Worker{worker}, removeBeforeDestroy: true}
@@ -366,6 +399,45 @@ func TestRecoveryResumesDurableRegistrationCleanup(t *testing.T) {
 	}
 	if reloaded.count() != 0 || len(github.removed) != 1 {
 		t.Fatalf("restart cleanup did not converge: pending=%d removed=%#v", reloaded.count(), github.removed)
+	}
+}
+
+func TestRecoveryDefersBusyGitHubRegistrationWithoutBlockingController(t *testing.T) {
+	directory := t.TempDir()
+	queue, err := newRetirementQueue(filepath.Join(directory, "retirements.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := retirementEntry{
+		RunnerName: "runner-00000001", RunnerID: 42, RunnerScaleSetID: 1,
+		LeaseID: "lease-one", BudgetDisposition: settleActualUsage,
+	}
+	if err := queue.put(entry); err != nil {
+		t.Fatal(err)
+	}
+	scaler := testScaler(t, newWorkerState(), &fakeCompute{})
+	scaler.retirements = queue
+	github := &fakeRunnerScaleSetClient{
+		runners: map[string]*scaleset.RunnerReference{
+			entry.RunnerName: {ID: 42, Name: entry.RunnerName, RunnerScaleSetID: 1},
+		},
+		removeErr: scaleset.JobStillRunningError,
+	}
+	scaler.scaleSetClient = github
+
+	if err := scaler.recover(context.Background()); err != nil {
+		t.Fatalf("busy registration blocked controller recovery: %v", err)
+	}
+	if queue.count() != 1 || len(github.removed) != 0 {
+		t.Fatalf("busy retirement was not retained safely: pending=%d removed=%#v", queue.count(), github.removed)
+	}
+
+	github.removeErr = nil
+	if err := scaler.reconcile(context.Background()); err != nil {
+		t.Fatalf("deferred retirement did not converge: %v", err)
+	}
+	if queue.count() != 0 || len(github.removed) != 1 || github.removed[0] != entry.RunnerID {
+		t.Fatalf("deferred retirement result: pending=%d removed=%#v", queue.count(), github.removed)
 	}
 }
 

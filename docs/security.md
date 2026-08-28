@@ -119,7 +119,10 @@ for a controller-generated `runner-*` identity, and only when its immutable
 registration ID, scale-set ID, and provider lease proof agree. That proof is
 stored both in the private retirement journal and in provider metadata, so a
 restart or a same-name replacement cannot widen cleanup authority. Cleanup
-credentials never reach workers.
+credentials never reach workers. A typed GitHub `job still running` response
+keeps that exact proof pending and does not stop the listener; later
+reconciliation may retry it, but may not substitute a name-matched registration
+with a different ID. Every other identity mismatch still fails closed.
 
 This ceiling covers worker runtime, not the always-on controller, volumes,
 network transfer, image storage, taxes, or provider price changes. Keep a

@@ -13,6 +13,8 @@ import (
 	"github.com/gwendall/runneryard/provider"
 )
 
+var errRetirementDeferred = errors.New("runner retirement deferred")
+
 type scaler struct {
 	state          *workerState
 	compute        provider.Compute
@@ -387,6 +389,9 @@ func (s *scaler) finishPendingRetirements(ctx context.Context, workers []provide
 			return err
 		}
 		if err := s.finishRetirement(ctx, worker, providerPresent, retirement); err != nil {
+			if errors.Is(err, errRetirementDeferred) {
+				continue
+			}
 			return fmt.Errorf("finish pending retirement for %s: %w", retirement.RunnerName, err)
 		}
 	}
@@ -406,7 +411,11 @@ func (s *scaler) retireWorker(ctx context.Context, worker provider.Worker, provi
 		return err
 	}
 	s.reporter.retirements(s.retirements.count())
-	return s.finishRetirement(ctx, worker, providerPresent, retirement)
+	err := s.finishRetirement(ctx, worker, providerPresent, retirement)
+	if errors.Is(err, errRetirementDeferred) {
+		return nil
+	}
+	return err
 }
 
 func validateWorkerRetirementProof(worker provider.Worker, retirement retirementEntry) error {
@@ -434,6 +443,14 @@ func (s *scaler) finishRetirement(ctx context.Context, worker provider.Worker, p
 	}
 	if err := s.removeRunnerRegistration(ctx, retirement); err != nil {
 		s.reporter.degraded("github_runner_cleanup_failed")
+		if errors.Is(err, scaleset.JobStillRunningError) {
+			s.logger.Warn(
+				"deferred GitHub runner cleanup while job is still running",
+				"runner", retirement.RunnerName,
+				"runner_id", retirement.RunnerID,
+			)
+			return errors.Join(errRetirementDeferred, err)
+		}
 		return err
 	}
 	var budgetErr error
