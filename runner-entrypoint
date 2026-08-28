@@ -23,10 +23,28 @@ if (( remaining_seconds < 1 )); then
 fi
 
 mkdir -p /etc/docker /var/lib/docker
-# Let Docker select the native snapshotter (normally overlay2 on VM-backed
-# workers). Forcing vfs deep-copies every parent layer and can exhaust a 30 GB
-# ephemeral rootfs during an otherwise modest image build.
-printf '%s\n' '{"features":{"buildkit":true}}' >/etc/docker/daemon.json
+docker_root_filesystem="$(findmnt --noheadings --output FSTYPE --target /var/lib/docker | tr -d '[:space:]')"
+case "$docker_root_filesystem" in
+  overlay|overlayfs)
+    # A worker image commonly runs on a provider-managed overlay root. Kernel
+    # overlay and Docker's containerd overlay snapshotter cannot safely nest
+    # there. fuse-overlayfs preserves layered builds without vfs deep copies.
+    if [[ ! -c /dev/fuse ]]; then
+      echo "Docker data root uses $docker_root_filesystem but /dev/fuse is unavailable" >&2
+      exit 78
+    fi
+    if ! command -v fuse-overlayfs >/dev/null 2>&1; then
+      echo "Docker data root uses $docker_root_filesystem but fuse-overlayfs is unavailable" >&2
+      exit 78
+    fi
+    printf '%s\n' '{"features":{"buildkit":true,"containerd-snapshotter":false},"storage-driver":"fuse-overlayfs"}' >/etc/docker/daemon.json
+    ;;
+  *)
+    # On a plain VM filesystem, retain Docker's native snapshotter. Forcing vfs
+    # deep-copies every layer and can exhaust the ephemeral worker disk.
+    printf '%s\n' '{"features":{"buildkit":true}}' >/etc/docker/daemon.json
+    ;;
+esac
 
 dockerd --config-file=/etc/docker/daemon.json >/var/log/dockerd.log 2>&1 &
 docker_pid=$!
@@ -52,6 +70,16 @@ docker info >/dev/null 2>&1 || {
   cat /var/log/dockerd.log >&2
   exit 1
 }
+
+storage_driver="$(docker info --format '{{.Driver}}')"
+if [[ "$storage_driver" == vfs ]]; then
+  echo "refusing Docker storage driver vfs" >&2
+  exit 78
+fi
+if [[ "$docker_root_filesystem" == overlay || "$docker_root_filesystem" == overlayfs ]] && [[ "$storage_driver" != fuse-overlayfs ]]; then
+  echo "Docker data root uses $docker_root_filesystem but daemon selected $storage_driver instead of fuse-overlayfs" >&2
+  exit 78
+fi
 
 chown runner:docker /var/run/docker.sock
 set +e

@@ -138,8 +138,10 @@ live worker shape, stop routing new jobs, let existing workers finish, update
 `RUNNER_CPU_KIND` and `RUNNER_CPUS` on the controller, replace the controller,
 then run one exact-version canary before restoring the route. Existing workers
 keep the shape they were launched with and should not be interrupted.
-That canary must also pass its Node toolcache, non-`vfs`, and BuildKit proofs;
-a matching version string alone is not sufficient runtime evidence.
+That canary must also pass its Node toolcache, `fuse-overlayfs`, and real
+BuildKit build-and-run proofs. Fly's enlarged OCI root is itself overlay-backed,
+so a version string, Buildx version, or successful base-image pull is not
+sufficient runtime evidence.
 
 For a conservative first deployment, generate a two-worker ceiling before
 creating provider resources:

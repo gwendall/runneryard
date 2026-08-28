@@ -53,9 +53,17 @@ printf '%s\n' \
   >"$entrypoint_canary_directory/dockerd"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
   'test "${1:-}" = info' \
   'touch /var/run/docker.sock' \
+  'if [[ "${2:-}" == --format ]]; then cat /canary-output/storage-driver; fi' \
   >"$entrypoint_canary_directory/docker"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'test "${*: -1}" = /var/lib/docker' \
+  "printf '%s\\n' ext4" \
+  >"$entrypoint_canary_directory/findmnt"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
@@ -77,7 +85,9 @@ printf '%s\n' \
 chmod 0755 \
   "$entrypoint_canary_directory/dockerd" \
   "$entrypoint_canary_directory/docker" \
+  "$entrypoint_canary_directory/findmnt" \
   "$entrypoint_canary_directory/run.sh"
+printf '%s\n' overlay2 >"$entrypoint_canary_directory/output/storage-driver"
 
 docker run --rm "${docker_platform_args[@]}" \
   --entrypoint /usr/local/bin/runner-entrypoint \
@@ -85,10 +95,31 @@ docker run --rm "${docker_platform_args[@]}" \
   -e RUNNERYARD_DEADLINE=2099-01-01T00:00:00Z \
   -v "$entrypoint_canary_directory/dockerd:/usr/local/sbin/dockerd:ro" \
   -v "$entrypoint_canary_directory/docker:/usr/local/sbin/docker:ro" \
+  -v "$entrypoint_canary_directory/findmnt:/usr/bin/findmnt:ro" \
   -v "$entrypoint_canary_directory/run.sh:/home/runner/run.sh:ro" \
   -v "$entrypoint_canary_directory/output:/canary-output" \
   "$runtime_image"
 grep -Fx passed "$entrypoint_canary_directory/output/result"
+
+# The runtime itself, not only the repository canary, must fail closed before a
+# job starts if Docker falls back to the deep-copy vfs driver.
+printf '%s\n' vfs >"$entrypoint_canary_directory/output/storage-driver"
+set +e
+docker run --rm "${docker_platform_args[@]}" \
+  --entrypoint /usr/local/bin/runner-entrypoint \
+  -e ACTIONS_RUNNER_INPUT_JITCONFIG=offline-canary \
+  -e RUNNERYARD_DEADLINE=2099-01-01T00:00:00Z \
+  -v "$entrypoint_canary_directory/dockerd:/usr/local/sbin/dockerd:ro" \
+  -v "$entrypoint_canary_directory/docker:/usr/local/sbin/docker:ro" \
+  -v "$entrypoint_canary_directory/findmnt:/usr/bin/findmnt:ro" \
+  -v "$entrypoint_canary_directory/run.sh:/home/runner/run.sh:ro" \
+  -v "$entrypoint_canary_directory/output:/canary-output" \
+  "$runtime_image" \
+  >"$entrypoint_canary_directory/output/storage-guard.log" 2>&1
+storage_guard_status=$?
+set -e
+test "$storage_guard_status" -eq 78
+grep -F "refusing Docker storage driver vfs" "$entrypoint_canary_directory/output/storage-guard.log"
 
 workflow_commands_token=
 if [[ ${GITHUB_ACTIONS:-} == true ]]; then

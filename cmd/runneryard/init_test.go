@@ -57,6 +57,7 @@ func TestRunInitCreatesSafeScaffold(t *testing.T) {
 		`actual_version="$(runneryard version)"`,
 		`docker buildx version`,
 		`test "$storage_driver" != vfs`,
+		`test "$storage_driver" = fuse-overlayfs`,
 		`docker buildx build --load`,
 	} {
 		if !strings.Contains(string(canary), expected) {

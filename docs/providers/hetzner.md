@@ -159,8 +159,11 @@ the durable volume and stable `CONTROLLER_ID`, restart exactly one controller,
 and do not initialize the ledger again. `status` proves the controller version;
 set `RUNNERYARD_EXPECTED_VERSION` in the generated canary so the job itself
 proves the worker image before routing normal jobs back.
-Treat the Node toolcache, non-`vfs` storage driver, and BuildKit steps in that
-job as required provider evidence rather than optional diagnostics.
+Treat the Node toolcache, root-filesystem-aware storage driver, and real
+BuildKit build-and-run steps in that job as required provider evidence rather
+than optional diagnostics. A containerized worker normally reports an overlay
+root and must therefore select `fuse-overlayfs`; a plain data filesystem may
+retain Docker's native driver.
 
 The controller host can be a small Hetzner VM, another VPS, or an existing
 isolated Docker host. It needs durable storage and outbound HTTPS to GitHub,

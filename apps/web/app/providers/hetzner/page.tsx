@@ -85,7 +85,7 @@ hcloud server list --selector runneryard-managed-by=true
 npx runneryard route enable \\
   --github https://github.com/acme/widgets \\
   --label acme-linux --confirm-canary`}</CodeBlock>
-              <p>Preview means the adapter has seam coverage but still needs a public release canary in a real Hetzner project. Use only trusted, low-risk workloads until then. <a href={`${docsUrl}/configuration.md`}>Size capacity and budget</a>, then read the <a href={`${docsUrl}/providers/hetzner.md`}>complete Hetzner guide</a>.</p>
+              <p>The canary must prove the Node toolcache, root-filesystem-aware Docker storage, and a real BuildKit build and container run. Preview means the adapter has seam coverage but still needs a public release canary in a real Hetzner project. Use only trusted, low-risk workloads until then. <a href={`${docsUrl}/configuration.md`}>Size capacity and budget</a>, then read the <a href={`${docsUrl}/providers/hetzner.md`}>complete Hetzner guide</a>.</p>
             </div>
           </section>
 

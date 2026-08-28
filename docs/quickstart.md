@@ -126,7 +126,8 @@ three receipts:
 
 The first receipt is a runtime qualification, not a version-only ping. The
 generated job verifies the prewarmed Node patch with pinned `actions/setup-node`,
-rejects Docker's `vfs` driver, and completes a digest-pinned BuildKit build.
+rejects Docker's `vfs` driver, verifies `fuse-overlayfs` on a layered provider
+root, and completes a digest-pinned BuildKit build and container execution.
 
 Inspect the controller receipt before routing broader jobs. Use
 `runneryard status --json` inside the controller, `fly ssh console --command`
