@@ -19,6 +19,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Checkout pinned setup-node canary
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -73,23 +77,36 @@ jobs:
           gh api --paginate \
             "/${package_owner_path}/packages/container/runneryard/versions?per_page=100" \
             --jq '.[] | .metadata.container.tags[]?' >"$existing_tags"
-          if grep -Fxq "$version" "$existing_tags"; then
-            echo "::error::Refusing to overwrite immutable GHCR tag $image:$version"
-            exit 1
-          fi
+          for release_tag in "$version" "$version-amd64" "$version-arm64"; do
+            if grep -Fxq "$release_tag" "$existing_tags"; then
+              echo "::error::Refusing to overwrite immutable GHCR tag $image:$release_tag"
+              exit 1
+            fi
+          done
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           node_version="$(sed -n 's/^ARG NODE_VERSION=//p' Dockerfile)"
           if [[ -z "$node_version" ]]; then
             echo "::error::Dockerfile does not declare ARG NODE_VERSION"
             exit 1
           fi
-          docker build --platform linux/amd64 \
-            --build-arg VERSION="$version" \
-            --build-arg COMMIT_SHA="$GITHUB_SHA" \
-            -t "$image:$version" .
-          bash scripts/verify-runtime-toolcache.sh \
-            "$image:$version" .canary/setup-node "$node_version"
-          docker push "$image:$version"
+          for platform_and_arch in linux/amd64:amd64 linux/arm64:arm64; do
+            IFS=: read -r platform arch <<< "$platform_and_arch"
+            architecture_image="$image:$version-$arch"
+            docker buildx build --platform "$platform" --load \
+              --build-arg VERSION="$version" \
+              --build-arg COMMIT_SHA="$GITHUB_SHA" \
+              -t "$architecture_image" .
+            bash scripts/verify-runtime-toolcache.sh \
+              "$architecture_image" .canary/setup-node "$node_version" "$platform"
+            docker push "$architecture_image"
+          done
+          docker buildx imagetools create \
+            --tag "$image:$version" \
+            "$image:$version-amd64" \
+            "$image:$version-arm64"
+          manifest="$(docker buildx imagetools inspect "$image:$version" --format '{{json .Manifest}}')"
+          jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"]' \
+            <<<"$manifest"
       - name: Create immutable GitHub release draft with every asset
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
@@ -153,6 +170,7 @@ jobs:
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Advance latest after the complete release path
         env:
           GHCR_TOKEN: ${{ github.token }}
@@ -162,6 +180,7 @@ jobs:
           version="${VERSION#v}"
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/runneryard"
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker pull "$image:$version"
-          docker tag "$image:$version" "$image:latest"
-          docker push "$image:latest"
+          docker buildx imagetools create --tag "$image:latest" "$image:$version"
+          manifest="$(docker buildx imagetools inspect "$image:latest" --format '{{json .Manifest}}')"
+          jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"]' \
+            <<<"$manifest"

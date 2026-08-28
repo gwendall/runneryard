@@ -22,6 +22,12 @@ type initOptions struct {
 	force      bool
 }
 
+const (
+	runtimeNodeVersion = "22.23.2"
+	setupNodeCommit    = "820762786026740c76f36085b0efc47a31fe5020"
+	buildCanaryImage   = "busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0"
+)
+
 var (
 	safeName        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
 	safeGitHubOwner = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
@@ -285,12 +291,26 @@ permissions:
 
 env:
   RUNNERYARD_EXPECTED_VERSION: %q
+  RUNNERYARD_EXPECTED_NODE: %q
 
 jobs:
   canary:
     runs-on: %q
     timeout-minutes: 10
     steps:
+      - name: Verify prewarmed Node toolcache
+        run: |
+          case "$(uname -m)" in
+            x86_64) toolcache_arch=x64 ;;
+            aarch64|arm64) toolcache_arch=arm64 ;;
+            *) echo "unsupported canary architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          expected_path="$RUNNER_TOOL_CACHE/node/$RUNNERYARD_EXPECTED_NODE/$toolcache_arch/bin/node"
+          test -x "$expected_path"
+          test "$("$expected_path" --version)" = "v$RUNNERYARD_EXPECTED_NODE"
+      - uses: actions/setup-node@%s
+        with:
+          node-version: ${{ env.RUNNERYARD_EXPECTED_NODE }}
       - name: Verify isolated worker
         run: |
           actual_version="$(runneryard version)"
@@ -299,6 +319,14 @@ jobs:
             *) echo "unexpected worker release: $actual_version" >&2; exit 1 ;;
           esac
           test -n "$RUNNER_NAME"
-          docker version
-`, version, scaleSet)
+          test "$(node --version)" = "v$RUNNERYARD_EXPECTED_NODE"
+          docker buildx version
+          storage_driver="$(docker info --format '{{.Driver}}')"
+          test "$storage_driver" != vfs
+          docker buildx build --load -t runneryard-buildkit-canary - <<'EOF'
+          FROM %s
+          RUN printf passed >/runneryard-buildkit-canary
+          EOF
+          test "$(docker run --rm runneryard-buildkit-canary cat /runneryard-buildkit-canary)" = passed
+`, version, runtimeNodeVersion, scaleSet, setupNodeCommit, buildCanaryImage)
 }

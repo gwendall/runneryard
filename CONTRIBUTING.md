@@ -26,7 +26,7 @@ go test -race ./...
 go vet ./...
 pnpm check
 pnpm build
-bash -n controller-entrypoint runner-entrypoint
+bash -n controller-entrypoint runner-entrypoint scripts/verify-runtime-toolcache.sh
 git diff --check
 ```
 

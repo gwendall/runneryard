@@ -25,10 +25,15 @@ Use this checklist before changing repository visibility or publishing a tag.
 - [ ] Verify every release checksum and all four binary targets.
 - [ ] Run `npx runneryard@<version> version` on macOS and Linux from an empty npm
   cache.
-- [ ] Verify the published image contains GitHub CLI, Node, Git, Git LFS, Docker,
-  and the pinned Actions runner.
+- [ ] Verify the published image contains GitHub CLI, Node, Git, Git LFS,
+  Docker, Docker Buildx, and the pinned Actions runner.
 - [ ] Confirm the offline `actions/setup-node` release canary resolves the pinned
   Node version from `/opt/hostedtoolcache` on every published architecture.
+- [ ] Confirm the immutable worker tag is a manifest containing exactly Linux
+  amd64 and arm64 images, both qualified before publication.
+- [ ] Confirm a provider canary reports a native Docker storage driver and a
+  BuildKit build; reject the legacy builder or a forced `vfs` driver on
+  VM-backed workers.
 
 ## First-user journey
 

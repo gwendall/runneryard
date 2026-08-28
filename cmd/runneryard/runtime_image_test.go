@@ -11,7 +11,23 @@ import (
 	"testing"
 )
 
-const expectedNodeRuntimeVersion = "22.23.2"
+func readRepositoryFile(t *testing.T, elements ...string) string {
+	t.Helper()
+	contents, err := os.ReadFile(filepath.Join(append([]string{"..", ".."}, elements...)...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(contents)
+}
+
+func requireSourceContains(t *testing.T, description, contents string, required ...string) {
+	t.Helper()
+	for _, fragment := range required {
+		if !strings.Contains(contents, fragment) {
+			t.Fatalf("%s: missing %q", description, fragment)
+		}
+	}
+}
 
 func TestRuntimeImageIncludesGitHubCLI(t *testing.T) {
 	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "Dockerfile"))
@@ -23,13 +39,60 @@ func TestRuntimeImageIncludesGitHubCLI(t *testing.T) {
 	}
 }
 
+func TestRuntimeImageIncludesBuildKitTooling(t *testing.T) {
+	contents := readRepositoryFile(t, "Dockerfile")
+	requireSourceContains(t, "runtime image does not guarantee BuildKit tooling", contents,
+		"ARG GO_IMAGE=golang:1.25.3-bookworm@sha256:4f43b271f9673eb7bd0cb3a49cc17b08d8d6ee110277e26dbacc93c43a5a7793",
+		"FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517",
+		"docker-buildx=0.30.1-0ubuntu1~24.04.1",
+		"docker.io=29.1.3-0ubuntu3~24.04.2",
+		"ENV DOCKER_BUILDKIT=1",
+	)
+	contents = readRepositoryFile(t, "runner-entrypoint")
+	requireSourceContains(t, "worker entrypoint does not enable BuildKit", contents,
+		`{"features":{"buildkit":true}}`,
+		"DOCKER_BUILDKIT=1",
+	)
+	if strings.Contains(contents, `{"storage-driver":"vfs"}`) {
+		t.Fatal("worker entrypoint must not force Docker's deep-copy vfs storage driver")
+	}
+}
+
+func TestRunnerEntrypointPreservesRuntimeTooling(t *testing.T) {
+	contents := readRepositoryFile(t, "runner-entrypoint")
+	requireSourceContains(t, "worker entrypoint does not preserve the toolcache contract", contents,
+		"RUNNER_TOOL_CACHE=/opt/hostedtoolcache ImageOS=ubuntu24",
+	)
+}
+
+func TestReleaseBuildsAndCanariesBothWorkerArchitectures(t *testing.T) {
+	contents := readRepositoryFile(t, ".github", "workflows", "release.yml")
+	requireSourceContains(t, "release does not publish and canary both worker architectures", contents,
+		"docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130",
+		"docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f",
+		"linux/amd64:amd64 linux/arm64:arm64",
+		`"$image:$version-$arch"`,
+		`verify-runtime-toolcache.sh`,
+		`"$node_version" "$platform"`,
+		`docker buildx imagetools create`,
+		`sort == ["amd64", "arm64"]`,
+	)
+	requireSourceContains(t, "latest does not preserve the qualified multi-architecture manifest", contents,
+		`docker buildx imagetools create --tag "$image:latest" "$image:$version"`,
+		`docker buildx imagetools inspect "$image:latest"`,
+	)
+	if strings.Contains(contents, `docker tag "$image:$version" "$image:latest"`) {
+		t.Fatal("latest must not flatten the versioned manifest to the release runner architecture")
+	}
+}
+
 func TestRuntimeImageIncludesPinnedNodeBootstrap(t *testing.T) {
 	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "Dockerfile"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	contents := string(dockerfile)
-	if !strings.Contains(contents, "ARG NODE_VERSION="+expectedNodeRuntimeVersion) ||
+	if !strings.Contains(contents, "ARG NODE_VERSION="+runtimeNodeVersion) ||
 		!strings.Contains(contents, "ARG NODE_IMAGE=node:${NODE_VERSION}-bookworm-slim@sha256:") {
 		t.Fatal("runtime image must pin the Node 22 bootstrap image by digest")
 	}
@@ -45,7 +108,7 @@ func TestRuntimeImagePrewarmsPinnedNodeToolcache(t *testing.T) {
 	}
 	contents := string(dockerfile)
 	for _, required := range []string{
-		"ARG NODE_VERSION=" + expectedNodeRuntimeVersion,
+		"ARG NODE_VERSION=" + runtimeNodeVersion,
 		"ARG TARGETARCH",
 		`amd64) toolcache_arch=x64`,
 		`arm64) toolcache_arch=arm64`,
@@ -76,7 +139,7 @@ func TestReleaseRunsPinnedSetupNodeToolcacheCanaryOffline(t *testing.T) {
 		`node_version="$(sed -n 's/^ARG NODE_VERSION=//p' Dockerfile)"`,
 		`Dockerfile does not declare ARG NODE_VERSION`,
 		"bash scripts/verify-runtime-toolcache.sh",
-		`"$image:$version" .canary/setup-node "$node_version"`,
+		`"$architecture_image" .canary/setup-node "$node_version" "$platform"`,
 	} {
 		if !strings.Contains(contents, required) {
 			t.Fatalf("release workflow does not enforce the setup-node canary: missing %q", required)
@@ -90,6 +153,14 @@ func TestReleaseRunsPinnedSetupNodeToolcacheCanaryOffline(t *testing.T) {
 	contents = string(canary)
 	for _, required := range []string{
 		"--network none",
+		`docker_platform_args=(--platform "$platform")`,
+		`--entrypoint docker`,
+		`"$runtime_image" buildx version`,
+		`--entrypoint /usr/local/bin/runner-entrypoint`,
+		`ACTIONS_RUNNER_INPUT_JITCONFIG=offline-canary`,
+		`RUNNERYARD_DEADLINE=2099-01-01T00:00:00Z`,
+		`test "$RUNNER_TOOL_CACHE" = /opt/hostedtoolcache`,
+		`grep -Fx passed "$entrypoint_canary_directory/output/result"`,
 		`workflow_commands_token="runneryard-$(openssl rand -hex 32)"`,
 		`echo "::stop-commands::$workflow_commands_token"`,
 		`$setup_node_directory:/action:ro`,
@@ -115,7 +186,7 @@ func TestReleasePublishesImmutableArtifactsFailClosed(t *testing.T) {
 	for _, required := range []string{
 		`gh api --paginate`,
 		`Organization) package_owner_path="orgs/${GITHUB_REPOSITORY_OWNER}"`,
-		`grep -Fxq "$version" "$existing_tags"`,
+		`grep -Fxq "$release_tag" "$existing_tags"`,
 		`Refusing to overwrite immutable GHCR tag`,
 		`draft: true`,
 		`gh release edit "$VERSION" --draft=false --verify-tag`,

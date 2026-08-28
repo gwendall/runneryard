@@ -159,6 +159,8 @@ the durable volume and stable `CONTROLLER_ID`, restart exactly one controller,
 and do not initialize the ledger again. `status` proves the controller version;
 set `RUNNERYARD_EXPECTED_VERSION` in the generated canary so the job itself
 proves the worker image before routing normal jobs back.
+Treat the Node toolcache, non-`vfs` storage driver, and BuildKit steps in that
+job as required provider evidence rather than optional diagnostics.
 
 The controller host can be a small Hetzner VM, another VPS, or an existing
 isolated Docker host. It needs durable storage and outbound HTTPS to GitHub,

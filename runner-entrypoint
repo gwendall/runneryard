@@ -23,7 +23,10 @@ if (( remaining_seconds < 1 )); then
 fi
 
 mkdir -p /etc/docker /var/lib/docker
-printf '%s\n' '{"storage-driver":"vfs"}' >/etc/docker/daemon.json
+# Let Docker select the native snapshotter (normally overlay2 on VM-backed
+# workers). Forcing vfs deep-copies every parent layer and can exhaust a 30 GB
+# ephemeral rootfs during an otherwise modest image build.
+printf '%s\n' '{"features":{"buildkit":true}}' >/etc/docker/daemon.json
 
 dockerd --config-file=/etc/docker/daemon.json >/var/log/dockerd.log 2>&1 &
 docker_pid=$!
@@ -55,6 +58,8 @@ set +e
 timeout --signal=TERM --kill-after=30s "${remaining_seconds}s" \
   setpriv --reuid=runner --regid=runner --init-groups \
   env HOME=/home/runner USER=runner LOGNAME=runner \
+  RUNNER_TOOL_CACHE=/opt/hostedtoolcache ImageOS=ubuntu24 \
+  DOCKER_BUILDKIT=1 \
   XDG_CONFIG_HOME=/home/runner/.config \
   /home/runner/run.sh
 runner_status=$?
