@@ -25,12 +25,20 @@ will use the runners:
 npx runneryard init --github https://github.com/acme/widgets
 ```
 
+Use `--max-runners 2` for a conservative first canary, then raise the
+operator-owned ceiling only from observed queue depth and provider spend.
+
 This creates three reviewable files for the default Fly provider and never
 uploads a credential:
 
 - `.runneryard/controller.env.example`
 - `.runneryard/fly.controller.toml`
 - `.github/workflows/runneryard-canary.yml`
+
+The generated Fly worker uses two sustained performance CPUs and 8 GB of RAM.
+Shared CPUs remain an explicit option for short, bursty jobs; see
+[Fly worker sizing](docs/configuration.md#fly-worker-shape) before changing the
+shape or concurrency ceiling.
 
 Next, create the isolated provider resources described in the
 [Fly guide](docs/providers/fly.md). Create a private GitHub App owned by the

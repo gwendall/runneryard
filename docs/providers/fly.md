@@ -26,7 +26,7 @@ Initialize the empty ledger exactly once, before starting the controller. The
 command refuses to overwrite an existing ledger:
 
 ```sh
-fly machine run ghcr.io/gwendall/runneryard:0.3.7 \
+fly machine run ghcr.io/gwendall/runneryard:0.3.8 \
   --entrypoint "/usr/local/bin/controller-entrypoint" \
   --env RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json \
   --app acme-ci-controller \
@@ -96,7 +96,7 @@ fly secrets set --app acme-ci-controller \
 fly deploy \
   --app acme-ci-controller \
   --config .runneryard/fly.controller.toml \
-  --image ghcr.io/gwendall/runneryard:0.3.7 \
+  --image ghcr.io/gwendall/runneryard:0.3.8 \
   --ha=false
 ```
 
@@ -112,7 +112,7 @@ The adapter creates one Machine with:
 - `auto_destroy=true`
 - restart policy `no`
 - a 30-second SIGTERM window
-- 4 shared CPUs, 8 GB RAM, and 30 GB ephemeral rootfs by default
+- 2 performance CPUs, 8 GB RAM, and 30 GB ephemeral rootfs by default
 - controller, lease, runner, and deadline metadata
 - `ACTIONS_RUNNER_INPUT_JITCONFIG` as its only injected credential
 - process-level `ignore_app_secrets=true`, plus a non-secret lease deadline
@@ -120,6 +120,40 @@ The adapter creates one Machine with:
 Configure shape and cost through `RUNNER_CPUS`, `RUNNER_MEMORY_MB`,
 `RUNNER_ROOTFS_GB`, `MIN_RUNNERS`, `MAX_RUNNERS`, and
 `RUNNER_MAX_LIFETIME`, `RUNNER_USAGE_BUDGET`, and `RUNNER_BUDGET_WINDOW`.
+The generated `performance-2x` shape is a sustained-CI default. Each Fly shared
+vCPU gets a 5 ms baseline in every 80 ms scheduling window (6.25%) plus burst
+capacity; CPU-heavy test suites can become dramatically slower after consuming
+that burst, causing timeouts and expensive reruns. Performance CPUs receive
+their allocation continuously. Compare
+[Fly CPU behavior](https://fly.io/docs/machines/cpu-performance/) and
+[current pricing](https://fly.io/docs/about/pricing/), then measure provider
+cost per successful job rather than per machine-second. Set
+`RUNNER_CPU_KIND=shared` explicitly only after a representative canary proves
+the workload is short and bursty.
+
+Start with the generated concurrency ceiling. Raise `MAX_RUNNERS` only from
+observed queue depth and completed-job throughput; more concurrent sustained
+workers can increase both contention elsewhere and provider spend. To change a
+live worker shape, stop routing new jobs, let existing workers finish, update
+`RUNNER_CPU_KIND` and `RUNNER_CPUS` on the controller, replace the controller,
+then run one exact-version canary before restoring the route. Existing workers
+keep the shape they were launched with and should not be interrupted.
+
+For a conservative first deployment, generate a two-worker ceiling before
+creating provider resources:
+
+```sh
+npx runneryard init --provider fly \
+  --github https://github.com/acme/widgets \
+  --max-runners 2
+```
+
+Size the next increase from canary duration, peak queue depth, and the provider
+budget you are willing to consume concurrently. Scaffolds generated before
+`0.3.8` set `RUNNER_CPUS` without `RUNNER_CPU_KIND`; RunnerYard deliberately
+keeps them on shared CPUs during an upgrade. Set both variables explicitly to
+change the live shape.
+
 The generated controller mounts `runneryard_state` at `/var/lib/runneryard`
 for a fail-closed durable usage ledger and private fleet status snapshot. Read
 the latter without exposing a network endpoint:

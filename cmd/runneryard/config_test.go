@@ -1,6 +1,15 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/gwendall/runneryard/provider"
+)
 
 func TestConfigRejectsSharedControllerAndWorkerFlyApp(t *testing.T) {
 	setValidEnv(t)
@@ -18,6 +27,85 @@ func TestConfigUsesBoundedDefaults(t *testing.T) {
 	}
 	if cfg.MinWorkers != 0 || cfg.MaxWorkers != 8 {
 		t.Fatalf("unexpected worker defaults: min=%d max=%d", cfg.MinWorkers, cfg.MaxWorkers)
+	}
+	if cfg.RunnerCPUKind != "performance" || cfg.RunnerCPUs != 2 || cfg.RunnerMemoryMB != 8192 {
+		t.Fatalf("unexpected Fly worker defaults: kind=%s cpus=%d memory=%d", cfg.RunnerCPUKind, cfg.RunnerCPUs, cfg.RunnerMemoryMB)
+	}
+}
+
+func TestConfigPreservesExplicitSharedFlyShape(t *testing.T) {
+	setValidEnv(t)
+	t.Setenv("RUNNER_CPU_KIND", "shared")
+	t.Setenv("RUNNER_CPUS", "4")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RunnerCPUKind != "shared" || cfg.RunnerCPUs != 4 {
+		t.Fatalf("unexpected explicit Fly worker shape: kind=%s cpus=%d", cfg.RunnerCPUKind, cfg.RunnerCPUs)
+	}
+	if _, err := cfg.compute(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConfigPreservesLegacySharedFlyShape(t *testing.T) {
+	setValidEnv(t)
+	t.Setenv("RUNNER_CPUS", "4")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RunnerCPUKind != "shared" || cfg.RunnerCPUs != 4 {
+		t.Fatalf("unexpected legacy Fly worker shape: kind=%s cpus=%d", cfg.RunnerCPUKind, cfg.RunnerCPUs)
+	}
+}
+
+func TestConfigWiresDefaultFlyShapeToLaunch(t *testing.T) {
+	var launched struct {
+		CPUKind string
+		CPUs    int
+		Memory  int
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Config struct {
+				Guest struct {
+					CPUKind string `json:"cpu_kind"`
+					CPUs    int    `json:"cpus"`
+					Memory  int    `json:"memory_mb"`
+				} `json:"guest"`
+			} `json:"config"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		launched.CPUKind = request.Config.Guest.CPUKind
+		launched.CPUs = request.Config.Guest.CPUs
+		launched.Memory = request.Config.Guest.Memory
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": "machine-id", "name": "runner-one"})
+	}))
+	defer server.Close()
+
+	setValidEnv(t)
+	t.Setenv("FLY_API_BASE_URL", server.URL)
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compute, err := cfg.compute()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compute.Launch(context.Background(), provider.Lease{
+		ID: "lease-one", RunnerName: "runner-one", RunnerID: 42, RunnerScaleSetID: 7,
+		JITConfig: "jit", Deadline: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if launched.CPUKind != "performance" || launched.CPUs != 2 || launched.Memory != 8192 {
+		t.Fatalf("unexpected launched Fly worker shape: %#v", launched)
 	}
 }
 
@@ -72,5 +160,7 @@ func setValidEnv(t *testing.T) {
 	t.Setenv("RUNNER_FLY_APP", "ci-runners")
 	t.Setenv("RUNNER_FLY_REGION", "cdg")
 	t.Setenv("RUNNER_IMAGE", "registry.fly.io/ci-runners:test")
+	t.Setenv("RUNNER_CPU_KIND", "")
+	t.Setenv("RUNNER_CPUS", "")
 	t.Setenv("RUNNER_BUDGET_FILE", t.TempDir()+"/budget.json")
 }
