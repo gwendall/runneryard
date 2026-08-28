@@ -95,8 +95,15 @@ Healthy interpretation:
   cap.
 - provider create latency measures infrastructure boot. Assignment latency
   measures the separate interval from worker creation to GitHub job start.
+- `busy + idle + unknown == actual`; these three counters are mutually
+  exclusive observations in status schema version 2.
 - idle means a created JIT worker has not emitted `JobStarted`; it is not safe
   to delete opportunistically because assignment may already be in flight.
+- unknown means the current controller adopted a worker after restart and has
+  not observed that worker's lifecycle yet. It is neither claimed busy nor
+  safe to delete: GitHub may have assigned it before the old session closed.
+  The next `JobStarted` makes it busy; completion or the maximum lifetime
+  retires it normally.
 - any orphan candidate, pending retirement, or stable failure reason makes
   health `degraded`. A pending retirement is retried during reconciliation and
   must return to zero after provider and GitHub cleanup recover.

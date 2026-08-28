@@ -45,8 +45,8 @@ func writeFleetStatus(output io.Writer, status controller.FleetStatus, asJSON bo
 	if status.Workers.Saturated {
 		capacity = "  saturated"
 	}
-	fmt.Fprintf(output, "Workers     %d actual  %d starting  %d busy  %d idle  %d orphan candidate(s)  %d retirement(s) pending  max %d%s\n",
-		status.Workers.Actual, status.Workers.Starting, status.Workers.Busy, status.Workers.Idle, status.Workers.OrphanCandidates, status.Workers.PendingRetirements, status.Workers.Maximum, capacity)
+	fmt.Fprintf(output, "Workers     %d actual  %d starting  %d busy  %d idle  %d unknown  %d orphan candidate(s)  %d retirement(s) pending  max %d%s\n",
+		status.Workers.Actual, status.Workers.Starting, status.Workers.Busy, status.Workers.Idle, status.Workers.Unknown, status.Workers.OrphanCandidates, status.Workers.PendingRetirements, status.Workers.Maximum, capacity)
 	writeLatency(output, "Create", status.Latency.ProviderCreate, true)
 	writeLatency(output, "Assignment", status.Latency.Assignment, false)
 	fmt.Fprintf(output, "Budget      %s used  %s reserved  %s remaining / %s per %s\n",

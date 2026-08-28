@@ -28,7 +28,7 @@ func TestFleetStatusCoversEmptySaturatedAndDegradedStates(t *testing.T) {
 	}
 
 	reporter.desired(8, 4)
-	reporter.workers(4, 3, 1)
+	reporter.workers(4, 2, 1, 1)
 	saturated := loadFleetStatus(t, statusFile)
 	if !saturated.Workers.Saturated || saturated.GitHub.DesiredWorkers != 4 {
 		t.Fatalf("saturated status = %#v", saturated)
@@ -103,7 +103,7 @@ func TestFleetStatusFileIsPrivateAtomicAndRejectsSymlinks(t *testing.T) {
 	statusFile := filepath.Join(directory, "status.json")
 	now := time.Now().UTC()
 	status := FleetStatus{
-		SchemaVersion: 1, UpdatedAt: now, StartedAt: now, Health: "ready",
+		SchemaVersion: statusSchemaVersion, UpdatedAt: now, StartedAt: now, Health: "ready",
 		Controller: ControllerStatus{ID: "one", Provider: "fly"},
 		Workers:    WorkerStatus{Maximum: 4},
 		Budget:     BudgetStatus{LimitSeconds: 1, RemainingSeconds: 1, WindowSeconds: 1},
@@ -139,7 +139,7 @@ func TestFleetStatusRejectsNegativePendingRetirements(t *testing.T) {
 	statusFile := filepath.Join(t.TempDir(), "status.json")
 	now := time.Now().UTC()
 	status := FleetStatus{
-		SchemaVersion: 1, UpdatedAt: now, StartedAt: now, Health: "ready",
+		SchemaVersion: statusSchemaVersion, UpdatedAt: now, StartedAt: now, Health: "ready",
 		Controller: ControllerStatus{ID: "one", Provider: "fly"},
 		Workers:    WorkerStatus{Maximum: 4, PendingRetirements: -1},
 		Budget:     BudgetStatus{LimitSeconds: 1, RemainingSeconds: 1, WindowSeconds: 1},
@@ -154,7 +154,7 @@ func TestFleetStatusRejectsNegativePendingRetirements(t *testing.T) {
 
 func TestFleetStatusSchemaContainsNoWorkloadOrCredentialFields(t *testing.T) {
 	now := time.Now().UTC()
-	status := FleetStatus{SchemaVersion: 1, UpdatedAt: now, StartedAt: now, Health: "ready"}
+	status := FleetStatus{SchemaVersion: statusSchemaVersion, UpdatedAt: now, StartedAt: now, Health: "ready"}
 	encoded, err := json.Marshal(status)
 	if err != nil {
 		t.Fatal(err)

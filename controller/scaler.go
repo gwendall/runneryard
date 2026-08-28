@@ -109,7 +109,7 @@ func (s *scaler) reconcile(ctx context.Context) error {
 			s.reporter.degraded("usage_budget_write_failed")
 			return fmt.Errorf("adopt runner usage budget for %s: %w", worker.RunnerName, err)
 		}
-		s.state.add(worker, true)
+		s.state.adopt(worker)
 		s.logger.Warn("adopted managed worker missing from local state", "runner", worker.RunnerName, "worker_id", worker.ID)
 	}
 	for name, record := range local {
@@ -348,7 +348,7 @@ func (s *scaler) recover(ctx context.Context) error {
 			return err
 		}
 		activeLeases[worker.LeaseID] = struct{}{}
-		s.state.add(worker, true)
+		s.state.adopt(worker)
 	}
 	if err := s.budget.reconcile(activeLeases, time.Now()); err != nil {
 		s.reporter.degraded("usage_budget_write_failed")
@@ -520,8 +520,8 @@ func (s *scaler) destroyWorker(ctx context.Context, worker provider.Worker) erro
 }
 
 func (s *scaler) reportState() {
-	actual, busy, idle := s.state.summary()
-	s.reporter.workers(actual, busy, idle)
+	actual, busy, idle, unknown := s.state.summary()
+	s.reporter.workers(actual, busy, idle, unknown)
 }
 
 func orphanCandidateCount(workers []provider.Worker, local map[string]workerRecord, maximumLifetime time.Duration, now time.Time) int {
