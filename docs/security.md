@@ -132,8 +132,12 @@ separately.
 2. Stop the controller and verify worker inventory is empty.
 3. Revoke the provider token.
 4. If the fleet owns a dedicated GitHub App, revoke its keys, uninstall it, and
-   delete it. If it uses BYO App material shared with another fleet, remove the
-   local controller copy and this repository from the installation instead.
+   delete it. For a shared BYO App, remove only this controller's local
+   credential first. Inventory every remaining App consumer before changing
+   the shared installation: remove repository access only when no other
+   consumer needs that installation for the repository. For an
+   organization-scoped fleet, retire its scale set and runner-group access as
+   applicable; do not treat the organization installation as controller-owned.
    Never revoke a shared key, uninstall a shared installation, or delete a
    shared App until every remaining consumer has rotated away from it.
 5. Delete the worker and controller apps, projects, or resource groups.

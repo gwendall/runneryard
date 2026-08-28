@@ -210,7 +210,11 @@ powered-off worker as a leak and investigate it immediately.
 2. Stop the controller after active jobs finish.
 3. List and delete all servers carrying RunnerYard ownership labels.
 4. Revoke the Hetzner project token.
-5. For a dedicated App, revoke its keys and uninstall/delete it. For BYO, remove
-   the local controller credential and this repository from the App installation;
-   do not revoke shared keys or delete the App while another consumer uses it.
+5. For a dedicated App, revoke its keys and uninstall/delete it. For a shared
+   BYO App, remove this controller's local credential first. Change repository
+   access only after confirming no remaining consumer needs the installation
+   for that repository. For an organization fleet, retire its scale set and
+   runner-group access as applicable without treating the shared organization
+   installation as controller-owned. Do not revoke shared keys, uninstall the
+   installation, or delete the App while another consumer uses it.
 6. Remove the dedicated project, firewalls, controller, and generated secrets.

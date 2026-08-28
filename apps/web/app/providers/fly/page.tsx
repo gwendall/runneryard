@@ -100,7 +100,7 @@ npx runneryard route enable \\
           <section className="provider-section">
             <h2>Outboard</h2>
             <div className="provider-content">
-              <p>Disable the route, finish active jobs, stop the controller, and verify zero workers. Revoke the worker-app token and delete the two apps and volume. Revoke and delete a dedicated GitHub App; for a shared BYO App, remove only this controller&apos;s credential and repository access.</p>
+              <p>Disable the route, finish active jobs, stop the controller, and verify zero workers. Revoke the worker-app token and delete the two apps and volume. Revoke and delete a dedicated GitHub App. For a shared BYO App, remove this controller&apos;s local credential; change installation scope only after confirming no other consumer needs it.</p>
               <CodeBlock>npx runneryard route disable --github https://github.com/acme/widgets</CodeBlock>
             </div>
           </section>

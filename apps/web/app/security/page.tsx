@@ -80,7 +80,8 @@ npx runneryard auth github import \\
                 <li>Stop the controller after active jobs finish; verify zero workers.</li>
                 <li>Revoke the provider token.</li>
                 <li>Dedicated App: revoke its keys, uninstall it, and delete it.</li>
-                <li>Shared BYO App: remove only the local credential and this repository&apos;s access. Keep shared keys, installations, and the App until every consumer rotates away.</li>
+                <li>Shared BYO App: remove this controller&apos;s local credential first. Change repository access only after confirming no remaining consumer needs it. For an organization fleet, retire its scale set and runner-group access as applicable without treating the shared installation as controller-owned.</li>
+                <li>Keep shared keys, installations, and the App until every remaining consumer rotates away.</li>
                 <li>Delete provider resources, generated config, local credential files, and the repository variable.</li>
               </ol>
               <p><a className="text-link" href={`${docsUrl}/security.md`}>Read the complete threat model</a></p>
