@@ -115,7 +115,8 @@ The adapter creates one Machine with:
 - 2 performance CPUs, 8 GB RAM, and 30 GB ephemeral rootfs by default
 - controller, lease, runner, and deadline metadata
 - `ACTIONS_RUNNER_INPUT_JITCONFIG` as its only injected credential
-- process-level `ignore_app_secrets=true`, plus a non-secret lease deadline
+- process-level `ignore_app_secrets=true`, plus a non-secret lease deadline and
+  validated Docker DNS policy
 
 Configure shape and cost through `RUNNER_CPUS`, `RUNNER_MEMORY_MB`,
 `RUNNER_ROOTFS_GB`, `MIN_RUNNERS`, `MAX_RUNNERS`, and
@@ -139,9 +140,19 @@ live worker shape, stop routing new jobs, let existing workers finish, update
 then run one exact-version canary before restoring the route. Existing workers
 keep the shape they were launched with and should not be interrupted.
 That canary must also pass its Node toolcache, `fuse-overlayfs`, and real
-BuildKit build-and-run proofs. Fly's enlarged OCI root is itself overlay-backed,
+BuildKit build-and-run proofs, including DNS resolution from a BuildKit `RUN`
+container. Fly's enlarged OCI root is itself overlay-backed,
 so a version string, Buildx version, or successful base-image pull is not
 sufficient runtime evidence.
+
+The generated `RUNNER_DOCKER_DNS=1.1.1.1,8.8.8.8` is specific to Fly's
+nested-Docker topology. Fly's private IPv6 resolver is available to the
+Machine host but may be unreachable from Docker's inner bridge: base-image
+pulls can succeed while `apt`, npm, or any BuildKit `RUN` instruction fails to
+resolve public hosts. RunnerYard validates one to three literal resolver IPs
+in the controller and again in the worker before starting Docker. Keep the
+default unless your isolated worker network provides another explicitly
+reachable resolver.
 
 For a conservative first deployment, generate a two-worker ceiling before
 creating provider resources:

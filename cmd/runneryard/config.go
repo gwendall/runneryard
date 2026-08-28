@@ -42,6 +42,7 @@ type appConfig struct {
 	RunnerCPUs         int
 	RunnerMemoryMB     int
 	RunnerRootFSGB     int
+	RunnerDockerDNS    string
 	RunnerCPUKind      string
 	RunnerMaxLifetime  time.Duration
 	RunnerUsageBudget  time.Duration
@@ -80,6 +81,7 @@ func loadConfig() (appConfig, error) {
 		HetznerServerType:  envOr("RUNNER_HETZNER_SERVER_TYPE", "cpx32"),
 		HetznerServerImage: envOr("RUNNER_HETZNER_IMAGE", "docker-ce"),
 		RunnerImage:        envOr("RUNNER_IMAGE", os.Getenv("FLY_IMAGE_REF")),
+		RunnerDockerDNS:    strings.TrimSpace(os.Getenv("RUNNER_DOCKER_DNS")),
 		RunnerCPUKind:      runnerCPUKind,
 		RunnerBudgetFile:   strings.TrimSpace(os.Getenv("RUNNER_BUDGET_FILE")),
 		RunnerStatusFile:   strings.TrimSpace(os.Getenv("RUNNER_STATUS_FILE")),
@@ -229,6 +231,7 @@ func (c appConfig) compute() (provider.Compute, error) {
 			CPUs:         c.RunnerCPUs,
 			MemoryMB:     c.RunnerMemoryMB,
 			RootFSGB:     c.RunnerRootFSGB,
+			DockerDNS:    c.RunnerDockerDNS,
 		})
 	case "hetzner":
 		return hetznerprovider.New(hetznerprovider.Config{

@@ -26,7 +26,7 @@ func TestLaunchIsEphemeralAndReceivesOnlyJITCredential(t *testing.T) {
 		if len(request.Config.Processes) != 1 || !request.Config.Processes[0].IgnoreAppSecrets {
 			t.Fatalf("worker process must ignore app secrets: %#v", request.Config.Processes)
 		}
-		if len(request.Config.Processes[0].Env) != 2 || request.Config.Processes[0].Env["ACTIONS_RUNNER_INPUT_JITCONFIG"] != "jit-secret" || request.Config.Processes[0].Env["RUNNERYARD_DEADLINE"] == "" {
+		if len(request.Config.Processes[0].Env) != 3 || request.Config.Processes[0].Env["ACTIONS_RUNNER_INPUT_JITCONFIG"] != "jit-secret" || request.Config.Processes[0].Env["RUNNERYARD_DEADLINE"] == "" || request.Config.Processes[0].Env["RUNNERYARD_DOCKER_DNS"] != defaultDockerDNS {
 			t.Fatalf("worker received unexpected process environment: %#v", request.Config.Processes[0].Env)
 		}
 		if request.Config.Guest.CPUKind != "shared" || request.Config.Guest.CPUs != 4 || request.Config.Guest.MemoryMB != 8192 {
@@ -52,6 +52,41 @@ func TestLaunchIsEphemeralAndReceivesOnlyJITCredential(t *testing.T) {
 	}
 	if worker.ID != "machine-id" || worker.LeaseID != "lease-one" || worker.RunnerID != 42 || worker.RunnerScaleSetID != 7 {
 		t.Fatalf("unexpected worker %#v", worker)
+	}
+}
+
+func TestNewNormalizesExplicitDockerDNS(t *testing.T) {
+	adapter, err := New(Config{
+		APIBaseURL: "https://api.example.test", APIToken: "fly-token", App: "ci-runners", Region: "cdg",
+		Image: "registry.fly.io/ci-runners:test", ControllerID: "test-controller",
+		CPUKind: "performance", CPUs: 2, MemoryMB: 8192, RootFSGB: 30,
+		DockerDNS: " 2606:4700:4700::1111 , 1.0.0.1 ",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.dockerDNS != "2606:4700:4700::1111,1.0.0.1" {
+		t.Fatalf("unexpected normalized Docker DNS %q", adapter.dockerDNS)
+	}
+}
+
+func TestNewRejectsUnsafeDockerDNS(t *testing.T) {
+	for _, value := range []string{
+		"resolver.internal",
+		"1.1.1.1,",
+		"1.1.1.1,1.1.1.1",
+		"1.1.1.1,8.8.8.8,9.9.9.9,1.0.0.1",
+	} {
+		t.Run(value, func(t *testing.T) {
+			_, err := New(Config{
+				APIBaseURL: "https://api.example.test", APIToken: "fly-token", App: "ci-runners", Region: "cdg",
+				Image: "registry.fly.io/ci-runners:test", ControllerID: "test-controller",
+				CPUKind: "performance", CPUs: 2, MemoryMB: 8192, RootFSGB: 30, DockerDNS: value,
+			})
+			if err == nil {
+				t.Fatalf("expected Docker DNS %q to fail", value)
+			}
+		})
 	}
 }
 

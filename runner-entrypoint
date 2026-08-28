@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 if [[ "$(id -u)" -ne 0 ]]; then
-  exec sudo --preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE /usr/local/bin/runner-entrypoint "$@"
+  exec sudo --preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE,RUNNERYARD_DOCKER_DNS /usr/local/bin/runner-entrypoint "$@"
 fi
 
 if [[ -z "${ACTIONS_RUNNER_INPUT_JITCONFIG:-}" ]]; then
@@ -37,14 +37,43 @@ case "$docker_root_filesystem" in
       echo "Docker data root uses $docker_root_filesystem but fuse-overlayfs is unavailable" >&2
       exit 78
     fi
-    printf '%s\n' '{"features":{"buildkit":true,"containerd-snapshotter":false},"storage-driver":"fuse-overlayfs"}' >/etc/docker/daemon.json
+    docker_storage_driver=fuse-overlayfs
     ;;
   *)
     # On a plain VM filesystem, retain Docker's native snapshotter. Forcing vfs
     # deep-copies every layer and can exhaust the ephemeral worker disk.
-    printf '%s\n' '{"features":{"buildkit":true}}' >/etc/docker/daemon.json
+    docker_storage_driver=
     ;;
 esac
+
+# Fly's host resolver is reachable on the Machine network but not necessarily
+# from Docker's nested bridge. The Fly adapter therefore supplies explicit
+# public resolvers. Other adapters leave this empty and retain Docker's host
+# resolver behavior. Validate again at the worker boundary before writing JSON.
+python3 - "$docker_storage_driver" "${RUNNERYARD_DOCKER_DNS:-}" <<'PY' >/etc/docker/daemon.json
+import ipaddress
+import json
+import sys
+
+storage_driver, raw_dns = sys.argv[1:]
+config = {"features": {"buildkit": True}}
+if storage_driver:
+    config["features"]["containerd-snapshotter"] = False
+    config["storage-driver"] = storage_driver
+if raw_dns:
+    dns = [item.strip() for item in raw_dns.split(",")]
+    if not 1 <= len(dns) <= 3 or any(not item for item in dns):
+        raise SystemExit("RUNNERYARD_DOCKER_DNS must contain one to three IP addresses")
+    try:
+        dns = [str(ipaddress.ip_address(item)) for item in dns]
+    except ValueError as error:
+        raise SystemExit(f"invalid RUNNERYARD_DOCKER_DNS: {error}") from error
+    if len(set(dns)) != len(dns):
+        raise SystemExit("RUNNERYARD_DOCKER_DNS must not contain duplicates")
+    config["dns"] = dns
+json.dump(config, sys.stdout, separators=(",", ":"), sort_keys=True)
+sys.stdout.write("\n")
+PY
 
 dockerd --config-file=/etc/docker/daemon.json >/var/log/dockerd.log 2>&1 &
 docker_pid=$!

@@ -48,6 +48,7 @@ printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
   'touch /var/run/docker.sock' \
+  'cp /etc/docker/daemon.json /canary-output/daemon.json' \
   'trap "exit 0" TERM INT' \
   'while true; do sleep 60 & wait $!; done' \
   >"$entrypoint_canary_directory/dockerd"
@@ -93,6 +94,7 @@ docker run --rm "${docker_platform_args[@]}" \
   --entrypoint /usr/local/bin/runner-entrypoint \
   -e ACTIONS_RUNNER_INPUT_JITCONFIG=offline-canary \
   -e RUNNERYARD_DEADLINE=2099-01-01T00:00:00Z \
+  -e RUNNERYARD_DOCKER_DNS=1.1.1.1,8.8.8.8 \
   -v "$entrypoint_canary_directory/dockerd:/usr/local/sbin/dockerd:ro" \
   -v "$entrypoint_canary_directory/docker:/usr/local/sbin/docker:ro" \
   -v "$entrypoint_canary_directory/findmnt:/usr/bin/findmnt:ro" \
@@ -100,6 +102,7 @@ docker run --rm "${docker_platform_args[@]}" \
   -v "$entrypoint_canary_directory/output:/canary-output" \
   "$runtime_image"
 grep -Fx passed "$entrypoint_canary_directory/output/result"
+grep -F '"dns":["1.1.1.1","8.8.8.8"]' "$entrypoint_canary_directory/output/daemon.json"
 
 # The runtime itself, not only the repository canary, must fail closed before a
 # job starts if Docker falls back to the deep-copy vfs driver.

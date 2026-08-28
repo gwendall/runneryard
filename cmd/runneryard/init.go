@@ -190,6 +190,7 @@ RUNNER_CPU_KIND=performance
 RUNNER_CPUS=2
 RUNNER_MEMORY_MB=8192
 RUNNER_ROOTFS_GB=30
+RUNNER_DOCKER_DNS=1.1.1.1,8.8.8.8
 RUNNER_MAX_LIFETIME=2h
 RUNNER_USAGE_BUDGET=166h40m
 RUNNER_BUDGET_WINDOW=720h
@@ -263,6 +264,7 @@ primary_region = %q
   RUNNER_CPUS = "2"
   RUNNER_MEMORY_MB = "8192"
   RUNNER_ROOTFS_GB = "30"
+  RUNNER_DOCKER_DNS = "1.1.1.1,8.8.8.8"
   RUNNER_MAX_LIFETIME = "2h"
   RUNNER_USAGE_BUDGET = "166h40m"
   RUNNER_BUDGET_WINDOW = "720h"
@@ -329,6 +331,7 @@ jobs:
           esac
           docker buildx build --load -t runneryard-buildkit-canary - <<'EOF'
           FROM %s
+          RUN nslookup registry.npmjs.org >/dev/null
           RUN printf passed >/runneryard-buildkit-canary
           EOF
           test "$(docker run --rm runneryard-buildkit-canary cat /runneryard-buildkit-canary)" = passed

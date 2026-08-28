@@ -21,7 +21,7 @@ func TestRunInitCreatesSafeScaffold(t *testing.T) {
 		t.Fatal(err)
 	}
 	contents := string(env)
-	for _, expected := range []string{"GITHUB_CONFIG_URL=https://github.com/acme/widgets", "FLY_APP_NAME=acme-ci-controller", "RUNNER_FLY_APP=acme-ci-runners", "MAX_RUNNERS=3", "RUNNER_CPU_KIND=performance", "RUNNER_CPUS=2", "RUNNER_IMAGE=ghcr.io/gwendall/runneryard:9.8.7", "RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json", "RUNNER_STATUS_FILE=/var/lib/runneryard/status.json"} {
+	for _, expected := range []string{"GITHUB_CONFIG_URL=https://github.com/acme/widgets", "FLY_APP_NAME=acme-ci-controller", "RUNNER_FLY_APP=acme-ci-runners", "MAX_RUNNERS=3", "RUNNER_CPU_KIND=performance", "RUNNER_CPUS=2", "RUNNER_DOCKER_DNS=1.1.1.1,8.8.8.8", "RUNNER_IMAGE=ghcr.io/gwendall/runneryard:9.8.7", "RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json", "RUNNER_STATUS_FILE=/var/lib/runneryard/status.json"} {
 		if !strings.Contains(contents, expected) {
 			t.Fatalf("generated env missing %q", expected)
 		}
@@ -41,7 +41,7 @@ func TestRunInitCreatesSafeScaffold(t *testing.T) {
 		t.Fatal(err)
 	}
 	tomlContents := string(toml)
-	for _, expected := range []string{`RUNNER_CPU_KIND = "performance"`, `RUNNER_CPUS = "2"`, `cpu_kind = "shared"`, `cpus = 1`} {
+	for _, expected := range []string{`RUNNER_CPU_KIND = "performance"`, `RUNNER_CPUS = "2"`, `RUNNER_DOCKER_DNS = "1.1.1.1,8.8.8.8"`, `cpu_kind = "shared"`, `cpus = 1`} {
 		if !strings.Contains(tomlContents, expected) {
 			t.Fatalf("generated Fly TOML missing %q", expected)
 		}
@@ -59,6 +59,7 @@ func TestRunInitCreatesSafeScaffold(t *testing.T) {
 		`test "$storage_driver" != vfs`,
 		`test "$storage_driver" = fuse-overlayfs`,
 		`docker buildx build --load`,
+		`RUN nslookup registry.npmjs.org >/dev/null`,
 	} {
 		if !strings.Contains(string(canary), expected) {
 			t.Fatalf("generated canary missing %q", expected)
