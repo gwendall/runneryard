@@ -97,7 +97,7 @@ RUNNER_HETZNER_LOCATION=fsn1
 RUNNER_HETZNER_SERVER_TYPE=cpx32
 RUNNER_HETZNER_IMAGE=docker-ce
 RUNNER_HETZNER_FIREWALL_ID=123456
-RUNNER_IMAGE=ghcr.io/gwendall/runneryard:0.3.6
+RUNNER_IMAGE=ghcr.io/gwendall/runneryard:0.3.7
 ```
 
 `RUNNER_HETZNER_NETWORK_ID` is optional. A Hetzner Cloud firewall does not
