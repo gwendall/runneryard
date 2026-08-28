@@ -24,6 +24,12 @@ so a controller restart or transient GitHub API failure cannot lose cleanup.
 Removal is restricted to the journaled GitHub registration ID and scale-set ID;
 the matching lease and registration proof also travel in provider metadata.
 If provider ownership is ambiguous, cleanup fails closed and remains pending.
+GitHub can briefly reject removal with `job still running` after an ephemeral
+worker has exited, especially when a workflow is cancelled or superseded. That
+typed response is the only deferred cleanup case: the listener stays available,
+status remains degraded with a pending retirement, and reconciliation retries
+the same immutable registration ID. Identity or provider ambiguity remains a
+hard error.
 
 ## Safe upgrades
 
