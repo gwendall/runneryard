@@ -31,8 +31,19 @@ Pin the runtime image to a release version. Stop the old controller cleanly and
 allow its GitHub message session to close before starting its replacement; two
 listeners cannot own one scale set concurrently. Existing workers are preserved
 for the successor and can finish because their entrypoint is self-contained.
-The replacement adopts them from provider inventory. Run the canary and only
-then recover broader workflow routing with an explicit receipt:
+The replacement adopts them from provider inventory. Preserve the durable
+volume, `CONTROLLER_ID`, ledger, and retirement journal. Never run `budget init`
+during an upgrade.
+
+Treat a tag as a candidate until its release checksums and image digest are
+published. On Fly, the pinned deployment image is also the worker image. On
+Hetzner, update both independent pins to the same release: `RUNNER_IMAGE` in
+`controller.env` for workers and `image` in Compose for the controller. Replace
+the controller, verify `runneryard status` reports the intended controller
+version and commit, and set the generated canary's
+`RUNNERYARD_EXPECTED_VERSION` to the same release so its job proves the worker
+image. Run the canary and only then recover broader workflow routing with an
+explicit receipt:
 
 ```sh
 npx runneryard route enable \
@@ -46,7 +57,10 @@ npx runneryard route enable \
 Start with `MIN_RUNNERS=0` and a small `MAX_RUNNERS`. Queue time is safer than an
 unbounded cloud bill. Increase the ceiling from observed job concurrency, not
 PR count. Split workload classes into separate scale sets when they need
-different trust boundaries or machine shapes.
+different trust boundaries or machine shapes. Keep the live ceiling in
+operator-reviewed provider configuration; never let repository code or a pull
+request change it. See the [configuration reference](configuration.md) for the
+budget admission formula and provider-specific shapes.
 
 ## Fleet status
 

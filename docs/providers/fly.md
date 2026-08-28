@@ -60,7 +60,9 @@ worker app.
 Keep non-sensitive policy such as `MAX_RUNNERS` in the generated TOML, not in
 Fly secrets. Secrets override `[env]`; defining a limit in both places can
 silently bypass the value under review. `runneryard doctor` fails when a
-controller secret shadows a policy value.
+controller secret shadows a policy value. Size it with the
+[configuration reference](../configuration.md); a repository pull request must
+never raise the live limit.
 
 ## GitHub App
 
@@ -99,6 +101,9 @@ fly deploy \
 ```
 
 Pin a version in production. `latest` is suitable only for a disposable canary.
+For an upgrade, preserve the volume and stable `CONTROLLER_ID`, replace the
+single controller only after its previous listener stops, verify the reported
+version and commit, and rerun the canary. Do not regenerate the budget ledger.
 
 ## Machine defaults
 
@@ -124,10 +129,24 @@ fly ssh console --app acme-ci-controller \
   --command '/usr/local/bin/runneryard status'
 ```
 
-## Rollback
+## Outboarding and rollback
 
-Stop the controller before deleting either app. Confirm
-`fly machines list --app acme-ci-runners` is empty, revoke the worker-app token,
-then delete the two apps. First run
-`runneryard route disable --github https://github.com/acme/widgets` so jobs do
-not remain queued on the removed scale set.
+1. Run
+   `runneryard route disable --github https://github.com/acme/widgets` and
+   verify `route status` reports `ubuntu-latest` so jobs do not remain queued
+   on the removed scale set.
+2. Let active jobs finish, stop the controller, and confirm
+   `fly machines list --app acme-ci-runners` is empty.
+3. Revoke the worker-app token.
+4. For a dedicated GitHub App, revoke its keys and uninstall/delete it. For a
+   shared BYO App, remove this controller's local credential first. Change
+   repository access only after confirming no remaining consumer needs the
+   installation for that repository. For an organization fleet, retire its
+   scale set and runner-group access as applicable without treating the shared
+   organization installation as controller-owned. Do not revoke shared keys,
+   uninstall the installation, or delete the App while another consumer uses
+   it.
+5. Delete the two Fly apps, the controller volume, and generated local config.
+
+The full provider-independent procedure and trust rationale live in
+[Outboarding](../security.md#outboarding).

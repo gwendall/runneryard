@@ -151,9 +151,21 @@ docker compose -f .runneryard/hetzner.controller.compose.yml \
   exec controller /usr/local/bin/runneryard status
 ```
 
+For an upgrade, first disable routing and stop the existing controller. Pin the
+same release in both generated locations: `RUNNER_IMAGE` in
+`.runneryard/controller.env` controls workers, while `image` in
+`.runneryard/hetzner.controller.compose.yml` controls the controller. Preserve
+the durable volume and stable `CONTROLLER_ID`, restart exactly one controller,
+and do not initialize the ledger again. `status` proves the controller version;
+set `RUNNERYARD_EXPECTED_VERSION` in the generated canary so the job itself
+proves the worker image before routing normal jobs back.
+
 The controller host can be a small Hetzner VM, another VPS, or an existing
 isolated Docker host. It needs durable storage and outbound HTTPS to GitHub,
 GHCR, and the Hetzner Cloud API. It never needs inbound access to worker VMs.
+Choose capacity, lifetime, and the rolling budget with the
+[configuration reference](../configuration.md). Keep those live limits under
+operator control rather than allowing a repository pull request to raise them.
 
 ## Worker lifecycle
 
@@ -197,6 +209,12 @@ powered-off worker as a leak and investigate it immediately.
    verify `route status` reports `ubuntu-latest`.
 2. Stop the controller after active jobs finish.
 3. List and delete all servers carrying RunnerYard ownership labels.
-4. Revoke the Hetzner project token and GitHub App private key.
-5. Uninstall the GitHub App.
+4. Revoke the Hetzner project token.
+5. For a dedicated App, revoke its keys and uninstall/delete it. For a shared
+   BYO App, remove this controller's local credential first. Change repository
+   access only after confirming no remaining consumer needs the installation
+   for that repository. For an organization fleet, retire its scale set and
+   runner-group access as applicable without treating the shared organization
+   installation as controller-owned. Do not revoke shared keys, uninstall the
+   installation, or delete the App while another consumer uses it.
 6. Remove the dedicated project, firewalls, controller, and generated secrets.

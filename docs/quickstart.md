@@ -21,6 +21,8 @@ npx runneryard init --provider hetzner \
 
 Review every generated file. The initializer does not create cloud resources,
 modify workflows other than its standalone canary, or collect credentials.
+Its default concurrency is intentionally small; keep it until the first canary
+and read the [configuration reference](configuration.md) before changing it.
 
 ## 2. Create isolated infrastructure
 
@@ -156,3 +158,15 @@ npx runneryard route disable --github https://github.com/acme/widgets --dry-run
 
 Keep macOS, GPU, and workloads that rely on GitHub-hosted images on their
 current runners until equivalent images are qualified.
+
+## 7. Hand the fleet to the team
+
+Commit the reviewed `.runneryard` configuration, standalone canary, and
+repository-variable fallback. Do not commit completed environment files,
+provider tokens, App keys, controller state, or deployment inventory.
+
+Tell contributors and coding agents to target the repository variable rather
+than a provider-specific label, and to preserve a qualified PR head when
+unrelated changes land on `main`. RunnerYard supplies compute; repository CI
+still needs causal checks and a serialized merge lane. The
+[repository agent contract](../AGENTS.md) is the reusable baseline.

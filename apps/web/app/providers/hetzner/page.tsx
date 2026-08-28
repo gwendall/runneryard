@@ -85,14 +85,21 @@ hcloud server list --selector runneryard-managed-by=true
 npx runneryard route enable \\
   --github https://github.com/acme/widgets \\
   --label acme-linux --confirm-canary`}</CodeBlock>
-              <p>Preview means the adapter has seam coverage but still needs a public release canary in a real Hetzner project. Use only trusted, low-risk workloads until then. <a href={`${docsUrl}/providers/hetzner.md`}>Read the complete Hetzner guide</a>.</p>
+              <p>Preview means the adapter has seam coverage but still needs a public release canary in a real Hetzner project. Use only trusted, low-risk workloads until then. <a href={`${docsUrl}/configuration.md`}>Size capacity and budget</a>, then read the <a href={`${docsUrl}/providers/hetzner.md`}>complete Hetzner guide</a>.</p>
+            </div>
+          </section>
+
+          <section className="provider-section">
+            <h2>Upgrade</h2>
+            <div className="provider-content">
+              <p>Disable the route and stop the old controller. Pin the same release in both generated files: <code>RUNNER_IMAGE</code> in <code>controller.env</code> for workers and <code>image</code> in Compose for the controller. Set the canary&apos;s expected version to match. Preserve durable state, start one controller, then prove the controller with status and the worker with the canary.</p>
             </div>
           </section>
 
           <section className="provider-section">
             <h2>Outboard</h2>
             <div className="provider-content">
-              <p>Disable the route, stop the controller, delete owned servers, and revoke both the project token and GitHub App keys. Then uninstall the App and delete the dedicated project.</p>
+              <p>Disable the route, stop the controller, delete owned servers, and revoke the project token. Delete a dedicated GitHub App. For a shared BYO App, remove this controller&apos;s local credential; change installation scope only after confirming no other consumer needs it. Then delete the dedicated project.</p>
               <CodeBlock>npx runneryard route disable --github https://github.com/acme/widgets</CodeBlock>
             </div>
           </section>

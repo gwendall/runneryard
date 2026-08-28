@@ -78,9 +78,11 @@ npx runneryard auth github import \\
               <ol>
                 <li>Disable the fleet route and confirm jobs target <code>ubuntu-latest</code>.</li>
                 <li>Stop the controller after active jobs finish; verify zero workers.</li>
-                <li>Revoke the provider token and every GitHub App private key.</li>
-                <li>Uninstall or delete the App, then delete provider resources.</li>
-                <li>Remove generated config and the repository variable.</li>
+                <li>Revoke the provider token.</li>
+                <li>Dedicated App: revoke its keys, uninstall it, and delete it.</li>
+                <li>Shared BYO App: remove this controller&apos;s local credential first. Change repository access only after confirming no remaining consumer needs it. For an organization fleet, retire its scale set and runner-group access as applicable without treating the shared installation as controller-owned.</li>
+                <li>Keep shared keys, installations, and the App until every remaining consumer rotates away.</li>
+                <li>Delete provider resources, generated config, local credential files, and the repository variable.</li>
               </ol>
               <p><a className="text-link" href={`${docsUrl}/security.md`}>Read the complete threat model</a></p>
             </div>

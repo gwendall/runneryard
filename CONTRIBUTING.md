@@ -1,7 +1,8 @@
 # Contributing
 
-Thanks for helping improve `runneryard`. Changes should preserve the small
-provider interface, explicit trust boundaries, and fail-closed cost controls.
+Thanks for helping improve `runneryard`. Read [AGENTS.md](AGENTS.md) first.
+Changes should preserve the small provider interface, explicit trust
+boundaries, and fail-closed cost controls.
 
 ## Set up
 
@@ -36,6 +37,8 @@ filtering, secret isolation, idempotent deletion, and partial-create cleanup.
 ## Pull requests
 
 - Keep each pull request focused on one change.
+- Record the exact qualified head SHA and avoid invalidating it for disjoint
+  changes on `main`.
 - Explain the trust-boundary and cost impact when either changes.
 - Pin new GitHub Actions dependencies to a full commit SHA.
 - Never commit credentials, completed environment files, private keys, provider

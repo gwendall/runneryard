@@ -281,6 +281,9 @@ on:
 permissions:
   contents: read
 
+env:
+  RUNNERYARD_EXPECTED_VERSION: %q
+
 jobs:
   canary:
     runs-on: %q
@@ -288,7 +291,12 @@ jobs:
     steps:
       - name: Verify isolated worker
         run: |
+          actual_version="$(runneryard version)"
+          case "$actual_version" in
+            "runneryard ${RUNNERYARD_EXPECTED_VERSION} ("*) ;;
+            *) echo "unexpected worker release: $actual_version" >&2; exit 1 ;;
+          esac
           test -n "$RUNNER_NAME"
           docker version
-`, scaleSet)
+`, version, scaleSet)
 }
