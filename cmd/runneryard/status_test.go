@@ -15,14 +15,14 @@ func TestWriteFleetStatusHumanAndJSON(t *testing.T) {
 		SchemaVersion: 1, UpdatedAt: now, StartedAt: now, Health: "degraded", Reason: "usage_budget_exhausted",
 		Controller: controller.ControllerStatus{ID: "acme", Provider: "fly", Version: "1.2.3", CommitSHA: "abcdef"},
 		GitHub:     controller.GitHubStatus{ScaleSet: "acme-linux", AssignedJobs: 5, DesiredWorkers: 4, LastActivityAt: now, LastEvent: "desired_count"},
-		Workers:    controller.WorkerStatus{Actual: 4, Busy: 3, Idle: 1, Maximum: 4, Saturated: true},
+		Workers:    controller.WorkerStatus{Actual: 4, Busy: 3, Idle: 1, PendingRetirements: 2, Maximum: 4, Saturated: true},
 		Budget:     controller.BudgetStatus{LimitSeconds: 7200, UsedSeconds: 1800, ReservedSeconds: 3600, RemainingSeconds: 1800, WindowSeconds: 86400},
 	}
 	var human bytes.Buffer
 	if err := writeFleetStatus(&human, status, false); err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"RunnerYard degraded", "4 actual", "3 busy", "30m0s used", "desired_count"} {
+	for _, expected := range []string{"RunnerYard degraded", "4 actual", "3 busy", "2 retirement(s) pending", "30m0s used", "desired_count"} {
 		if !strings.Contains(human.String(), expected) {
 			t.Fatalf("human output missing %q:\n%s", expected, human.String())
 		}

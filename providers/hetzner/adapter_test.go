@@ -37,7 +37,7 @@ func TestLaunchCreatesIsolatedDisposableServer(t *testing.T) {
 				status = "running"
 			}
 			qualified := server{ID: 123, Name: "runner-one", Status: status, Labels: map[string]string{
-				leaseIDKey: "lease-one", runnerNameKey: "runner-one",
+				leaseIDKey: "lease-one", runnerNameKey: "runner-one", runnerIDKey: "42", runnerScaleSetIDKey: "7",
 			}}
 			qualified.PublicNet.Firewalls = []serverFirewall{{ID: 42, Status: "applied"}}
 			_ = json.NewEncoder(w).Encode(serverResponse{Server: qualified})
@@ -67,7 +67,7 @@ func TestLaunchCreatesIsolatedDisposableServer(t *testing.T) {
 		if len(request.Networks) != 1 || request.Networks[0] != 84 {
 			t.Fatalf("worker network missing: %#v", request.Networks)
 		}
-		if request.Labels[controllerIDKey] != "test-controller" || request.Labels[leaseIDKey] != "lease-one" {
+		if request.Labels[controllerIDKey] != "test-controller" || request.Labels[leaseIDKey] != "lease-one" || request.Labels[runnerIDKey] != "42" || request.Labels[runnerScaleSetIDKey] != "7" {
 			t.Fatalf("ownership labels missing: %#v", request.Labels)
 		}
 		if strings.Contains(request.UserData, "hcloud-token") || strings.Contains(request.UserData, "jit-secret") {
@@ -81,12 +81,13 @@ func TestLaunchCreatesIsolatedDisposableServer(t *testing.T) {
 	defer api.Close()
 
 	worker, err := testAdapter(t, api).Launch(context.Background(), provider.Lease{
-		ID: "lease-one", RunnerName: "runner-one", JITConfig: "jit-secret", Deadline: time.Now().Add(time.Hour),
+		ID: "lease-one", RunnerName: "runner-one", RunnerID: 42, RunnerScaleSetID: 7,
+		JITConfig: "jit-secret", Deadline: time.Now().Add(time.Hour),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if worker.ID != "123" || worker.LeaseID != "lease-one" || worker.RunnerName != "runner-one" {
+	if worker.ID != "123" || worker.LeaseID != "lease-one" || worker.RunnerName != "runner-one" || worker.RunnerID != 42 || worker.RunnerScaleSetID != 7 {
 		t.Fatalf("unexpected worker %#v", worker)
 	}
 	if polls["/actions/10"] != 1 || polls["/actions/11"] != 1 || polls["/actions/20"] != 1 {

@@ -15,14 +15,81 @@ import (
 type fakeCompute struct {
 	workers             []provider.Worker
 	inventoryErr        error
+	launchWorker        provider.Worker
+	launchErr           error
 	destroyErr          error
 	removeBeforeDestroy bool
 	destroyed           []string
 	events              *[]string
 }
 
-func (f *fakeCompute) Launch(_ context.Context, _ provider.Lease) (provider.Worker, error) {
-	return provider.Worker{}, errors.New("not implemented in this test")
+type fakeRunnerScaleSetClient struct {
+	runners     map[string]*scaleset.RunnerReference
+	generateJIT *scaleset.RunnerScaleSetJitRunnerConfig
+	generateErr error
+	getErr      error
+	removeErr   error
+	removed     []int64
+}
+
+func (f *fakeRunnerScaleSetClient) GenerateJitRunnerConfig(_ context.Context, setting *scaleset.RunnerScaleSetJitRunnerSetting, scaleSetID int) (*scaleset.RunnerScaleSetJitRunnerConfig, error) {
+	if f.generateErr != nil {
+		return nil, f.generateErr
+	}
+	if f.generateJIT == nil {
+		return nil, errors.New("unexpected GenerateJitRunnerConfig call")
+	}
+	if f.generateJIT.Runner != nil {
+		registration := *f.generateJIT.Runner
+		registration.Name = setting.Name
+		registration.RunnerScaleSetID = scaleSetID
+		f.runners[setting.Name] = &registration
+		return &scaleset.RunnerScaleSetJitRunnerConfig{Runner: &registration, EncodedJITConfig: f.generateJIT.EncodedJITConfig}, nil
+	}
+	return f.generateJIT, nil
+}
+
+func (f *fakeRunnerScaleSetClient) GetRunnerByName(_ context.Context, name string) (*scaleset.RunnerReference, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	return f.runners[name], nil
+}
+
+func (f *fakeRunnerScaleSetClient) RemoveRunner(_ context.Context, id int64) error {
+	if f.removeErr != nil {
+		return f.removeErr
+	}
+	f.removed = append(f.removed, id)
+	for name, runner := range f.runners {
+		if int64(runner.ID) == id {
+			delete(f.runners, name)
+		}
+	}
+	return nil
+}
+
+func (f *fakeCompute) Launch(_ context.Context, lease provider.Lease) (provider.Worker, error) {
+	worker := f.launchWorker
+	if worker.LeaseID == "" {
+		worker.LeaseID = lease.ID
+	}
+	if worker.RunnerName == "" {
+		worker.RunnerName = lease.RunnerName
+	}
+	if worker.RunnerID == 0 {
+		worker.RunnerID = lease.RunnerID
+	}
+	if worker.RunnerScaleSetID == 0 {
+		worker.RunnerScaleSetID = lease.RunnerScaleSetID
+	}
+	if worker.CreatedAt.IsZero() {
+		worker.CreatedAt = time.Now()
+	}
+	if worker.ID != "" {
+		f.workers = append(f.workers, worker)
+	}
+	return worker, f.launchErr
 }
 
 func (f *fakeCompute) Inventory(_ context.Context) ([]provider.Worker, error) {
@@ -90,7 +157,7 @@ func (*fakeMessageSession) Session() scaleset.RunnerScaleSetSession {
 func TestReconcileRemovesWorkerThatNoLongerExists(t *testing.T) {
 	compute := &fakeCompute{}
 	state := newWorkerState()
-	state.add(provider.Worker{ID: "missing", RunnerName: "runner-one"}, true)
+	state.add(provider.Worker{ID: "missing", LeaseID: "lease-one", RunnerName: "runner-00000001"}, true)
 	scaler := testScaler(t, state, compute)
 	if err := scaler.reconcile(context.Background()); err != nil {
 		t.Fatal(err)
@@ -102,14 +169,14 @@ func TestReconcileRemovesWorkerThatNoLongerExists(t *testing.T) {
 
 func TestReconcileAdoptsManagedWorkerMissingFromLocalState(t *testing.T) {
 	compute := &fakeCompute{workers: []provider.Worker{{
-		ID: "orphan", LeaseID: "lease-orphan", RunnerName: "runner-orphan", CreatedAt: time.Now(),
+		ID: "orphan", LeaseID: "lease-orphan", RunnerName: "runner-00000003", CreatedAt: time.Now(),
 	}}}
 	state := newWorkerState()
 	scaler := testScaler(t, state, compute)
 	if err := scaler.reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	record, ok := state.get("runner-orphan")
+	record, ok := state.get("runner-00000003")
 	if !ok || record.Worker.ID != "orphan" || !record.Busy {
 		t.Fatalf("worker was not conservatively adopted: %#v, %v", record, ok)
 	}
@@ -117,7 +184,7 @@ func TestReconcileAdoptsManagedWorkerMissingFromLocalState(t *testing.T) {
 
 func TestReconcileDestroysExpiredWorker(t *testing.T) {
 	compute := &fakeCompute{workers: []provider.Worker{{
-		ID: "expired", LeaseID: "lease-expired", RunnerName: "runner-expired", CreatedAt: time.Now().Add(-3 * time.Hour),
+		ID: "expired", LeaseID: "lease-expired", RunnerName: "runner-00000004", CreatedAt: time.Now().Add(-3 * time.Hour),
 	}}}
 	state := newWorkerState()
 	scaler := testScaler(t, state, compute)
@@ -130,7 +197,7 @@ func TestReconcileDestroysExpiredWorker(t *testing.T) {
 }
 
 func TestCompletionKeepsStateWhenDeletionFails(t *testing.T) {
-	worker := provider.Worker{ID: "worker-one", RunnerName: "runner-one"}
+	worker := provider.Worker{ID: "worker-one", RunnerName: "runner-00000001"}
 	compute := &fakeCompute{
 		workers:    []provider.Worker{worker},
 		destroyErr: errors.New("temporary provider failure"),
@@ -138,16 +205,16 @@ func TestCompletionKeepsStateWhenDeletionFails(t *testing.T) {
 	state := newWorkerState()
 	state.add(worker, true)
 	scaler := testScaler(t, state, compute)
-	if err := scaler.HandleJobCompleted(context.Background(), &scaleset.JobCompleted{RunnerName: "runner-one"}); err == nil {
+	if err := scaler.HandleJobCompleted(context.Background(), &scaleset.JobCompleted{RunnerName: "runner-00000001"}); err == nil {
 		t.Fatal("expected deletion failure")
 	}
-	if _, ok := state.get("runner-one"); !ok {
+	if _, ok := state.get("runner-00000001"); !ok {
 		t.Fatal("state was forgotten before deletion succeeded")
 	}
 }
 
 func TestCompletionAcceptsAmbiguousDeletionWhenInventoryConfirmsAbsence(t *testing.T) {
-	worker := provider.Worker{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-one"}
+	worker := provider.Worker{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-00000001"}
 	compute := &fakeCompute{
 		workers:             []provider.Worker{worker},
 		destroyErr:          errors.New("provider timeout after accepting delete"),
@@ -156,11 +223,118 @@ func TestCompletionAcceptsAmbiguousDeletionWhenInventoryConfirmsAbsence(t *testi
 	state := newWorkerState()
 	state.add(worker, true)
 	scaler := testScaler(t, state, compute)
-	if err := scaler.HandleJobCompleted(context.Background(), &scaleset.JobCompleted{RunnerName: "runner-one"}); err != nil {
+	if err := scaler.HandleJobCompleted(context.Background(), &scaleset.JobCompleted{RunnerName: "runner-00000001"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := state.get("runner-one"); ok {
+	if _, ok := state.get("runner-00000001"); ok {
 		t.Fatal("confirmed deleted worker remained in local state")
+	}
+}
+
+func TestCompletionRemovesGitHubRegistrationAfterProviderWorker(t *testing.T) {
+	worker := provider.Worker{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-00000001"}
+	compute := &fakeCompute{workers: []provider.Worker{worker}, removeBeforeDestroy: true}
+	state := newWorkerState()
+	state.add(worker, true)
+	scaler := testScaler(t, state, compute)
+	github := &fakeRunnerScaleSetClient{runners: map[string]*scaleset.RunnerReference{
+		// The real Actions service may omit runnerScaleSetId and decode it as zero.
+		"runner-00000001": {ID: 42, Name: "runner-00000001"},
+	}}
+	scaler.scaleSetClient = github
+
+	if err := scaler.HandleJobCompleted(context.Background(), &scaleset.JobCompleted{RunnerName: "runner-00000001"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(github.removed) != 1 || github.removed[0] != 42 {
+		t.Fatalf("removed GitHub runners = %#v, want [42]", github.removed)
+	}
+	if scaler.retirements.count() != 0 || state.count() != 0 {
+		t.Fatalf("retirement did not converge: pending=%d state=%d", scaler.retirements.count(), state.count())
+	}
+}
+
+func TestRegistrationCleanupFailureRemainsRetryable(t *testing.T) {
+	worker := provider.Worker{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-00000001"}
+	compute := &fakeCompute{workers: []provider.Worker{worker}, removeBeforeDestroy: true}
+	state := newWorkerState()
+	state.add(worker, true)
+	scaler := testScaler(t, state, compute)
+	github := &fakeRunnerScaleSetClient{
+		runners: map[string]*scaleset.RunnerReference{
+			"runner-00000001": {ID: 42, Name: "runner-00000001", RunnerScaleSetID: 1},
+		},
+		removeErr: errors.New("temporary GitHub API failure"),
+	}
+	scaler.scaleSetClient = github
+
+	if err := scaler.HandleJobCompleted(context.Background(), &scaleset.JobCompleted{RunnerName: "runner-00000001"}); err == nil {
+		t.Fatal("expected GitHub cleanup failure")
+	}
+	if scaler.retirements.count() != 1 || state.count() != 1 {
+		t.Fatalf("cleanup intent was lost: pending=%d state=%d", scaler.retirements.count(), state.count())
+	}
+	if len(compute.workers) != 0 {
+		t.Fatal("provider worker still exists after accepted deletion")
+	}
+
+	github.removeErr = nil
+	if err := scaler.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if scaler.retirements.count() != 0 || state.count() != 0 || len(github.removed) != 1 {
+		t.Fatalf("retry did not converge: pending=%d state=%d removed=%#v", scaler.retirements.count(), state.count(), github.removed)
+	}
+}
+
+func TestRegistrationCleanupRefusesUnexpectedScaleSet(t *testing.T) {
+	worker := provider.Worker{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-00000001"}
+	compute := &fakeCompute{workers: []provider.Worker{worker}, removeBeforeDestroy: true}
+	state := newWorkerState()
+	state.add(worker, true)
+	scaler := testScaler(t, state, compute)
+	github := &fakeRunnerScaleSetClient{runners: map[string]*scaleset.RunnerReference{
+		"runner-00000001": {ID: 42, Name: "runner-00000001", RunnerScaleSetID: 999},
+	}}
+	scaler.scaleSetClient = github
+
+	if err := scaler.HandleJobCompleted(context.Background(), &scaleset.JobCompleted{RunnerName: "runner-00000001"}); err == nil {
+		t.Fatal("expected scale-set identity failure")
+	}
+	if len(github.removed) != 0 || scaler.retirements.count() != 1 {
+		t.Fatalf("unsafe cleanup was not blocked: removed=%#v pending=%d", github.removed, scaler.retirements.count())
+	}
+}
+
+func TestRecoveryResumesDurableRegistrationCleanup(t *testing.T) {
+	directory := t.TempDir()
+	queueFile := filepath.Join(directory, "retirements.json")
+	queue, err := newRetirementQueue(queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.put(retirementEntry{
+		RunnerName: "runner-00000001", RunnerID: 42, RunnerScaleSetID: 1,
+		LeaseID: "lease-one", BudgetDisposition: settleActualUsage,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := newRetirementQueue(queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scaler := testScaler(t, newWorkerState(), &fakeCompute{})
+	scaler.retirements = reloaded
+	github := &fakeRunnerScaleSetClient{runners: map[string]*scaleset.RunnerReference{
+		"runner-00000001": {ID: 42, Name: "runner-00000001", RunnerScaleSetID: 1},
+	}}
+	scaler.scaleSetClient = github
+
+	if err := scaler.recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.count() != 0 || len(github.removed) != 1 {
+		t.Fatalf("restart cleanup did not converge: pending=%d removed=%#v", reloaded.count(), github.removed)
 	}
 }
 
@@ -168,7 +342,7 @@ func TestShutdownReleasesSessionBeforePreservingWorkers(t *testing.T) {
 	events := make([]string, 0, 1)
 	compute := &fakeCompute{events: &events}
 	state := newWorkerState()
-	state.add(provider.Worker{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-one"}, false)
+	state.add(provider.Worker{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-00000001"}, false)
 	scaler := testScaler(t, state, compute)
 
 	session := &fakeSessionCloser{events: &events, closeErr: errors.New("session API unavailable")}
@@ -204,8 +378,8 @@ func TestRecoveryFailureStillReleasesSession(t *testing.T) {
 
 func TestDesiredCountDoesNotDestroyApparentlyIdleWorkers(t *testing.T) {
 	workers := []provider.Worker{
-		{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-one", CreatedAt: time.Now()},
-		{ID: "worker-two", LeaseID: "lease-two", RunnerName: "runner-two", CreatedAt: time.Now()},
+		{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-00000001", CreatedAt: time.Now()},
+		{ID: "worker-two", LeaseID: "lease-two", RunnerName: "runner-00000002", CreatedAt: time.Now()},
 	}
 	compute := &fakeCompute{workers: workers}
 	state := newWorkerState()
@@ -229,16 +403,145 @@ func TestDesiredCountDoesNotDestroyApparentlyIdleWorkers(t *testing.T) {
 
 func TestAmbiguousLaunchInventoriesAndDestroysMatchingLease(t *testing.T) {
 	compute := &fakeCompute{workers: []provider.Worker{
-		{ID: "matching", LeaseID: "lease-one", RunnerName: "runner-one"},
-		{ID: "other", LeaseID: "lease-other", RunnerName: "runner-other"},
+		{ID: "matching", LeaseID: "lease-one", RunnerName: "runner-00000001"},
+		{ID: "other", LeaseID: "lease-other", RunnerName: "runner-00000005"},
 	}}
 	scaler := testScaler(t, newWorkerState(), compute)
 	launchErr := errors.New("connection reset after Fly accepted create")
-	if err := scaler.cleanupAmbiguousLaunch(context.Background(), "lease-one", launchErr); err != nil {
+	if err := scaler.retirements.put(retirementEntry{
+		RunnerName: "runner-00000001", RunnerID: 42, RunnerScaleSetID: 1,
+		LeaseID: "lease-one", BudgetDisposition: forfeitReservation,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scaler.cleanupAmbiguousLaunch(context.Background(), retirementEntry{
+		RunnerName: "runner-00000001", RunnerID: 42, RunnerScaleSetID: 1,
+		LeaseID: "lease-one", BudgetDisposition: forfeitReservation,
+	}, launchErr); err != nil {
 		t.Fatal(err)
 	}
 	if len(compute.destroyed) != 1 || compute.destroyed[0] != "matching" {
 		t.Fatalf("ambiguous worker cleanup = %#v", compute.destroyed)
+	}
+}
+
+func TestAmbiguousLaunchInventoryFailureSurvivesRestart(t *testing.T) {
+	directory := t.TempDir()
+	queueFile := filepath.Join(directory, "retirements.json")
+	queue, err := newRetirementQueue(queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compute := &fakeCompute{
+		launchErr:    errors.New("launch response lost"),
+		inventoryErr: errors.New("provider inventory unavailable"),
+	}
+	scaler := testScaler(t, newWorkerState(), compute)
+	scaler.retirements = queue
+	scaler.scaleSetClient = &fakeRunnerScaleSetClient{
+		runners: make(map[string]*scaleset.RunnerReference),
+		generateJIT: &scaleset.RunnerScaleSetJitRunnerConfig{
+			Runner: &scaleset.RunnerReference{ID: 42}, EncodedJITConfig: "jit-secret",
+		},
+	}
+	if started, err := scaler.startWorker(context.Background()); err == nil || started {
+		t.Fatal("expected ambiguous launch cleanup to fail closed")
+	}
+	entries := queue.all()
+	if len(entries) != 1 || entries[0].RunnerID != 42 || entries[0].BudgetDisposition != forfeitReservation {
+		t.Fatalf("durable ambiguous launch proof = %#v", entries)
+	}
+	entry := entries[0]
+
+	reloaded, err := newRetirementQueue(queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.count() != 1 {
+		t.Fatalf("retirement intent count after restart = %d, want 1", reloaded.count())
+	}
+	recovered := testScaler(t, newWorkerState(), &fakeCompute{})
+	recovered.retirements = reloaded
+	recovered.scaleSetClient = &fakeRunnerScaleSetClient{runners: map[string]*scaleset.RunnerReference{
+		entry.RunnerName: {ID: 42, Name: entry.RunnerName, RunnerScaleSetID: 1},
+	}}
+	if err := recovered.recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.count() != 0 {
+		t.Fatalf("retirement intent count after recovery = %d, want 0", reloaded.count())
+	}
+}
+
+func TestAmbiguousLaunchForfeitsReservationInsteadOfUndercharging(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		partial bool
+	}{
+		{name: "unknown provider outcome"},
+		{name: "partial provider outcome", partial: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			compute := &fakeCompute{}
+			scaler := testScaler(t, newWorkerState(), compute)
+			entry := retirementEntry{
+				RunnerName: "runner-00000001", RunnerID: 42, RunnerScaleSetID: 1,
+				LeaseID: "lease-one", BudgetDisposition: forfeitReservation,
+			}
+			if allowed, _, err := scaler.budget.reserve(entry.LeaseID, time.Now(), scaler.maxLifetime); err != nil || !allowed {
+				t.Fatalf("reserve = %t, %v", allowed, err)
+			}
+			if err := scaler.retirements.put(entry); err != nil {
+				t.Fatal(err)
+			}
+			launchErr := error(errors.New("launch response lost"))
+			if test.partial {
+				partial := provider.Worker{
+					ID: "partial", LeaseID: entry.LeaseID, RunnerName: entry.RunnerName,
+					RunnerID: entry.RunnerID, RunnerScaleSetID: entry.RunnerScaleSetID,
+				}
+				compute.workers = []provider.Worker{partial}
+				compute.removeBeforeDestroy = true
+				launchErr = &provider.PartialLaunchError{Worker: partial, Err: launchErr}
+			}
+			if err := scaler.cleanupAmbiguousLaunch(context.Background(), entry, launchErr); err != nil {
+				t.Fatal(err)
+			}
+			snapshot := scaler.budget.snapshot(time.Now())
+			if snapshot.UsedSeconds != int64((2*time.Hour)/time.Second) || snapshot.ReservedSeconds != 0 {
+				t.Fatalf("budget after ambiguous launch = %#v", snapshot)
+			}
+		})
+	}
+}
+
+func TestCanceledCompletionRetiresWorkerAndLateEventsAreIdempotent(t *testing.T) {
+	worker := provider.Worker{
+		ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-00000001",
+		RunnerID: 42, RunnerScaleSetID: 1,
+	}
+	compute := &fakeCompute{workers: []provider.Worker{worker}, removeBeforeDestroy: true}
+	state := newWorkerState()
+	state.add(worker, true)
+	scaler := testScaler(t, state, compute)
+	scaler.scaleSetClient = &fakeRunnerScaleSetClient{runners: map[string]*scaleset.RunnerReference{
+		worker.RunnerName: {ID: 42, Name: worker.RunnerName, RunnerScaleSetID: 1},
+	}}
+	completed := &scaleset.JobCompleted{RunnerName: worker.RunnerName, Result: "canceled"}
+	if err := scaler.HandleJobCompleted(context.Background(), completed); err != nil {
+		t.Fatal(err)
+	}
+	if state.count() != 0 || len(compute.destroyed) != 1 {
+		t.Fatalf("canceled job cleanup: state=%d destroyed=%#v", state.count(), compute.destroyed)
+	}
+	if err := scaler.HandleJobStarted(context.Background(), &scaleset.JobStarted{RunnerName: worker.RunnerName}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scaler.HandleJobCompleted(context.Background(), completed); err != nil {
+		t.Fatal(err)
+	}
+	if state.count() != 0 || len(compute.destroyed) != 1 {
+		t.Fatalf("late events changed retired worker: state=%d destroyed=%#v", state.count(), compute.destroyed)
 	}
 }
 
@@ -248,9 +551,14 @@ func testScaler(t *testing.T, state *workerState, compute provider.Compute) *sca
 	if err != nil {
 		t.Fatal(err)
 	}
+	retirements, err := newRetirementQueue(filepath.Join(t.TempDir(), "retirements.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	return &scaler{
 		state: state, compute: compute, maxLifetime: 2 * time.Hour,
-		budget: budget,
+		budget: budget, retirements: retirements,
+		scaleSetClient: &fakeRunnerScaleSetClient{runners: make(map[string]*scaleset.RunnerReference)}, scaleSetID: 1,
 		logger: slog.New(slog.DiscardHandler),
 	}
 }

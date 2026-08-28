@@ -27,21 +27,22 @@ type messageSession interface {
 }
 
 type Config struct {
-	GitHubURL    string
-	ScaleSetName string
-	RunnerGroup  string
-	ControllerID string
-	MinWorkers   int
-	MaxWorkers   int
-	MaxLifetime  time.Duration
-	UsageBudget  time.Duration
-	BudgetWindow time.Duration
-	BudgetFile   string
-	StatusFile   string
-	Provider     string
-	Version      string
-	CommitSHA    string
-	Logger       *slog.Logger
+	GitHubURL      string
+	ScaleSetName   string
+	RunnerGroup    string
+	ControllerID   string
+	MinWorkers     int
+	MaxWorkers     int
+	MaxLifetime    time.Duration
+	UsageBudget    time.Duration
+	BudgetWindow   time.Duration
+	BudgetFile     string
+	RetirementFile string
+	StatusFile     string
+	Provider       string
+	Version        string
+	CommitSHA      string
+	Logger         *slog.Logger
 }
 
 type Controller struct {
@@ -72,8 +73,14 @@ func New(cfg Config, github *scaleset.Client, compute provider.Compute) (*Contro
 	if cfg.StatusFile == "" {
 		cfg.StatusFile = filepath.Join(filepath.Dir(cfg.BudgetFile), "status.json")
 	}
+	if cfg.RetirementFile == "" {
+		cfg.RetirementFile = filepath.Join(filepath.Dir(cfg.BudgetFile), "retirements.json")
+	}
 	if cfg.StatusFile == cfg.BudgetFile {
 		return nil, fmt.Errorf("fleet status and runner usage budget must use different files")
+	}
+	if cfg.RetirementFile == cfg.BudgetFile || cfg.RetirementFile == cfg.StatusFile {
+		return nil, fmt.Errorf("runner retirement queue must use a dedicated file")
 	}
 	if cfg.Provider == "" {
 		cfg.Provider = "unknown"
@@ -93,6 +100,12 @@ func (c *Controller) Run(ctx context.Context) error {
 	}
 	reporter.start(ctx, budget)
 	defer reporter.close()
+	retirements, err := newRetirementQueue(cfg.RetirementFile)
+	if err != nil {
+		reporter.degraded("runner_retirement_state_failed")
+		return err
+	}
+	reporter.retirements(retirements.count())
 	runnerGroupID := 1
 	if cfg.RunnerGroup != scaleset.DefaultRunnerGroup {
 		group, err := c.github.GetRunnerGroupByName(ctx, cfg.RunnerGroup)
@@ -151,6 +164,7 @@ func (c *Controller) Run(ctx context.Context) error {
 		maxWorkers:     cfg.MaxWorkers,
 		maxLifetime:    cfg.MaxLifetime,
 		budget:         budget,
+		retirements:    retirements,
 		reporter:       reporter,
 		logger:         cfg.Logger.WithGroup("scaler"),
 	}

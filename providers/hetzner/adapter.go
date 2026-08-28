@@ -24,6 +24,8 @@ const (
 	controllerIDKey      = "runneryard-controller"
 	leaseIDKey           = "runneryard-lease-id"
 	runnerNameKey        = "runneryard-runner-name"
+	runnerIDKey          = "runneryard-runner-id"
+	runnerScaleSetIDKey  = "runneryard-runner-scale-set-id"
 	defaultHTTPTimeout   = 30 * time.Second
 	defaultActionTimeout = 3 * time.Minute
 )
@@ -187,10 +189,12 @@ func (a *Adapter) Launch(ctx context.Context, lease provider.Lease) (provider.Wo
 		UserData:         userData,
 		StartAfterCreate: false,
 		Labels: map[string]string{
-			managedByKey:    "true",
-			controllerIDKey: a.controllerID,
-			leaseIDKey:      lease.ID,
-			runnerNameKey:   lease.RunnerName,
+			managedByKey:        "true",
+			controllerIDKey:     a.controllerID,
+			leaseIDKey:          lease.ID,
+			runnerNameKey:       lease.RunnerName,
+			runnerIDKey:         strconv.FormatInt(lease.RunnerID, 10),
+			runnerScaleSetIDKey: strconv.Itoa(lease.RunnerScaleSetID),
 		},
 		Firewalls: []createServerFirewall{{Firewall: a.firewallID}},
 		PublicNet: createServerPublicNet{EnableIPv4: true, EnableIPv6: true},
@@ -202,14 +206,14 @@ func (a *Adapter) Launch(ctx context.Context, lease provider.Lease) (provider.Wo
 	var created createServerResponse
 	if err := a.doJSON(ctx, http.MethodPost, a.baseURL+"/servers", payload, &created); err != nil {
 		if created.Server.ID != 0 {
-			return provider.Worker{}, &provider.PartialLaunchError{Worker: toWorker(created.Server), Err: err}
+			return provider.Worker{}, &provider.PartialLaunchError{Worker: withLeaseProof(toWorker(created.Server), lease), Err: err}
 		}
 		return provider.Worker{}, fmt.Errorf("create Hetzner worker %s: %w", lease.RunnerName, err)
 	}
 	if created.Server.ID == 0 {
 		return provider.Worker{}, fmt.Errorf("create Hetzner worker %s: response did not include a server id", lease.RunnerName)
 	}
-	worker := toWorker(created.Server)
+	worker := withLeaseProof(toWorker(created.Server), lease)
 	qualifyCtx, cancelQualification := context.WithTimeout(ctx, a.actionTimeout)
 	defer cancelQualification()
 	actions := append([]action{created.Action}, created.NextActions...)
@@ -243,7 +247,7 @@ func (a *Adapter) Launch(ctx context.Context, lease provider.Lease) (provider.Wo
 			Err:    fmt.Errorf("powered-on Hetzner worker has status %q", running.Server.Status),
 		}
 	}
-	return toWorker(running.Server), nil
+	return withLeaseProof(toWorker(running.Server), lease), nil
 }
 
 func (a *Adapter) Inventory(ctx context.Context) ([]provider.Worker, error) {
@@ -371,13 +375,33 @@ func (a *Adapter) waitAction(ctx context.Context, current action) error {
 }
 
 func toWorker(item server) provider.Worker {
+	runnerID, _ := strconv.ParseInt(item.Labels[runnerIDKey], 10, 64)
+	runnerScaleSetID, _ := strconv.Atoi(item.Labels[runnerScaleSetIDKey])
 	return provider.Worker{
-		ID:         strconv.FormatInt(item.ID, 10),
-		LeaseID:    item.Labels[leaseIDKey],
-		RunnerName: item.Labels[runnerNameKey],
-		State:      item.Status,
-		CreatedAt:  item.CreatedAt,
+		ID:               strconv.FormatInt(item.ID, 10),
+		LeaseID:          item.Labels[leaseIDKey],
+		RunnerName:       item.Labels[runnerNameKey],
+		RunnerID:         runnerID,
+		RunnerScaleSetID: runnerScaleSetID,
+		State:            item.Status,
+		CreatedAt:        item.CreatedAt,
 	}
+}
+
+func withLeaseProof(worker provider.Worker, lease provider.Lease) provider.Worker {
+	if worker.LeaseID == "" {
+		worker.LeaseID = lease.ID
+	}
+	if worker.RunnerName == "" {
+		worker.RunnerName = lease.RunnerName
+	}
+	if worker.RunnerID == 0 {
+		worker.RunnerID = lease.RunnerID
+	}
+	if worker.RunnerScaleSetID == 0 {
+		worker.RunnerScaleSetID = lease.RunnerScaleSetID
+	}
+	return worker
 }
 
 func renderCloudInit(lease provider.Lease, runnerImage string) (string, error) {

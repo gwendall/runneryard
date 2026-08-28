@@ -39,6 +39,12 @@ func TestFleetStatusCoversEmptySaturatedAndDegradedStates(t *testing.T) {
 	if degraded.Health != "degraded" || degraded.Reason != "orphan_candidates" {
 		t.Fatalf("degraded status = %#v", degraded)
 	}
+
+	reporter.retirements(2)
+	retiring := loadFleetStatus(t, statusFile)
+	if retiring.Health != "degraded" || retiring.Reason != "runner_retirements_pending" || retiring.Workers.PendingRetirements != 2 {
+		t.Fatalf("retirement status = %#v", retiring)
+	}
 }
 
 func TestFleetStatusSeparatesLatencyAndExhaustedBudget(t *testing.T) {
@@ -126,6 +132,23 @@ func TestFleetStatusFileIsPrivateAtomicAndRejectsSymlinks(t *testing.T) {
 	}
 	if _, err := LoadStatus(linked); err == nil {
 		t.Fatal("expected symlink rejection")
+	}
+}
+
+func TestFleetStatusRejectsNegativePendingRetirements(t *testing.T) {
+	statusFile := filepath.Join(t.TempDir(), "status.json")
+	now := time.Now().UTC()
+	status := FleetStatus{
+		SchemaVersion: 1, UpdatedAt: now, StartedAt: now, Health: "ready",
+		Controller: ControllerStatus{ID: "one", Provider: "fly"},
+		Workers:    WorkerStatus{Maximum: 4, PendingRetirements: -1},
+		Budget:     BudgetStatus{LimitSeconds: 1, RemainingSeconds: 1, WindowSeconds: 1},
+	}
+	if err := writeStatusFile(statusFile, status); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadStatus(statusFile); err == nil {
+		t.Fatal("expected negative pending retirements to be rejected")
 	}
 }
 

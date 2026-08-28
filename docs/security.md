@@ -113,6 +113,14 @@ When the rolling budget is exhausted, new GitHub jobs queue instead of
 starting compute. The ledger must live on durable controller storage and fails
 closed if it cannot be read or written. `MIN_RUNNERS` defaults to zero.
 
+Retirement is also journaled before destructive work. The controller deletes a
+GitHub runner registration only after provider absence is authoritative, only
+for a controller-generated `runner-*` identity, and only when its immutable
+registration ID, scale-set ID, and provider lease proof agree. That proof is
+stored both in the private retirement journal and in provider metadata, so a
+restart or a same-name replacement cannot widen cleanup authority. Cleanup
+credentials never reach workers.
+
 This ceiling covers worker runtime, not the always-on controller, volumes,
 network transfer, image storage, taxes, or provider price changes. Keep a
 provider-side spending limit when one exists and calculate those fixed costs

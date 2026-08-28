@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,13 +18,15 @@ import (
 )
 
 const (
-	managedByKey       = "runneryard-managed-by"
-	controllerIDKey    = "runneryard-controller"
-	leaseIDKey         = "runneryard-lease-id"
-	runnerNameKey      = "runneryard-runner-name"
-	deadlineKey        = "runneryard-deadline"
-	runnerEntrypoint   = "/usr/local/bin/runner-entrypoint"
-	defaultHTTPTimeout = 30 * time.Second
+	managedByKey        = "runneryard-managed-by"
+	controllerIDKey     = "runneryard-controller"
+	leaseIDKey          = "runneryard-lease-id"
+	runnerNameKey       = "runneryard-runner-name"
+	runnerIDKey         = "runneryard-runner-id"
+	runnerScaleSetIDKey = "runneryard-runner-scale-set-id"
+	deadlineKey         = "runneryard-deadline"
+	runnerEntrypoint    = "/usr/local/bin/runner-entrypoint"
+	defaultHTTPTimeout  = 30 * time.Second
 )
 
 type Config struct {
@@ -169,11 +172,13 @@ func (a *Adapter) Launch(ctx context.Context, lease provider.Lease) (provider.Wo
 				IgnoreAppSecrets: true,
 			}},
 			Metadata: map[string]string{
-				managedByKey:    "true",
-				controllerIDKey: a.controllerID,
-				leaseIDKey:      lease.ID,
-				runnerNameKey:   lease.RunnerName,
-				deadlineKey:     lease.Deadline.UTC().Format(time.RFC3339),
+				managedByKey:        "true",
+				controllerIDKey:     a.controllerID,
+				leaseIDKey:          lease.ID,
+				runnerNameKey:       lease.RunnerName,
+				runnerIDKey:         strconv.FormatInt(lease.RunnerID, 10),
+				runnerScaleSetIDKey: strconv.Itoa(lease.RunnerScaleSetID),
+				deadlineKey:         lease.Deadline.UTC().Format(time.RFC3339),
 			},
 			AutoDestroy:  true,
 			Restart:      restartPolicy{Policy: "no"},
@@ -186,14 +191,14 @@ func (a *Adapter) Launch(ctx context.Context, lease provider.Lease) (provider.Wo
 	var created machine
 	if err := a.doJSON(ctx, http.MethodPost, a.machinesURL(), payload, &created); err != nil {
 		if created.ID != "" {
-			return provider.Worker{}, &provider.PartialLaunchError{Worker: toWorker(created), Err: err}
+			return provider.Worker{}, &provider.PartialLaunchError{Worker: withLeaseProof(toWorker(created), lease), Err: err}
 		}
 		return provider.Worker{}, fmt.Errorf("create Fly worker %s: %w", lease.RunnerName, err)
 	}
 	if created.ID == "" {
 		return provider.Worker{}, fmt.Errorf("create Fly worker %s: response did not include a machine id", lease.RunnerName)
 	}
-	return toWorker(created), nil
+	return withLeaseProof(toWorker(created), lease), nil
 }
 
 func (a *Adapter) Inventory(ctx context.Context) ([]provider.Worker, error) {
@@ -236,13 +241,33 @@ func (a *Adapter) Destroy(ctx context.Context, workerID string) error {
 }
 
 func toWorker(item machine) provider.Worker {
+	runnerID, _ := strconv.ParseInt(item.Config.Metadata[runnerIDKey], 10, 64)
+	runnerScaleSetID, _ := strconv.Atoi(item.Config.Metadata[runnerScaleSetIDKey])
 	return provider.Worker{
-		ID:         item.ID,
-		LeaseID:    item.Config.Metadata[leaseIDKey],
-		RunnerName: item.Config.Metadata[runnerNameKey],
-		State:      item.State,
-		CreatedAt:  item.CreatedAt,
+		ID:               item.ID,
+		LeaseID:          item.Config.Metadata[leaseIDKey],
+		RunnerName:       item.Config.Metadata[runnerNameKey],
+		RunnerID:         runnerID,
+		RunnerScaleSetID: runnerScaleSetID,
+		State:            item.State,
+		CreatedAt:        item.CreatedAt,
 	}
+}
+
+func withLeaseProof(worker provider.Worker, lease provider.Lease) provider.Worker {
+	if worker.LeaseID == "" {
+		worker.LeaseID = lease.ID
+	}
+	if worker.RunnerName == "" {
+		worker.RunnerName = lease.RunnerName
+	}
+	if worker.RunnerID == 0 {
+		worker.RunnerID = lease.RunnerID
+	}
+	if worker.RunnerScaleSetID == 0 {
+		worker.RunnerScaleSetID = lease.RunnerScaleSetID
+	}
+	return worker
 }
 
 func (a *Adapter) machinesURL() string {

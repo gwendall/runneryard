@@ -50,13 +50,14 @@ type GitHubStatus struct {
 }
 
 type WorkerStatus struct {
-	Actual           int  `json:"actual"`
-	Starting         int  `json:"starting"`
-	Busy             int  `json:"busy"`
-	Idle             int  `json:"idle"`
-	OrphanCandidates int  `json:"orphan_candidates"`
-	Maximum          int  `json:"maximum"`
-	Saturated        bool `json:"saturated"`
+	Actual             int  `json:"actual"`
+	Starting           int  `json:"starting"`
+	Busy               int  `json:"busy"`
+	Idle               int  `json:"idle"`
+	OrphanCandidates   int  `json:"orphan_candidates"`
+	PendingRetirements int  `json:"pending_retirements"`
+	Maximum            int  `json:"maximum"`
+	Saturated          bool `json:"saturated"`
 }
 
 type LatencyStatus struct {
@@ -148,6 +149,8 @@ func (reporter *statusReporter) derive() {
 	switch {
 	case reporter.failure != "":
 		status.Health, status.Reason = "degraded", reporter.failure
+	case status.Workers.PendingRetirements > 0:
+		status.Health, status.Reason = "degraded", "runner_retirements_pending"
 	case status.Workers.OrphanCandidates > 0:
 		status.Health, status.Reason = "degraded", "orphan_candidates"
 	case status.Budget.RefusalReason != "":
@@ -191,6 +194,10 @@ func (reporter *statusReporter) starting(delta int) {
 
 func (reporter *statusReporter) orphans(count int) {
 	reporter.update(func(status *FleetStatus) { status.Workers.OrphanCandidates = max(0, count) })
+}
+
+func (reporter *statusReporter) retirements(count int) {
+	reporter.update(func(status *FleetStatus) { status.Workers.PendingRetirements = max(0, count) })
 }
 
 func (reporter *statusReporter) budget(snapshot BudgetStatus) {
@@ -413,7 +420,7 @@ func (status FleetStatus) validate() error {
 	if status.Health != "starting" && status.Health != "ready" && status.Health != "degraded" {
 		return errors.New("fleet status contains an invalid health value")
 	}
-	workerValues := []int{status.Workers.Actual, status.Workers.Starting, status.Workers.Busy, status.Workers.Idle, status.Workers.OrphanCandidates, status.Workers.Maximum}
+	workerValues := []int{status.Workers.Actual, status.Workers.Starting, status.Workers.Busy, status.Workers.Idle, status.Workers.OrphanCandidates, status.Workers.PendingRetirements, status.Workers.Maximum}
 	for _, value := range workerValues {
 		if value < 0 {
 			return errors.New("fleet status contains a negative worker count")
