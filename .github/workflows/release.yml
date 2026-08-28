@@ -170,6 +170,7 @@ jobs:
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Advance latest after the complete release path
         env:
           GHCR_TOKEN: ${{ github.token }}
@@ -179,6 +180,7 @@ jobs:
           version="${VERSION#v}"
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/runneryard"
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker pull "$image:$version"
-          docker tag "$image:$version" "$image:latest"
-          docker push "$image:latest"
+          docker buildx imagetools create --tag "$image:latest" "$image:$version"
+          manifest="$(docker buildx imagetools inspect "$image:latest" --format '{{json .Manifest}}')"
+          jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"]' \
+            <<<"$manifest"
