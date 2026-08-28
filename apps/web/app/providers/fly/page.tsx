@@ -62,7 +62,7 @@ fly secrets set --app acme-ci-controller \\
             <h2>05 · Budget and deploy</h2>
             <div className="provider-content">
               <p>Initialize the fail-closed budget ledger exactly once, then run doctor before the controller starts.</p>
-              <CodeBlock>{`fly machine run ghcr.io/gwendall/runneryard:0.3.5 \\
+              <CodeBlock>{`fly machine run ghcr.io/gwendall/runneryard:0.3.6 \\
   --entrypoint "/usr/local/bin/controller-entrypoint" \\
   --env RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json \\
   --app acme-ci-controller --region cdg \\
@@ -75,7 +75,7 @@ npx runneryard doctor --provider fly \\
 
 fly deploy --app acme-ci-controller \\
   --config .runneryard/fly.controller.toml \\
-  --image ghcr.io/gwendall/runneryard:0.3.5 --ha=false`}</CodeBlock>
+  --image ghcr.io/gwendall/runneryard:0.3.6 --ha=false`}</CodeBlock>
               <p className="step-receipt"><span>Ready when</span>Doctor passes and the controller status is healthy with zero desired workers.</p>
             </div>
           </section>
