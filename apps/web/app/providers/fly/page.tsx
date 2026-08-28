@@ -63,7 +63,7 @@ fly secrets set --app acme-ci-controller \\
             <h2>05 · Budget and deploy</h2>
             <div className="provider-content">
               <p>Initialize the fail-closed budget ledger exactly once, then run doctor before the controller starts. The generated worker uses two sustained performance CPUs and 8 GB of RAM; shared CPUs remain an explicit option for short, bursty jobs.</p>
-              <CodeBlock>{`fly machine run ghcr.io/gwendall/runneryard:0.3.8 \\
+              <CodeBlock>{`fly machine run ghcr.io/gwendall/runneryard:0.3.9 \\
   --entrypoint "/usr/local/bin/controller-entrypoint" \\
   --env RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json \\
   --app acme-ci-controller --region cdg \\
@@ -76,7 +76,7 @@ npx runneryard doctor --provider fly \\
 
 fly deploy --app acme-ci-controller \\
   --config .runneryard/fly.controller.toml \\
-  --image ghcr.io/gwendall/runneryard:0.3.8 --ha=false`}</CodeBlock>
+  --image ghcr.io/gwendall/runneryard:0.3.9 --ha=false`}</CodeBlock>
               <p>Each shared vCPU has a 6.25% sustained baseline plus burst capacity. Performance workers cost more per second, but avoid the post-burst slowdown that can turn tests into timeouts and reruns. Measure cost per successful job and keep the operator-owned ceiling low until a representative canary proves the workload. Older scaffolds that omit <code>RUNNER_CPU_KIND</code> remain shared on upgrade; set both shape variables to opt in. <a href={`${docsUrl}/configuration.md#fly-worker-shape`}>Review worker sizing</a>.</p>
               <p className="step-receipt"><span>Ready when</span>Doctor passes and the controller status is healthy with zero desired workers.</p>
             </div>
