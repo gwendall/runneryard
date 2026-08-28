@@ -154,6 +154,9 @@ docker compose -f .runneryard/hetzner.controller.compose.yml \
 The controller host can be a small Hetzner VM, another VPS, or an existing
 isolated Docker host. It needs durable storage and outbound HTTPS to GitHub,
 GHCR, and the Hetzner Cloud API. It never needs inbound access to worker VMs.
+Choose capacity, lifetime, and the rolling budget with the
+[configuration reference](../configuration.md). Keep those live limits under
+operator control rather than allowing a repository pull request to raise them.
 
 ## Worker lifecycle
 

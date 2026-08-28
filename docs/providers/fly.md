@@ -60,7 +60,9 @@ worker app.
 Keep non-sensitive policy such as `MAX_RUNNERS` in the generated TOML, not in
 Fly secrets. Secrets override `[env]`; defining a limit in both places can
 silently bypass the value under review. `runneryard doctor` fails when a
-controller secret shadows a policy value.
+controller secret shadows a policy value. Size it with the
+[configuration reference](../configuration.md); a repository pull request must
+never raise the live limit.
 
 ## GitHub App
 
@@ -99,6 +101,9 @@ fly deploy \
 ```
 
 Pin a version in production. `latest` is suitable only for a disposable canary.
+For an upgrade, preserve the volume and stable `CONTROLLER_ID`, replace the
+single controller only after its previous listener stops, verify the reported
+version and commit, and rerun the canary. Do not regenerate the budget ledger.
 
 ## Machine defaults
 

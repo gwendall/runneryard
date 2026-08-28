@@ -18,7 +18,8 @@ checksum-verifying npm launcher.
 
 ## Quick start
 
-The public release supports this setup flow:
+The public release supports this setup flow. Run it from the repository that
+will use the runners:
 
 ```sh
 npx runneryard init --github https://github.com/acme/widgets
@@ -52,10 +53,11 @@ npx runneryard doctor --provider fly \
   --worker-app acme-ci-runners
 ```
 
-Initialize the durable usage ledger once, deploy the controller, and trigger
-the generated canary. A successful canary has three receipts: GitHub reports a
-green job, the controller records the complete lifecycle, and provider
-inventory returns to zero workers.
+Initialize the durable usage ledger once, deploy the pinned controller image,
+and trigger the generated canary. A successful canary has three receipts:
+GitHub reports a green job, the controller records the complete lifecycle, and
+provider inventory returns to zero workers. Nothing routes normal CI to the
+fleet until you explicitly enable the generated label.
 
 For Hetzner Cloud, generate its provider-specific scaffold and follow the
 [Hetzner guide](docs/providers/hetzner.md):
@@ -69,6 +71,19 @@ Hetzner support is preview quality until it has completed a public release
 canary in a real Hetzner project. Keep the first workload low-risk and private.
 
 Read the complete [quickstart](docs/quickstart.md) before routing production CI.
+
+## Pick the next document
+
+- New operator: follow the [quickstart](docs/quickstart.md).
+- Fly or Hetzner: use the provider-specific [Fly](docs/providers/fly.md) or
+  [Hetzner](docs/providers/hetzner.md) runbook.
+- Sizing or changing a fleet: read the
+  [configuration reference](docs/configuration.md) and
+  [operations guide](docs/operations.md).
+- Security review or removal: read the [security model](docs/security.md).
+- New provider: implement the [adapter contract](docs/adapter-contract.md).
+- Contributor or coding agent: read [AGENTS.md](AGENTS.md) and
+  [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Why it exists
 
@@ -112,6 +127,8 @@ bootstrap, metadata, and lifecycle translation. See the
 - `RUNNER_MAX_LIFETIME` forces cleanup of hung or disconnected workers.
 - `RUNNER_USAGE_BUDGET` is a durable rolling compute-time ceiling. New jobs
   queue when it is exhausted.
+- Live capacity and cost limits are operator-owned configuration. A repository
+  pull request must never raise them.
 - Ownership metadata prevents one controller from deleting foreign machines.
 - A dedicated GitHub App owned by the operator is the default. The setup flow
   requests no webhook and sends its key directly to controller storage.
@@ -156,7 +173,8 @@ pnpm build
 ```
 
 The website lives in `apps/web` and runs with `pnpm dev`. See
-[CONTRIBUTING.md](CONTRIBUTING.md) before proposing a change.
+[AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a
+change.
 
 The release workflow publishes the versioned GHCR image before the matching
 GitHub release. npm publishing uses OIDC trusted publishing and provenance;

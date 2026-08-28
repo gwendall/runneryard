@@ -27,6 +27,7 @@ export default function SetupPage() {
         <div className="setup shell">
           <SetupStep number="01" title="Generate the local scaffold" description="Run this from the target repository. It creates provider config and a standalone canary workflow; it does not deploy or upload anything." receipt="The generated diff contains only .runneryard config and the canary workflow.">
             <CodeBlock>npx runneryard init --github https://github.com/acme/widgets</CodeBlock>
+            <p className="note">The default ceiling is intentionally small. Keep it for the canary, then size from observed concurrency using the <a href="https://github.com/gwendall/runneryard/blob/main/docs/configuration.md">configuration reference</a>.</p>
           </SetupStep>
 
           <SetupStep number="02" title="Create an isolated compute boundary" description="Choose a provider. Keep the trusted controller separate from disposable workers, and keep the worker network away from production." receipt="The controller has durable storage; the worker scope contains zero secrets.">
@@ -56,6 +57,7 @@ export default function SetupPage() {
   --command '/usr/local/bin/runneryard status'
 
 fly machines list --app acme-ci-runners`}</CodeBlock>
+            <p className="note">Use the exact deployment commands on the <Link href="/providers/fly">Fly</Link> or <Link href="/providers/hetzner">Hetzner</Link> page. Never initialize the ledger again during an upgrade.</p>
           </SetupStep>
 
           <SetupStep number="06" title="Enable the fleet deliberately" description="Keep the hosted runner as the default while you qualify the canary. Enabling changes one repository variable and requires an explicit canary confirmation." receipt="route status reports your qualified label; one low-risk CI job completes there.">
@@ -64,6 +66,7 @@ fly machines list --app acme-ci-runners`}</CodeBlock>
   --label acme-linux \\
   --confirm-canary`}</CodeBlock>
             <p className="note">Hosted fallback is a manual repository-variable switch, not an availability detector. Emergency return: <code>npx runneryard route disable --github https://github.com/acme/widgets</code></p>
+            <p className="note">For a team or agent-heavy repository, commit the reviewed scaffold and give contributors the <a href="https://github.com/gwendall/runneryard/blob/main/AGENTS.md">repository agent contract</a>. RunnerYard provides compute; causal CI and the protected merge lane remain repository policy.</p>
           </SetupStep>
         </div>
       </main>

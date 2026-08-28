@@ -50,7 +50,7 @@ fly volumes create runneryard_state \\
           <section className="provider-section">
             <h2>04 · Add compute access</h2>
             <div className="provider-content">
-              <p>Create a deploy token scoped only to the worker app and store it only on the controller. This is a Fly credential, not a GitHub token. Keep reviewed policy such as <code>MAX_RUNNERS</code> in TOML, never in secrets.</p>
+              <p>Create a deploy token scoped only to the worker app and store it only on the controller. This is a Fly credential, not a GitHub token. Keep reviewed policy such as <code>MAX_RUNNERS</code> in TOML, never in secrets or pull-request-controlled input.</p>
               <CodeBlock>{`fly tokens create deploy --app acme-ci-runners
 fly secrets set --app acme-ci-controller \\
   FLY_API_TOKEN='<worker-app deploy token>'`}</CodeBlock>
@@ -93,7 +93,7 @@ fly machines list --app acme-ci-runners
 npx runneryard route enable \\
   --github https://github.com/acme/widgets \\
   --label acme-linux --confirm-canary`}</CodeBlock>
-              <p>Keep <code>ubuntu-latest</code> available as the explicit emergency route. <a href={`${docsUrl}/providers/fly.md`}>Read the complete Fly guide</a> for rotation and recovery details.</p>
+              <p>Keep <code>ubuntu-latest</code> available as the explicit emergency route. <a href={`${docsUrl}/configuration.md`}>Size capacity and budget</a>, then read the <a href={`${docsUrl}/providers/fly.md`}>complete Fly guide</a> for rotation and recovery details.</p>
             </div>
           </section>
 
