@@ -68,6 +68,21 @@ operator-reviewed provider configuration; never let repository code or a pull
 request change it. See the [configuration reference](configuration.md) for the
 budget admission formula and provider-specific shapes.
 
+## Runtime toolcache
+
+The release image publishes its digest-pinned Node patch through the GitHub
+runner toolcache. Pin `actions/setup-node` to that exact patch when fast,
+reproducible bootstrap matters. A floating request such as `node-version: 22`
+may resolve to a newer patch after the image was published; `setup-node` then
+correctly downloads it for every disposable worker instead of using the local
+toolcache. That is a version mismatch, not a cache miss.
+
+Check the release Dockerfile for the prewarmed patch, or read it from a worker
+with `node --version`. Upgrade the RunnerYard image before moving repository
+workflows to a newer patch. Keep the workflow and image changes independently
+reviewable: repository code must not be able to select an untrusted worker
+image.
+
 ## Fleet status
 
 The controller writes `/var/lib/runneryard/status.json` atomically with mode

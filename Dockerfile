@@ -1,7 +1,7 @@
 ARG GO_VERSION=1.25.3
 ARG ACTIONS_RUNNER_IMAGE=ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
-ARG NODE_VERSION=22.22.3
-ARG NODE_IMAGE=node:${NODE_VERSION}-bookworm-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752
+ARG NODE_VERSION=22.23.2
+ARG NODE_IMAGE=node:${NODE_VERSION}-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
 FROM golang:${GO_VERSION}-bookworm AS controller-build
 WORKDIR /src
 COPY go.mod go.sum ./
