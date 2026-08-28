@@ -11,6 +11,8 @@ import (
 	"testing"
 )
 
+const expectedNodeRuntimeVersion = "22.23.2"
+
 func TestRuntimeImageIncludesGitHubCLI(t *testing.T) {
 	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "Dockerfile"))
 	if err != nil {
@@ -27,7 +29,7 @@ func TestRuntimeImageIncludesPinnedNodeBootstrap(t *testing.T) {
 		t.Fatal(err)
 	}
 	contents := string(dockerfile)
-	if !strings.Contains(contents, "ARG NODE_VERSION=22.23.2") ||
+	if !strings.Contains(contents, "ARG NODE_VERSION="+expectedNodeRuntimeVersion) ||
 		!strings.Contains(contents, "ARG NODE_IMAGE=node:${NODE_VERSION}-bookworm-slim@sha256:") {
 		t.Fatal("runtime image must pin the Node 22 bootstrap image by digest")
 	}
@@ -43,7 +45,7 @@ func TestRuntimeImagePrewarmsPinnedNodeToolcache(t *testing.T) {
 	}
 	contents := string(dockerfile)
 	for _, required := range []string{
-		"ARG NODE_VERSION=22.23.2",
+		"ARG NODE_VERSION=" + expectedNodeRuntimeVersion,
 		"ARG TARGETARCH",
 		`amd64) toolcache_arch=x64`,
 		`arm64) toolcache_arch=arm64`,
