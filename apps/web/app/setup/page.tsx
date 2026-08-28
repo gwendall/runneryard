@@ -18,7 +18,7 @@ export default function SetupPage() {
           <p>Start with one trusted private repository. The CLI writes reviewable config, opens GitHub when approval is needed, and keeps every credential out of this website.</p>
           <div className="setup-facts" aria-label="Setup properties">
             <span>No RunnerYard account</span>
-            <span>No token copy-paste</span>
+            <span>No GitHub token copy-paste</span>
             <span>No workflow switch until you confirm</span>
           </div>
           <p className="state-sequence" aria-label="Setup states">Not started → Browser approval → App installed → Provider ready → Canary queued → Green → Cleanup verified</p>

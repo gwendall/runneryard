@@ -33,18 +33,22 @@ func TestDoctorRejectsSharedApp(t *testing.T) {
 }
 
 func TestDoctorRejectsControllerSecretThatShadowsPolicy(t *testing.T) {
-	run := func(name string, args ...string) ([]byte, error) {
-		if name == "fly" && len(args) > 3 && args[0] == "secrets" {
-			if args[3] == "control" {
-				return []byte(`[{"name":"FLY_API_TOKEN"},{"name":"MAX_RUNNERS"}]`), nil
+	for _, policy := range []string{"MAX_RUNNERS", "RUNNER_STATUS_FILE"} {
+		t.Run(policy, func(t *testing.T) {
+			run := func(name string, args ...string) ([]byte, error) {
+				if name == "fly" && len(args) > 3 && args[0] == "secrets" {
+					if args[3] == "control" {
+						return []byte(`[{"name":"FLY_API_TOKEN"},{"name":"` + policy + `"}]`), nil
+					}
+					return []byte(`[]`), nil
+				}
+				return []byte("ready"), nil
 			}
-			return []byte(`[]`), nil
-		}
-		return []byte("ready"), nil
-	}
-	checks := doctor("fly", "control", "workers", "", run)
-	if !hasDoctorStatus(checks, "controller policy source", "fail") {
-		t.Fatalf("checks = %#v", checks)
+			checks := doctor("fly", "control", "workers", "", run)
+			if !hasDoctorStatus(checks, "controller policy source", "fail") {
+				t.Fatalf("checks = %#v", checks)
+			}
+		})
 	}
 }
 

@@ -90,9 +90,16 @@ npx runneryard route enable \\
           </section>
 
           <section className="provider-section">
+            <h2>Upgrade</h2>
+            <div className="provider-content">
+              <p>Disable the route and stop the old controller. Pin the same release in both generated files: <code>RUNNER_IMAGE</code> in <code>controller.env</code> for workers and <code>image</code> in Compose for the controller. Set the canary&apos;s expected version to match. Preserve durable state, start one controller, then prove the controller with status and the worker with the canary.</p>
+            </div>
+          </section>
+
+          <section className="provider-section">
             <h2>Outboard</h2>
             <div className="provider-content">
-              <p>Disable the route, stop the controller, delete owned servers, and revoke both the project token and GitHub App keys. Then uninstall the App and delete the dedicated project.</p>
+              <p>Disable the route, stop the controller, delete owned servers, and revoke the project token. Delete a dedicated GitHub App; for a shared BYO App, remove only the local credential and this repository&apos;s access. Then delete the dedicated project.</p>
               <CodeBlock>npx runneryard route disable --github https://github.com/acme/widgets</CodeBlock>
             </div>
           </section>

@@ -83,12 +83,16 @@ from production.
 
 1. Disable routing or choose a maintenance window; do not start two controllers
    for one scale set.
-2. Change one reviewed policy or image reference in the generated config.
-3. Preserve the durable volume, budget ledger, retirement journal, and stable
+2. Change one reviewed policy at a time. On Fly, update the pinned deployment
+   image. On Hetzner, set the same release tag in both `RUNNER_IMAGE` inside
+   `controller.env` (workers) and `image` inside Compose (controller).
+3. Set `RUNNERYARD_EXPECTED_VERSION` in the generated canary to that release.
+4. Preserve the durable volume, budget ledger, retirement journal, and stable
    `CONTROLLER_ID`.
-4. Replace the controller, run `doctor`, and trigger the manual canary.
-5. Verify a green GitHub job, a complete controller receipt, and zero remaining
-   workers before restoring broader routing.
+5. Replace the controller, run `doctor`, and trigger the manual canary.
+6. Verify the controller version from `status`; the canary asserts the exact
+   worker release. Require a green job, a complete lifecycle receipt, and zero
+   remaining workers before restoring broader routing.
 
 See [operations](operations.md) for upgrade and incident procedures, and the
 [security model](security.md) before changing any trust boundary.

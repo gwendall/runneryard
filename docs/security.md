@@ -130,11 +130,14 @@ separately.
 
 1. Route workflows back to a hosted runner label.
 2. Stop the controller and verify worker inventory is empty.
-3. Revoke the provider token and every GitHub App private key.
-4. Uninstall and delete the dedicated GitHub App, or remove the installation
-   when bring-your-own mode shares the app intentionally.
+3. Revoke the provider token.
+4. If the fleet owns a dedicated GitHub App, revoke its keys, uninstall it, and
+   delete it. If it uses BYO App material shared with another fleet, remove the
+   local controller copy and this repository from the installation instead.
+   Never revoke a shared key, uninstall a shared installation, or delete a
+   shared App until every remaining consumer has rotated away from it.
 5. Delete the worker and controller apps, projects, or resource groups.
-6. Remove generated config and repository variables.
+6. Remove generated config, local credential files, and repository variables.
 
 Deleting the npm package or the website is never required for outboarding; the
 runtime has no hosted runneryard control plane.

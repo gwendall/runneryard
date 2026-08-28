@@ -36,6 +36,15 @@ func TestRunInitCreatesSafeScaffold(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("secret template mode = %o, want 600", info.Mode().Perm())
 	}
+	canary, err := os.ReadFile(filepath.Join(directory, ".github", "workflows", "runneryard-canary.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`RUNNERYARD_EXPECTED_VERSION: "9.8.7"`, `actual_version="$(runneryard version)"`} {
+		if !strings.Contains(string(canary), expected) {
+			t.Fatalf("generated canary missing %q", expected)
+		}
+	}
 }
 
 func TestRunInitRefusesOverwrite(t *testing.T) {
