@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	statusSchemaVersion = 1
+	statusSchemaVersion = 2
 	maximumStatusSize   = 1 << 20
 )
 
@@ -54,6 +54,7 @@ type WorkerStatus struct {
 	Starting           int  `json:"starting"`
 	Busy               int  `json:"busy"`
 	Idle               int  `json:"idle"`
+	Unknown            int  `json:"unknown"`
 	OrphanCandidates   int  `json:"orphan_candidates"`
 	PendingRetirements int  `json:"pending_retirements"`
 	Maximum            int  `json:"maximum"`
@@ -178,11 +179,12 @@ func (reporter *statusReporter) desired(assigned, desired int) {
 	})
 }
 
-func (reporter *statusReporter) workers(actual, busy, idle int) {
+func (reporter *statusReporter) workers(actual, busy, idle, unknown int) {
 	reporter.update(func(status *FleetStatus) {
 		status.Workers.Actual = max(0, actual)
 		status.Workers.Busy = max(0, busy)
 		status.Workers.Idle = max(0, idle)
+		status.Workers.Unknown = max(0, unknown)
 	})
 }
 
@@ -420,13 +422,13 @@ func (status FleetStatus) validate() error {
 	if status.Health != "starting" && status.Health != "ready" && status.Health != "degraded" {
 		return errors.New("fleet status contains an invalid health value")
 	}
-	workerValues := []int{status.Workers.Actual, status.Workers.Starting, status.Workers.Busy, status.Workers.Idle, status.Workers.OrphanCandidates, status.Workers.PendingRetirements, status.Workers.Maximum}
+	workerValues := []int{status.Workers.Actual, status.Workers.Starting, status.Workers.Busy, status.Workers.Idle, status.Workers.Unknown, status.Workers.OrphanCandidates, status.Workers.PendingRetirements, status.Workers.Maximum}
 	for _, value := range workerValues {
 		if value < 0 {
 			return errors.New("fleet status contains a negative worker count")
 		}
 	}
-	if status.Workers.Busy+status.Workers.Idle != status.Workers.Actual {
+	if status.Workers.Busy+status.Workers.Idle+status.Workers.Unknown != status.Workers.Actual {
 		return errors.New("fleet status worker counts are inconsistent")
 	}
 	for _, latency := range []LatencyStats{status.Latency.ProviderCreate, status.Latency.Assignment} {

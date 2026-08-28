@@ -177,8 +177,39 @@ func TestReconcileAdoptsManagedWorkerMissingFromLocalState(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, ok := state.get("runner-00000003")
-	if !ok || record.Worker.ID != "orphan" || !record.Busy {
+	if !ok || record.Worker.ID != "orphan" || record.Busy || record.Observed {
 		t.Fatalf("worker was not conservatively adopted: %#v, %v", record, ok)
+	}
+}
+
+func TestRecoveryDoesNotClaimAnUnobservedWorkerIsBusy(t *testing.T) {
+	worker := provider.Worker{
+		ID: "recovered", LeaseID: "lease-recovered", RunnerName: "runner-recovered",
+		RunnerID: 42, RunnerScaleSetID: 1, CreatedAt: time.Now(),
+	}
+	state := newWorkerState()
+	scaler := testScaler(t, state, &fakeCompute{workers: []provider.Worker{worker}})
+
+	if err := scaler.recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	record, ok := state.get(worker.RunnerName)
+	if !ok {
+		t.Fatal("recovered worker missing from local state")
+	}
+	if record.Busy {
+		t.Fatal("recovered worker was reported busy without a JobStarted event")
+	}
+	actual, busy, idle, unknown := state.summary()
+	if actual != 1 || busy != 0 || idle != 0 || unknown != 1 {
+		t.Fatalf("recovered worker summary = actual %d, busy %d, idle %d, unknown %d", actual, busy, idle, unknown)
+	}
+	if err := scaler.HandleJobStarted(context.Background(), &scaleset.JobStarted{RunnerName: worker.RunnerName}); err != nil {
+		t.Fatal(err)
+	}
+	_, busy, idle, unknown = state.summary()
+	if busy != 1 || idle != 0 || unknown != 0 {
+		t.Fatalf("observed worker summary = busy %d, idle %d, unknown %d", busy, idle, unknown)
 	}
 }
 

@@ -7,8 +7,9 @@ import (
 )
 
 type workerRecord struct {
-	Worker provider.Worker
-	Busy   bool
+	Worker   provider.Worker
+	Busy     bool
+	Observed bool
 }
 
 type workerState struct {
@@ -22,7 +23,13 @@ func newWorkerState() *workerState {
 
 func (s *workerState) add(worker provider.Worker, busy bool) {
 	s.mu.Lock()
-	s.workers[worker.RunnerName] = workerRecord{Worker: worker, Busy: busy}
+	s.workers[worker.RunnerName] = workerRecord{Worker: worker, Busy: busy, Observed: true}
+	s.mu.Unlock()
+}
+
+func (s *workerState) adopt(worker provider.Worker) {
+	s.mu.Lock()
+	s.workers[worker.RunnerName] = workerRecord{Worker: worker}
 	s.mu.Unlock()
 }
 
@@ -32,18 +39,20 @@ func (s *workerState) count() int {
 	return len(s.workers)
 }
 
-func (s *workerState) summary() (actual, busy, idle int) {
+func (s *workerState) summary() (actual, busy, idle, unknown int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	actual = len(s.workers)
 	for _, record := range s.workers {
-		if record.Busy {
+		if !record.Observed {
+			unknown++
+		} else if record.Busy {
 			busy++
 		} else {
 			idle++
 		}
 	}
-	return actual, busy, idle
+	return actual, busy, idle, unknown
 }
 
 func (s *workerState) all() map[string]workerRecord {
@@ -64,6 +73,7 @@ func (s *workerState) markBusy(name string) bool {
 		return false
 	}
 	record.Busy = true
+	record.Observed = true
 	s.workers[name] = record
 	return true
 }
