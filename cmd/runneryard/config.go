@@ -52,6 +52,16 @@ type appConfig struct {
 }
 
 func loadConfig() (appConfig, error) {
+	runnerCPUKind := strings.TrimSpace(os.Getenv("RUNNER_CPU_KIND"))
+	if runnerCPUKind == "" {
+		// Scaffolds before 0.3.8 set RUNNER_CPUS without setting a CPU kind.
+		// Preserve their shared shape instead of silently upgrading their cost.
+		if strings.TrimSpace(os.Getenv("RUNNER_CPUS")) != "" {
+			runnerCPUKind = "shared"
+		} else {
+			runnerCPUKind = "performance"
+		}
+	}
 	cfg := appConfig{
 		GitHubURL:          strings.TrimSpace(os.Getenv("GITHUB_CONFIG_URL")),
 		ScaleSetName:       envOr("SCALE_SET_NAME", "runneryard-linux-x64"),
@@ -70,7 +80,7 @@ func loadConfig() (appConfig, error) {
 		HetznerServerType:  envOr("RUNNER_HETZNER_SERVER_TYPE", "cpx32"),
 		HetznerServerImage: envOr("RUNNER_HETZNER_IMAGE", "docker-ce"),
 		RunnerImage:        envOr("RUNNER_IMAGE", os.Getenv("FLY_IMAGE_REF")),
-		RunnerCPUKind:      envOr("RUNNER_CPU_KIND", "performance"),
+		RunnerCPUKind:      runnerCPUKind,
 		RunnerBudgetFile:   strings.TrimSpace(os.Getenv("RUNNER_BUDGET_FILE")),
 		RunnerStatusFile:   strings.TrimSpace(os.Getenv("RUNNER_STATUS_FILE")),
 		LogLevel:           parseLogLevel(envOr("LOG_LEVEL", "info")),

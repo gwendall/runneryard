@@ -25,6 +25,9 @@ will use the runners:
 npx runneryard init --github https://github.com/acme/widgets
 ```
 
+Use `--max-runners 2` for a conservative first canary, then raise the
+operator-owned ceiling only from observed queue depth and provider spend.
+
 This creates three reviewable files for the default Fly provider and never
 uploads a credential:
 

@@ -64,12 +64,26 @@ for warm workers.
 `FLY_API_TOKEN` is a deploy token scoped only to the worker app and belongs only
 on the controller. `FLY_APP_NAME` identifies the separate controller app.
 
-The generated `performance-2x` worker is intentional. Fly shared CPUs provide
-burstable capacity, not sustained cores; a test suite can start quickly and
-then slow down sharply after its burst allowance is consumed. Performance CPUs
-receive their full allocation continuously, so measure cost per successful job
-and rerun rate rather than comparing only the per-second price. Explicit
-`RUNNER_CPU_KIND=shared` remains supported for genuinely bursty workloads.
+The generated `performance-2x` worker is intentional. Each Fly shared vCPU gets
+a 5 ms baseline in every 80 ms scheduling window (6.25%) plus burst capacity;
+a test suite can start quickly and then slow down sharply after its burst
+allowance is consumed. Performance CPUs receive their full allocation
+continuously, so measure cost per successful job and rerun rate rather than
+comparing only the per-second price. Explicit `RUNNER_CPU_KIND=shared` remains
+supported for genuinely bursty workloads.
+
+For a conservative first canary, generate a lower hard ceiling:
+
+```sh
+npx runneryard init --provider fly \
+  --github https://github.com/acme/widgets \
+  --max-runners 2
+```
+
+Raise it only when observed queue depth and provider spend justify more
+parallel workers. Scaffolds generated before `0.3.8` set `RUNNER_CPUS` without
+`RUNNER_CPU_KIND`; RunnerYard keeps those configurations on shared CPUs during
+an upgrade. Set both variables explicitly to opt in to a new shape.
 
 ## Hetzner worker shape
 
