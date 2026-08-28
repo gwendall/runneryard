@@ -23,6 +23,40 @@ func TestRuntimeImageIncludesGitHubCLI(t *testing.T) {
 	}
 }
 
+func TestRuntimeImageIncludesBuildKitTooling(t *testing.T) {
+	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(dockerfile)
+	for _, required := range []string{
+		"docker-buildx docker.io",
+		"ENV DOCKER_BUILDKIT=1",
+	} {
+		if !strings.Contains(contents, required) {
+			t.Fatalf("runtime image does not guarantee BuildKit tooling: missing %q", required)
+		}
+	}
+
+	entrypoint, err := os.ReadFile(filepath.Join("..", "..", "runner-entrypoint"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents = string(entrypoint)
+	for _, required := range []string{
+		`{"features":{"buildkit":true}}`,
+		"RUNNER_TOOL_CACHE=/opt/hostedtoolcache ImageOS=ubuntu24",
+		"DOCKER_BUILDKIT=1",
+	} {
+		if !strings.Contains(contents, required) {
+			t.Fatalf("worker entrypoint does not preserve runtime tooling: missing %q", required)
+		}
+	}
+	if strings.Contains(contents, `{"storage-driver":"vfs"}`) {
+		t.Fatal("worker entrypoint must not force Docker's deep-copy vfs storage driver")
+	}
+}
+
 func TestRuntimeImageIncludesPinnedNodeBootstrap(t *testing.T) {
 	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "Dockerfile"))
 	if err != nil {
@@ -90,6 +124,8 @@ func TestReleaseRunsPinnedSetupNodeToolcacheCanaryOffline(t *testing.T) {
 	contents = string(canary)
 	for _, required := range []string{
 		"--network none",
+		`--entrypoint docker`,
+		`"$runtime_image" buildx version`,
 		`workflow_commands_token="runneryard-$(openssl rand -hex 32)"`,
 		`echo "::stop-commands::$workflow_commands_token"`,
 		`$setup_node_directory:/action:ro`,

@@ -17,6 +17,11 @@ fi
 
 setup_node_directory=$(cd "$setup_node_directory" && pwd -P)
 
+# Buildx is a client-side plugin, so its version can be verified without a
+# daemon or network. The worker entrypoint enables BuildKit for job steps.
+docker run --rm --network none --entrypoint docker \
+  "$runtime_image" buildx version
+
 workflow_commands_token=
 if [[ ${GITHUB_ACTIONS:-} == true ]]; then
   workflow_commands_token="runneryard-$(openssl rand -hex 32)"

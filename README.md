@@ -67,6 +67,11 @@ GitHub reports a green job, the controller records the complete lifecycle, and
 provider inventory returns to zero workers. Nothing routes normal CI to the
 fleet until you explicitly enable the generated label.
 
+The worker image includes the pinned Node patch in the Actions toolcache plus
+Docker Buildx/BuildKit. This avoids downloading the same Node runtime on every
+disposable worker and prevents Docker's legacy deep-copy builder from turning
+image smoke tests into disk-exhaustion events.
+
 For Hetzner Cloud, generate its provider-specific scaffold and follow the
 [Hetzner guide](docs/providers/hetzner.md):
 

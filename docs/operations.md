@@ -68,7 +68,20 @@ operator-reviewed provider configuration; never let repository code or a pull
 request change it. See the [configuration reference](configuration.md) for the
 budget admission formula and provider-specific shapes.
 
-## Runtime toolcache
+## Runtime tooling and toolcache
+
+Workers include the Docker Buildx client and enable BuildKit for job steps.
+Their nested daemon selects the VM's native storage driver instead of forcing
+Docker's deep-copy `vfs` fallback. A job log that reports the legacy builder,
+or `docker info` reporting `vfs` on a VM-backed provider, means the runtime
+image or host is outside the qualified path. Stop routing Docker-heavy jobs
+until a canary has verified `docker buildx version` and the provider's native
+driver; repeated legacy builds can consume the ephemeral rootfs before tests
+start.
+
+Docker Desktop is not a substitute for that provider canary: a privileged
+Docker daemon nested inside Desktop can reject overlay-on-overlay mounts even
+when the same image correctly uses the native driver on a VM-backed worker.
 
 The release image publishes its digest-pinned Node patch through the GitHub
 runner toolcache. Pin `actions/setup-node` to that exact patch when fast,
@@ -78,10 +91,13 @@ correctly downloads it for every disposable worker instead of using the local
 toolcache. That is a version mismatch, not a cache miss.
 
 Check the release Dockerfile for the prewarmed patch, or read it from a worker
-with `node --version`. Upgrade the RunnerYard image before moving repository
-workflows to a newer patch. Keep the workflow and image changes independently
-reviewable: repository code must not be able to select an untrusted worker
-image.
+with `node --version`. The entrypoint explicitly forwards the qualified
+`RUNNER_TOOL_CACHE` into the unprivileged Actions runner; if an exact
+`actions/setup-node` request still says it is downloading that patch, treat it
+as an image regression rather than accepting the cold download. Upgrade the
+RunnerYard image before moving repository workflows to a newer patch. Keep the
+workflow and image changes independently reviewable: repository code must not
+be able to select an untrusted worker image.
 
 ## Fleet status
 

@@ -23,7 +23,7 @@ ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-    build-essential ca-certificates curl docker.io dumb-init gh git git-lfs iptables jq \
+    build-essential ca-certificates curl docker-buildx docker.io dumb-init gh git git-lfs iptables jq \
     libyaml-dev python3 python3-pip sudo unzip util-linux zip \
   && rm -rf /var/lib/apt/lists/*
 
@@ -43,6 +43,7 @@ RUN chmod 0755 /usr/local/bin/runneryard /usr/local/bin/controller-entrypoint /u
 ENV HOME=/home/runner
 ENV RUNNER_TOOL_CACHE=/opt/hostedtoolcache
 ENV ImageOS=ubuntu24
+ENV DOCKER_BUILDKIT=1
 RUN set -eux; \
   expected_node_version="v${NODE_VERSION}"; \
   actual_node_version="$(/usr/local/bin/node --version)"; \
