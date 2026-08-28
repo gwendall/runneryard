@@ -194,7 +194,7 @@ pnpm build
 
 The website lives in `apps/web` and runs with `pnpm dev`. See
 [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a
-change.
+change. Planned work is listed in [docs/backlog.md](docs/backlog.md).
 
 The release workflow publishes the versioned GHCR image before the matching
 GitHub release. npm publishing uses OIDC trusted publishing and provenance;
