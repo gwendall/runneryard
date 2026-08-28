@@ -323,6 +323,10 @@ jobs:
           docker buildx version
           storage_driver="$(docker info --format '{{.Driver}}')"
           test "$storage_driver" != vfs
+          docker_root_filesystem="$(findmnt --noheadings --output FSTYPE --target /var/lib/docker | tr -d '[:space:]')"
+          case "$docker_root_filesystem" in
+            overlay|overlayfs) test "$storage_driver" = fuse-overlayfs ;;
+          esac
           docker buildx build --load -t runneryard-buildkit-canary - <<'EOF'
           FROM %s
           RUN printf passed >/runneryard-buildkit-canary

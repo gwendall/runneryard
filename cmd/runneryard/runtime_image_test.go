@@ -46,10 +46,16 @@ func TestRuntimeImageIncludesBuildKitTooling(t *testing.T) {
 		"FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517",
 		"docker-buildx=0.30.1-0ubuntu1~24.04.1",
 		"docker.io=29.1.3-0ubuntu3~24.04.2",
+		"fuse-overlayfs=1.13-1",
 		"ENV DOCKER_BUILDKIT=1",
 	)
 	contents = readRepositoryFile(t, "runner-entrypoint")
 	requireSourceContains(t, "worker entrypoint does not enable BuildKit", contents,
+		`docker_root_filesystem="$(findmnt --noheadings --output FSTYPE --target /var/lib/docker | tr -d '[:space:]')"`,
+		`overlay|overlayfs)`,
+		`[[ ! -c /dev/fuse ]]`,
+		`command -v fuse-overlayfs`,
+		`{"features":{"buildkit":true,"containerd-snapshotter":false},"storage-driver":"fuse-overlayfs"}`,
 		`{"features":{"buildkit":true}}`,
 		"DOCKER_BUILDKIT=1",
 	)
@@ -159,7 +165,11 @@ func TestReleaseRunsPinnedSetupNodeToolcacheCanaryOffline(t *testing.T) {
 		`--entrypoint /usr/local/bin/runner-entrypoint`,
 		`ACTIONS_RUNNER_INPUT_JITCONFIG=offline-canary`,
 		`RUNNERYARD_DEADLINE=2099-01-01T00:00:00Z`,
+		`"$entrypoint_canary_directory/findmnt"`,
+		`test "${*: -1}" = /var/lib/docker`,
+		`printf '%s\\n' ext4`,
 		`test "$RUNNER_TOOL_CACHE" = /opt/hostedtoolcache`,
+		`-v "$entrypoint_canary_directory/findmnt:/usr/bin/findmnt:ro"`,
 		`grep -Fx passed "$entrypoint_canary_directory/output/result"`,
 		`workflow_commands_token="runneryard-$(openssl rand -hex 32)"`,
 		`echo "::stop-commands::$workflow_commands_token"`,

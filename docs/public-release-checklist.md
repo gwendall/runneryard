@@ -31,9 +31,9 @@ Use this checklist before changing repository visibility or publishing a tag.
   Node version from `/opt/hostedtoolcache` on every published architecture.
 - [ ] Confirm the immutable worker tag is a manifest containing exactly Linux
   amd64 and arm64 images, both qualified before publication.
-- [ ] Confirm a provider canary reports a native Docker storage driver and a
-  BuildKit build; reject the legacy builder or a forced `vfs` driver on
-  VM-backed workers.
+- [ ] Confirm a provider canary reports `fuse-overlayfs` on a layered root (or
+  the native driver on a plain VM filesystem), then completes a BuildKit build
+  and container execution. Reject the legacy builder and `vfs`.
 
 ## First-user journey
 

@@ -85,7 +85,7 @@ fly deploy --app acme-ci-controller \\
           <section className="provider-section">
             <h2>06 · Canary and route</h2>
             <div className="provider-content">
-              <p>Trigger the generated workflow. A valid canary is green, has a complete controller lifecycle, and leaves no worker behind. Only then route a low-risk job.</p>
+              <p>Trigger the generated workflow. A valid canary proves the pinned Node toolcache, Fly-compatible <code>fuse-overlayfs</code>, and a real BuildKit build and container run. It also has a complete controller lifecycle and leaves no worker behind. Only then route a low-risk job.</p>
               <CodeBlock>{`gh workflow run runneryard-canary.yml --repo acme/widgets
 
 fly ssh console --app acme-ci-controller \\

@@ -92,7 +92,10 @@ safest default boundary.
 
 The runtime pins the Ubuntu base, official GitHub Actions runner, and Node 22
 bootstrap images by multi-architecture digest. Docker and Buildx package
-versions are explicit. The bootstrap runtime keeps shell-based planners compatible and
+versions are explicit. The worker selects `fuse-overlayfs` only when its Docker
+data root is already overlay-backed; otherwise it retains Docker's native
+snapshotter. It fails closed if that layered path lacks `/dev/fuse`, and never
+falls back to the deep-copy `vfs` driver. The bootstrap runtime keeps shell-based planners compatible and
 publishes that same pinned Node version through the GitHub runner toolcache on
 both x64 and arm64; release qualification executes the entrypoint and offline
 `setup-node` contract on both architectures before publishing one manifest.

@@ -71,17 +71,22 @@ budget admission formula and provider-specific shapes.
 ## Runtime tooling and toolcache
 
 Workers include the Docker Buildx client and enable BuildKit for job steps.
-Their nested daemon selects the VM's native storage driver instead of forcing
-Docker's deep-copy `vfs` fallback. A job log that reports the legacy builder,
-or `docker info` reporting `vfs` on a VM-backed provider, means the runtime
-image or host is outside the qualified path. Stop routing Docker-heavy jobs
-until a canary has verified `docker buildx version` and the provider's native
-driver; repeated legacy builds can consume the ephemeral rootfs before tests
-start.
+Their nested daemon selects Docker's native snapshotter on a plain VM
+filesystem. When the provider presents an overlay root, where a second kernel
+overlay mount is not portable, the entrypoint disables the containerd image
+store and selects `fuse-overlayfs`. Missing `/dev/fuse` or a missing helper on
+that path fails worker startup instead of silently falling back to `vfs`.
 
-Docker Desktop is not a substitute for that provider canary: a privileged
-Docker daemon nested inside Desktop can reject overlay-on-overlay mounts even
-when the same image correctly uses the native driver on a VM-backed worker.
+A job log that reports the legacy builder, `docker info` reporting `vfs`, or an
+overlay-backed worker reporting a driver other than `fuse-overlayfs` means the
+runtime image or host is outside the qualified path. Stop routing Docker-heavy
+jobs until a provider canary has completed a real BuildKit `RUN` and container
+execution; checking the Buildx binary or pulling a base image alone does not
+exercise the snapshotter. Repeated legacy builds can consume the ephemeral
+rootfs before tests start.
+
+Docker Desktop is not a substitute for that provider canary: its device and
+filesystem boundary differs from the final provider Machine or VM.
 The generated repository canary performs the provider proof: it checks the
 prewarmed Node path, invokes pinned `actions/setup-node`, rejects `vfs`, and
 builds and runs a digest-pinned minimal image through Buildx.

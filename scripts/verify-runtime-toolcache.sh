@@ -59,6 +59,12 @@ printf '%s\n' \
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
+  'test "${*: -1}" = /var/lib/docker' \
+  "printf '%s\\n' ext4" \
+  >"$entrypoint_canary_directory/findmnt"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
   "expected_node_version=$node_version" \
   'test "$(id -u)" = 1001' \
   'test "$HOME" = /home/runner' \
@@ -77,6 +83,7 @@ printf '%s\n' \
 chmod 0755 \
   "$entrypoint_canary_directory/dockerd" \
   "$entrypoint_canary_directory/docker" \
+  "$entrypoint_canary_directory/findmnt" \
   "$entrypoint_canary_directory/run.sh"
 
 docker run --rm "${docker_platform_args[@]}" \
@@ -85,6 +92,7 @@ docker run --rm "${docker_platform_args[@]}" \
   -e RUNNERYARD_DEADLINE=2099-01-01T00:00:00Z \
   -v "$entrypoint_canary_directory/dockerd:/usr/local/sbin/dockerd:ro" \
   -v "$entrypoint_canary_directory/docker:/usr/local/sbin/docker:ro" \
+  -v "$entrypoint_canary_directory/findmnt:/usr/bin/findmnt:ro" \
   -v "$entrypoint_canary_directory/run.sh:/home/runner/run.sh:ro" \
   -v "$entrypoint_canary_directory/output:/canary-output" \
   "$runtime_image"
