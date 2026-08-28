@@ -56,13 +56,20 @@ for warm workers.
 | `RUNNER_FLY_APP` | Dedicated secret-free worker app. | Generated from the GitHub owner. |
 | `RUNNER_FLY_REGION` | Worker region. | `cdg`, or `--region` |
 | `RUNNER_IMAGE` | Immutable RunnerYard controller and worker image. | Current CLI release tag. |
-| `RUNNER_CPU_KIND` | Fly CPU class. | `shared` |
-| `RUNNER_CPUS` | CPUs per worker. | `4` |
+| `RUNNER_CPU_KIND` | Fly CPU class. | `performance` |
+| `RUNNER_CPUS` | CPUs per worker. | `2` |
 | `RUNNER_MEMORY_MB` | Memory per worker. | `8192` |
 | `RUNNER_ROOTFS_GB` | Ephemeral root filesystem per worker. | `30` |
 
 `FLY_API_TOKEN` is a deploy token scoped only to the worker app and belongs only
 on the controller. `FLY_APP_NAME` identifies the separate controller app.
+
+The generated `performance-2x` worker is intentional. Fly shared CPUs provide
+burstable capacity, not sustained cores; a test suite can start quickly and
+then slow down sharply after its burst allowance is consumed. Performance CPUs
+receive their full allocation continuously, so measure cost per successful job
+and rerun rate rather than comparing only the per-second price. Explicit
+`RUNNER_CPU_KIND=shared` remains supported for genuinely bursty workloads.
 
 ## Hetzner worker shape
 

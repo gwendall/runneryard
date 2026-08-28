@@ -32,6 +32,11 @@ uploads a credential:
 - `.runneryard/fly.controller.toml`
 - `.github/workflows/runneryard-canary.yml`
 
+The generated Fly worker uses two sustained performance CPUs and 8 GB of RAM.
+Shared CPUs remain an explicit option for short, bursty jobs; see
+[Fly worker sizing](docs/configuration.md#fly-worker-shape) before changing the
+shape or concurrency ceiling.
+
 Next, create the isolated provider resources described in the
 [Fly guide](docs/providers/fly.md). Create a private GitHub App owned by the
 target account and send its one-time key directly to the controller secret

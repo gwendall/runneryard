@@ -21,7 +21,7 @@ func TestRunInitCreatesSafeScaffold(t *testing.T) {
 		t.Fatal(err)
 	}
 	contents := string(env)
-	for _, expected := range []string{"GITHUB_CONFIG_URL=https://github.com/acme/widgets", "FLY_APP_NAME=acme-ci-controller", "RUNNER_FLY_APP=acme-ci-runners", "MAX_RUNNERS=3", "RUNNER_IMAGE=ghcr.io/gwendall/runneryard:9.8.7", "RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json", "RUNNER_STATUS_FILE=/var/lib/runneryard/status.json"} {
+	for _, expected := range []string{"GITHUB_CONFIG_URL=https://github.com/acme/widgets", "FLY_APP_NAME=acme-ci-controller", "RUNNER_FLY_APP=acme-ci-runners", "MAX_RUNNERS=3", "RUNNER_CPU_KIND=performance", "RUNNER_CPUS=2", "RUNNER_IMAGE=ghcr.io/gwendall/runneryard:9.8.7", "RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json", "RUNNER_STATUS_FILE=/var/lib/runneryard/status.json"} {
 		if !strings.Contains(contents, expected) {
 			t.Fatalf("generated env missing %q", expected)
 		}
@@ -35,6 +35,16 @@ func TestRunInitCreatesSafeScaffold(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("secret template mode = %o, want 600", info.Mode().Perm())
+	}
+	toml, err := os.ReadFile(filepath.Join(directory, ".runneryard", "fly.controller.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tomlContents := string(toml)
+	for _, expected := range []string{`RUNNER_CPU_KIND = "performance"`, `RUNNER_CPUS = "2"`, `cpu_kind = "shared"`, `cpus = 1`} {
+		if !strings.Contains(tomlContents, expected) {
+			t.Fatalf("generated Fly TOML missing %q", expected)
+		}
 	}
 	canary, err := os.ReadFile(filepath.Join(directory, ".github", "workflows", "runneryard-canary.yml"))
 	if err != nil {

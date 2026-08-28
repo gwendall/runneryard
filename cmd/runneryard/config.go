@@ -70,7 +70,7 @@ func loadConfig() (appConfig, error) {
 		HetznerServerType:  envOr("RUNNER_HETZNER_SERVER_TYPE", "cpx32"),
 		HetznerServerImage: envOr("RUNNER_HETZNER_IMAGE", "docker-ce"),
 		RunnerImage:        envOr("RUNNER_IMAGE", os.Getenv("FLY_IMAGE_REF")),
-		RunnerCPUKind:      envOr("RUNNER_CPU_KIND", "shared"),
+		RunnerCPUKind:      envOr("RUNNER_CPU_KIND", "performance"),
 		RunnerBudgetFile:   strings.TrimSpace(os.Getenv("RUNNER_BUDGET_FILE")),
 		RunnerStatusFile:   strings.TrimSpace(os.Getenv("RUNNER_STATUS_FILE")),
 		LogLevel:           parseLogLevel(envOr("LOG_LEVEL", "info")),
@@ -83,7 +83,7 @@ func loadConfig() (appConfig, error) {
 	if cfg.MaxWorkers, err = envInt("MAX_RUNNERS", 8); err != nil {
 		return appConfig{}, err
 	}
-	if cfg.RunnerCPUs, err = envInt("RUNNER_CPUS", 4); err != nil {
+	if cfg.RunnerCPUs, err = envInt("RUNNER_CPUS", 2); err != nil {
 		return appConfig{}, err
 	}
 	if cfg.RunnerMemoryMB, err = envInt("RUNNER_MEMORY_MB", 8192); err != nil {

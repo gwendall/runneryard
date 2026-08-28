@@ -29,6 +29,9 @@ func TestLaunchIsEphemeralAndReceivesOnlyJITCredential(t *testing.T) {
 		if len(request.Config.Processes[0].Env) != 2 || request.Config.Processes[0].Env["ACTIONS_RUNNER_INPUT_JITCONFIG"] != "jit-secret" || request.Config.Processes[0].Env["RUNNERYARD_DEADLINE"] == "" {
 			t.Fatalf("worker received unexpected process environment: %#v", request.Config.Processes[0].Env)
 		}
+		if request.Config.Guest.CPUKind != "shared" || request.Config.Guest.CPUs != 4 || request.Config.Guest.MemoryMB != 8192 {
+			t.Fatalf("worker did not preserve the configured shape: %#v", request.Config.Guest)
+		}
 		if request.Config.Metadata[controllerIDKey] != "test-controller" || request.Config.Metadata[leaseIDKey] != "lease-one" || request.Config.Metadata[runnerIDKey] != "42" || request.Config.Metadata[runnerScaleSetIDKey] != "7" {
 			t.Fatal("ownership metadata missing")
 		}

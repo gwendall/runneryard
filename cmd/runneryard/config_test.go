@@ -19,6 +19,25 @@ func TestConfigUsesBoundedDefaults(t *testing.T) {
 	if cfg.MinWorkers != 0 || cfg.MaxWorkers != 8 {
 		t.Fatalf("unexpected worker defaults: min=%d max=%d", cfg.MinWorkers, cfg.MaxWorkers)
 	}
+	if cfg.RunnerCPUKind != "performance" || cfg.RunnerCPUs != 2 || cfg.RunnerMemoryMB != 8192 {
+		t.Fatalf("unexpected Fly worker defaults: kind=%s cpus=%d memory=%d", cfg.RunnerCPUKind, cfg.RunnerCPUs, cfg.RunnerMemoryMB)
+	}
+}
+
+func TestConfigPreservesExplicitSharedFlyShape(t *testing.T) {
+	setValidEnv(t)
+	t.Setenv("RUNNER_CPU_KIND", "shared")
+	t.Setenv("RUNNER_CPUS", "4")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RunnerCPUKind != "shared" || cfg.RunnerCPUs != 4 {
+		t.Fatalf("unexpected explicit Fly worker shape: kind=%s cpus=%d", cfg.RunnerCPUKind, cfg.RunnerCPUs)
+	}
+	if _, err := cfg.compute(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestConfigRejectsNonGitHubConfigURL(t *testing.T) {
