@@ -71,6 +71,16 @@ docker info >/dev/null 2>&1 || {
   exit 1
 }
 
+storage_driver="$(docker info --format '{{.Driver}}')"
+if [[ "$storage_driver" == vfs ]]; then
+  echo "refusing Docker storage driver vfs" >&2
+  exit 78
+fi
+if [[ "$docker_root_filesystem" == overlay || "$docker_root_filesystem" == overlayfs ]] && [[ "$storage_driver" != fuse-overlayfs ]]; then
+  echo "Docker data root uses $docker_root_filesystem but daemon selected $storage_driver instead of fuse-overlayfs" >&2
+  exit 78
+fi
+
 chown runner:docker /var/run/docker.sock
 set +e
 timeout --signal=TERM --kill-after=30s "${remaining_seconds}s" \

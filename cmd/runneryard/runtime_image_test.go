@@ -57,6 +57,9 @@ func TestRuntimeImageIncludesBuildKitTooling(t *testing.T) {
 		`command -v fuse-overlayfs`,
 		`{"features":{"buildkit":true,"containerd-snapshotter":false},"storage-driver":"fuse-overlayfs"}`,
 		`{"features":{"buildkit":true}}`,
+		`storage_driver="$(docker info --format '{{.Driver}}')"`,
+		`if [[ "$storage_driver" == vfs ]]`,
+		`if [[ "$docker_root_filesystem" == overlay || "$docker_root_filesystem" == overlayfs ]] && [[ "$storage_driver" != fuse-overlayfs ]]`,
 		"DOCKER_BUILDKIT=1",
 	)
 	if strings.Contains(contents, `{"storage-driver":"vfs"}`) {
@@ -168,9 +171,13 @@ func TestReleaseRunsPinnedSetupNodeToolcacheCanaryOffline(t *testing.T) {
 		`"$entrypoint_canary_directory/findmnt"`,
 		`test "${*: -1}" = /var/lib/docker`,
 		`printf '%s\\n' ext4`,
+		`cat /canary-output/storage-driver`,
 		`test "$RUNNER_TOOL_CACHE" = /opt/hostedtoolcache`,
 		`-v "$entrypoint_canary_directory/findmnt:/usr/bin/findmnt:ro"`,
 		`grep -Fx passed "$entrypoint_canary_directory/output/result"`,
+		`printf '%s\n' vfs >"$entrypoint_canary_directory/output/storage-driver"`,
+		`test "$storage_guard_status" -eq 78`,
+		`grep -F "refusing Docker storage driver vfs" "$entrypoint_canary_directory/output/storage-guard.log"`,
 		`workflow_commands_token="runneryard-$(openssl rand -hex 32)"`,
 		`echo "::stop-commands::$workflow_commands_token"`,
 		`$setup_node_directory:/action:ro`,
