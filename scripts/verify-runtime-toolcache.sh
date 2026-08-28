@@ -1,14 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-  echo "usage: $0 <runtime-image> <setup-node-directory> <node-version>" >&2
+if [[ $# -lt 3 || $# -gt 4 ]]; then
+  echo "usage: $0 <runtime-image> <setup-node-directory> <node-version> [platform]" >&2
   exit 64
 fi
 
 runtime_image=$1
 setup_node_directory=$2
 node_version=$3
+platform=${4:-}
+
+if [[ ! $node_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "node version must be an exact numeric patch: $node_version" >&2
+  exit 65
+fi
+
+docker_platform_args=()
+if [[ -n $platform ]]; then
+  docker_platform_args=(--platform "$platform")
+fi
 
 if [[ ! -f "$setup_node_directory/dist/setup/index.js" ]]; then
   echo "setup-node action is missing dist/setup/index.js: $setup_node_directory" >&2
@@ -19,8 +30,65 @@ setup_node_directory=$(cd "$setup_node_directory" && pwd -P)
 
 # Buildx is a client-side plugin, so its version can be verified without a
 # daemon or network. The worker entrypoint enables BuildKit for job steps.
-docker run --rm --network none --entrypoint docker \
+docker run --rm --network none "${docker_platform_args[@]}" --entrypoint docker \
   "$runtime_image" buildx version
+
+# Exercise the real runner privilege transition. The fake daemon isolates this
+# canary from the host while the mounted run.sh observes the exact environment
+# received by a GitHub job. Do not pass the toolcache variables to docker run:
+# they must come from runner-entrypoint after sudo/setpriv.
+entrypoint_canary_directory=$(mktemp -d)
+cleanup_entrypoint_canary() {
+  rm -rf "$entrypoint_canary_directory"
+}
+trap cleanup_entrypoint_canary EXIT
+mkdir -p "$entrypoint_canary_directory/output"
+chmod 0777 "$entrypoint_canary_directory/output"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'touch /var/run/docker.sock' \
+  'trap "exit 0" TERM INT' \
+  'while true; do sleep 60 & wait $!; done' \
+  >"$entrypoint_canary_directory/dockerd"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'test "${1:-}" = info' \
+  'touch /var/run/docker.sock' \
+  >"$entrypoint_canary_directory/docker"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  "expected_node_version=$node_version" \
+  'test "$(id -u)" = 1001' \
+  'test "$HOME" = /home/runner' \
+  'test "$RUNNER_TOOL_CACHE" = /opt/hostedtoolcache' \
+  'test "$ImageOS" = ubuntu24' \
+  'test "$DOCKER_BUILDKIT" = 1' \
+  'case "$(uname -m)" in' \
+  '  x86_64) toolcache_arch=x64 ;;' \
+  '  aarch64|arm64) toolcache_arch=arm64 ;;' \
+  '  *) exit 1 ;;' \
+  'esac' \
+  'node_path="$RUNNER_TOOL_CACHE/node/$expected_node_version/$toolcache_arch/bin/node"' \
+  'test "$("$node_path" --version)" = "v$expected_node_version"' \
+  'printf passed > /canary-output/result' \
+  >"$entrypoint_canary_directory/run.sh"
+chmod 0755 \
+  "$entrypoint_canary_directory/dockerd" \
+  "$entrypoint_canary_directory/docker" \
+  "$entrypoint_canary_directory/run.sh"
+
+docker run --rm "${docker_platform_args[@]}" \
+  --entrypoint /usr/local/bin/runner-entrypoint \
+  -e ACTIONS_RUNNER_INPUT_JITCONFIG=offline-canary \
+  -e RUNNERYARD_DEADLINE=2099-01-01T00:00:00Z \
+  -v "$entrypoint_canary_directory/dockerd:/usr/local/sbin/dockerd:ro" \
+  -v "$entrypoint_canary_directory/docker:/usr/local/sbin/docker:ro" \
+  -v "$entrypoint_canary_directory/run.sh:/home/runner/run.sh:ro" \
+  -v "$entrypoint_canary_directory/output:/canary-output" \
+  "$runtime_image"
+grep -Fx passed "$entrypoint_canary_directory/output/result"
 
 workflow_commands_token=
 if [[ ${GITHUB_ACTIONS:-} == true ]]; then
@@ -29,7 +97,7 @@ if [[ ${GITHUB_ACTIONS:-} == true ]]; then
 fi
 
 set +e
-docker run --rm --network none --entrypoint /bin/bash \
+docker run --rm --network none "${docker_platform_args[@]}" --entrypoint /bin/bash \
   -v "$setup_node_directory:/action:ro" \
   -e "INPUT_NODE-VERSION=$node_version" \
   -e INPUT_ALWAYS-AUTH=false \

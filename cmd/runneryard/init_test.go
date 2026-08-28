@@ -50,7 +50,15 @@ func TestRunInitCreatesSafeScaffold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{`RUNNERYARD_EXPECTED_VERSION: "9.8.7"`, `actual_version="$(runneryard version)"`} {
+	for _, expected := range []string{
+		`RUNNERYARD_EXPECTED_VERSION: "9.8.7"`,
+		`RUNNERYARD_EXPECTED_NODE: "22.23.2"`,
+		`actions/setup-node@820762786026740c76f36085b0efc47a31fe5020`,
+		`actual_version="$(runneryard version)"`,
+		`docker buildx version`,
+		`test "$storage_driver" != vfs`,
+		`docker buildx build --load`,
+	} {
 		if !strings.Contains(string(canary), expected) {
 			t.Fatalf("generated canary missing %q", expected)
 		}

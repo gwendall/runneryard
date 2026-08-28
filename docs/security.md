@@ -90,10 +90,13 @@ safest default boundary.
 
 ## Supply chain
 
-The runtime pins the official GitHub Actions runner and Node 22 bootstrap images
-by digest. The bootstrap runtime keeps shell-based planners compatible and
+The runtime pins the Ubuntu base, official GitHub Actions runner, and Node 22
+bootstrap images by multi-architecture digest. Docker and Buildx package
+versions are explicit. The bootstrap runtime keeps shell-based planners compatible and
 publishes that same pinned Node version through the GitHub runner toolcache on
-both x64 and arm64. Workflows should still use `actions/setup-node`: the pinned
+both x64 and arm64; release qualification executes the entrypoint and offline
+`setup-node` contract on both architectures before publishing one manifest.
+Workflows should still use `actions/setup-node`: the pinned
 patch resolves locally, while a floating major or any other requested version
 may follow the action's normal managed download path. Operators should update
 the digest-pinned runtime first, then pin repository workflows to that exact

@@ -124,6 +124,10 @@ three receipts:
    one runner.
 3. Provider inventory contains no managed worker after completion.
 
+The first receipt is a runtime qualification, not a version-only ping. The
+generated job verifies the prewarmed Node patch with pinned `actions/setup-node`,
+rejects Docker's `vfs` driver, and completes a digest-pinned BuildKit build.
+
 Inspect the controller receipt before routing broader jobs. Use
 `runneryard status --json` inside the controller, `fly ssh console --command`
 for Fly, or `docker compose exec controller` for Hetzner. It separates provider

@@ -82,6 +82,9 @@ start.
 Docker Desktop is not a substitute for that provider canary: a privileged
 Docker daemon nested inside Desktop can reject overlay-on-overlay mounts even
 when the same image correctly uses the native driver on a VM-backed worker.
+The generated repository canary performs the provider proof: it checks the
+prewarmed Node path, invokes pinned `actions/setup-node`, rejects `vfs`, and
+builds and runs a digest-pinned minimal image through Buildx.
 
 The release image publishes its digest-pinned Node patch through the GitHub
 runner toolcache. Pin `actions/setup-node` to that exact patch when fast,
@@ -98,6 +101,10 @@ as an image regression rather than accepting the cold download. Upgrade the
 RunnerYard image before moving repository workflows to a newer patch. Keep the
 workflow and image changes independently reviewable: repository code must not
 be able to select an untrusted worker image.
+
+Published worker tags are multi-architecture manifests. Release qualification
+builds and runs the offline entrypoint/toolcache canary separately on amd64 and
+arm64 before composing the immutable manifest.
 
 ## Fleet status
 
