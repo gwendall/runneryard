@@ -56,9 +56,11 @@ func TestRunInitCreatesSafeScaffold(t *testing.T) {
 		`actions/setup-node@820762786026740c76f36085b0efc47a31fe5020`,
 		`actual_version="$(runneryard version)"`,
 		`docker buildx version`,
+		`docker compose version`,
 		`test "$storage_driver" != vfs`,
 		`test "$storage_driver" = fuse-overlayfs`,
 		`docker buildx build --load`,
+		`docker compose -f /tmp/runneryard-compose-canary.yml run --rm canary`,
 		`RUN nslookup registry.npmjs.org >/dev/null`,
 	} {
 		if !strings.Contains(string(canary), expected) {

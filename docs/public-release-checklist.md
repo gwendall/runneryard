@@ -26,14 +26,14 @@ Use this checklist before changing repository visibility or publishing a tag.
 - [ ] Run `npx runneryard@<version> version` on macOS and Linux from an empty npm
   cache.
 - [ ] Verify the published image contains GitHub CLI, Node, Git, Git LFS,
-  Docker, Docker Buildx, and the pinned Actions runner.
+  Docker, Docker Compose v2, Docker Buildx, and the pinned Actions runner.
 - [ ] Confirm the offline `actions/setup-node` release canary resolves the pinned
   Node version from `/opt/hostedtoolcache` on every published architecture.
 - [ ] Confirm the immutable worker tag is a manifest containing exactly Linux
   amd64 and arm64 images, both qualified before publication.
 - [ ] Confirm a provider canary reports `fuse-overlayfs` on a layered root (or
-  the native driver on a plain VM filesystem), then completes a BuildKit build
-  and container execution. Reject the legacy builder and `vfs`.
+  the native driver on a plain VM filesystem), then completes a BuildKit build,
+  container execution, and Compose run. Reject the legacy builder and `vfs`.
 
 ## First-user journey
 

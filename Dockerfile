@@ -24,6 +24,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     build-essential ca-certificates curl docker-buildx=0.30.1-0ubuntu1~24.04.1 \
+    docker-compose-v2=2.40.3+ds1-0ubuntu1~24.04.1 \
     docker.io=29.1.3-0ubuntu3~24.04.2 dumb-init gh git git-lfs iptables jq \
     fuse-overlayfs=1.13-1 libyaml-dev python3 python3-pip sudo unzip util-linux zip \
   && rm -rf /var/lib/apt/lists/*

@@ -323,6 +323,7 @@ jobs:
           test -n "$RUNNER_NAME"
           test "$(node --version)" = "v$RUNNERYARD_EXPECTED_NODE"
           docker buildx version
+          docker compose version
           storage_driver="$(docker info --format '{{.Driver}}')"
           test "$storage_driver" != vfs
           docker_root_filesystem="$(findmnt --noheadings --output FSTYPE --target /var/lib/docker | tr -d '[:space:]')"
@@ -335,5 +336,12 @@ jobs:
           RUN printf passed >/runneryard-buildkit-canary
           EOF
           test "$(docker run --rm runneryard-buildkit-canary cat /runneryard-buildkit-canary)" = passed
+          cat >/tmp/runneryard-compose-canary.yml <<'EOF'
+          services:
+            canary:
+              image: runneryard-buildkit-canary
+              command: ["cat", "/runneryard-buildkit-canary"]
+          EOF
+          test "$(docker compose -f /tmp/runneryard-compose-canary.yml run --rm canary)" = passed
 `, version, runtimeNodeVersion, scaleSet, setupNodeCommit, buildCanaryImage)
 }
