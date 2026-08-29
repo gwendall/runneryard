@@ -3,6 +3,7 @@ package fly
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,8 +17,27 @@ func TestLaunchIsEphemeralAndReceivesOnlyJITCredential(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer fly-token" {
 			t.Fatalf("unexpected authorization header %q", got)
 		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wire map[string]any
+		if err := json.Unmarshal(body, &wire); err != nil {
+			t.Fatal(err)
+		}
+		config, ok := wire["config"].(map[string]any)
+		if !ok {
+			t.Fatalf("machine request has no config object: %#v", wire)
+		}
+		rootFS, ok := config["rootfs"].(map[string]any)
+		if !ok || rootFS["size_gb"] != float64(30) {
+			t.Fatalf("worker rootfs must use Fly's config.rootfs.size_gb schema: %#v", config)
+		}
+		if _, legacy := config["rootfs_size_gb"]; legacy {
+			t.Fatalf("worker request contains Fly's ignored legacy rootfs_size_gb field: %#v", config)
+		}
 		var request createMachineRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		if err := json.Unmarshal(body, &request); err != nil {
 			t.Fatal(err)
 		}
 		if !request.Config.AutoDestroy || request.Config.Restart.Policy != "no" {

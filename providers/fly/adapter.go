@@ -132,14 +132,18 @@ type machine struct {
 }
 
 type machineConfig struct {
-	Image        string            `json:"image"`
-	Processes    []processConfig   `json:"processes,omitempty"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
-	AutoDestroy  bool              `json:"auto_destroy"`
-	Restart      restartPolicy     `json:"restart"`
-	Guest        guestConfig       `json:"guest"`
-	RootFSSizeGB int               `json:"rootfs_size_gb,omitempty"`
-	StopConfig   stopConfig        `json:"stop_config,omitempty"`
+	Image       string            `json:"image"`
+	Processes   []processConfig   `json:"processes,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+	AutoDestroy bool              `json:"auto_destroy"`
+	Restart     restartPolicy     `json:"restart"`
+	Guest       guestConfig       `json:"guest"`
+	RootFS      rootFSConfig      `json:"rootfs"`
+	StopConfig  stopConfig        `json:"stop_config,omitempty"`
+}
+
+type rootFSConfig struct {
+	SizeGB int `json:"size_gb"`
 }
 
 type processConfig struct {
@@ -215,11 +219,11 @@ func (a *Adapter) Launch(ctx context.Context, lease provider.Lease) (provider.Wo
 				runnerScaleSetIDKey: strconv.Itoa(lease.RunnerScaleSetID),
 				deadlineKey:         lease.Deadline.UTC().Format(time.RFC3339),
 			},
-			AutoDestroy:  true,
-			Restart:      restartPolicy{Policy: "no"},
-			Guest:        guestConfig{CPUs: a.cpus, MemoryMB: a.memoryMB, CPUKind: a.cpuKind},
-			RootFSSizeGB: a.rootFSGB,
-			StopConfig:   stopConfig{Signal: "SIGTERM", Timeout: flyDuration(30 * time.Second)},
+			AutoDestroy: true,
+			Restart:     restartPolicy{Policy: "no"},
+			Guest:       guestConfig{CPUs: a.cpus, MemoryMB: a.memoryMB, CPUKind: a.cpuKind},
+			RootFS:      rootFSConfig{SizeGB: a.rootFSGB},
+			StopConfig:  stopConfig{Signal: "SIGTERM", Timeout: flyDuration(30 * time.Second)},
 		},
 	}
 
