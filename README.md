@@ -68,13 +68,14 @@ provider inventory returns to zero workers. Nothing routes normal CI to the
 fleet until you explicitly enable the generated label.
 
 The worker image includes the pinned Node patch in the Actions toolcache plus
-Docker Buildx/BuildKit. This avoids downloading the same Node runtime on every
-disposable worker. Its nested daemon uses `fuse-overlayfs` when the provider
-presents a layered root filesystem and Docker's native snapshotter on a plain
-VM filesystem, avoiding both invalid overlay-on-overlay mounts and Docker's
-deep-copy `vfs` fallback. The generated canary verifies that toolcache through
-`actions/setup-node`, checks the selected storage path, and completes a real
-BuildKit build before normal CI is routed to the fleet.
+Docker Compose v2 and Docker Buildx/BuildKit. This avoids downloading the same
+Node runtime or basic Docker tooling on every disposable worker. Its nested
+daemon uses `fuse-overlayfs` when the provider presents a layered root
+filesystem and Docker's native snapshotter on a plain VM filesystem, avoiding
+both invalid overlay-on-overlay mounts and Docker's deep-copy `vfs` fallback.
+The generated canary verifies that toolcache through `actions/setup-node`,
+checks the selected storage path, and completes a real BuildKit build,
+container run, and Compose run before normal CI is routed to the fleet.
 
 For Hetzner Cloud, generate its provider-specific scaffold and follow the
 [Hetzner guide](docs/providers/hetzner.md):

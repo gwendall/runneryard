@@ -70,7 +70,8 @@ budget admission formula and provider-specific shapes.
 
 ## Runtime tooling and toolcache
 
-Workers include the Docker Buildx client and enable BuildKit for job steps.
+Workers include Docker Compose v2 and the Docker Buildx client, and enable
+BuildKit for job steps.
 Their nested daemon selects Docker's native snapshotter on a plain VM
 filesystem. When the provider presents an overlay root, where a second kernel
 overlay mount is not portable, the entrypoint disables the containerd image
@@ -89,7 +90,7 @@ Docker Desktop is not a substitute for that provider canary: its device and
 filesystem boundary differs from the final provider Machine or VM.
 The generated repository canary performs the provider proof: it checks the
 prewarmed Node path, invokes pinned `actions/setup-node`, rejects `vfs`, and
-builds and runs a digest-pinned minimal image through Buildx.
+builds and runs a digest-pinned minimal image through Buildx and Compose.
 
 The release image publishes its digest-pinned Node patch through the GitHub
 runner toolcache. Pin `actions/setup-node` to that exact patch when fast,

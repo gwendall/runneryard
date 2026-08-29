@@ -32,6 +32,8 @@ setup_node_directory=$(cd "$setup_node_directory" && pwd -P)
 # daemon or network. The worker entrypoint enables BuildKit for job steps.
 docker run --rm --network none "${docker_platform_args[@]}" --entrypoint docker \
   "$runtime_image" buildx version
+docker run --rm --network none "${docker_platform_args[@]}" --entrypoint docker \
+  "$runtime_image" compose version
 
 # Exercise the real runner privilege transition. The fake daemon isolates this
 # canary from the host while the mounted run.sh observes the exact environment
