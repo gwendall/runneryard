@@ -275,6 +275,9 @@ primary_region = %q
   source = "runneryard_state"
   destination = "/var/lib/runneryard"
 
+[[restart]]
+  policy = "always"
+
 [[vm]]
   cpu_kind = "shared"
   cpus = 1
