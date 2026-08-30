@@ -12,6 +12,10 @@ import (
 	"time"
 )
 
+// longestReservation mirrors the largest RUNNER_MAX_LIFETIME the controller
+// accepts; no charge can legitimately exceed it under any configuration.
+const longestReservation = 24 * time.Hour
+
 type usageBudget struct {
 	mu          sync.Mutex
 	limit       time.Duration
@@ -233,7 +237,7 @@ func (b *usageBudget) adopt(leaseID string, startedAt time.Time) error {
 			}
 			previous := *entry
 			entry.Confirmed = true
-			entry.Seconds = durationSeconds(b.reservation)
+			entry.Seconds = max(entry.Seconds, durationSeconds(b.reservation))
 			if err := b.persist(); err != nil {
 				*entry = previous
 				return err
@@ -385,10 +389,14 @@ func (b *usageBudget) validate() error {
 			return fmt.Errorf("invalid runner usage budget: duplicate lease %s", entry.LeaseID)
 		}
 		seen[entry.LeaseID] = struct{}{}
-		if entry.Seconds < 1 || entry.Seconds > durationSeconds(b.reservation) {
-			return fmt.Errorf("invalid runner usage budget entry %s: seconds must be between 1 and %d", entry.LeaseID, durationSeconds(b.reservation))
+		if entry.Seconds < 1 || entry.Seconds > durationSeconds(longestReservation) {
+			return fmt.Errorf("invalid runner usage budget entry %s: seconds must be between 1 and %d", entry.LeaseID, durationSeconds(longestReservation))
 		}
-		if entry.Active && entry.Seconds != durationSeconds(b.reservation) {
+		// A reservation larger than the current maximum lifetime was made by a
+		// previous configuration and still bounds a worker with that older
+		// deadline, so it is kept as charged. A smaller active reservation can
+		// only come from corruption and fails closed.
+		if entry.Active && entry.Seconds < durationSeconds(b.reservation) {
 			return fmt.Errorf("invalid runner usage budget entry %s: active reservation is undercharged", entry.LeaseID)
 		}
 		if !entry.Active && entry.ChargedAt.Before(entry.StartedAt) {
