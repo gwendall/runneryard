@@ -12,17 +12,22 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 type initOptions struct {
-	directory    string
-	githubURL    string
-	provider     string
-	scaleSet     string
-	controllerID string
-	region       string
-	maxRunners   int
-	force        bool
+	directory     string
+	githubURL     string
+	provider      string
+	scaleSet      string
+	controllerID  string
+	controllerApp string
+	workerApp     string
+	region        string
+	maxRunners    int
+	rootfsGB      int
+	usageBudget   string
+	force         bool
 }
 
 const (
@@ -36,6 +41,13 @@ var (
 	safeGitHubOwner = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
 	safeGitHubRepo  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
 	safeRegion      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+	safeFlyApp      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+	releaseCommit   = regexp.MustCompile(`^[0-9a-f]{40}$`)
+)
+
+const (
+	defaultRootfsGB    = 30
+	defaultUsageBudget = "166h40m"
 )
 
 func runInit(args []string) error {
@@ -48,10 +60,17 @@ func runInit(args []string) error {
 	flags.StringVar(&options.scaleSet, "name", "runneryard-linux-x64", "scale set and runs-on label")
 	flags.StringVar(&options.region, "region", "", "provider region")
 	flags.IntVar(&options.maxRunners, "max-runners", 4, "hard concurrency ceiling")
+	flags.StringVar(&options.controllerID, "controller-id", "", "ownership identity of an existing fleet (default: derived from --name and --github)")
+	flags.StringVar(&options.controllerApp, "controller-app", "", "Fly controller app (default: <owner>-ci-controller)")
+	flags.StringVar(&options.workerApp, "worker-app", "", "Fly worker app (default: <owner>-ci-runners)")
+	flags.IntVar(&options.rootfsGB, "rootfs-gb", defaultRootfsGB, "Fly worker ephemeral root filesystem in GB")
+	flags.StringVar(&options.usageBudget, "usage-budget", defaultUsageBudget, "rolling worker-time budget, as a Go duration")
 	flags.BoolVar(&options.force, "force", false, "overwrite generated files")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	explicit := map[string]bool{}
+	flags.Visit(func(flag *flag.Flag) { explicit[flag.Name] = true })
 	if options.githubURL == "" {
 		options.githubURL = inferGitHubURL(options.directory)
 	}
@@ -63,15 +82,39 @@ func runInit(args []string) error {
 		return fmt.Errorf("--github: %w", err)
 	}
 	options.githubURL = normalizedGitHubURL
-	options.controllerID = deriveControllerID(options.scaleSet, normalizedGitHubURL)
+	if options.controllerID == "" {
+		options.controllerID = deriveControllerID(options.scaleSet, normalizedGitHubURL)
+	} else if !safeName.MatchString(options.controllerID) {
+		return errors.New("--controller-id must contain only letters, numbers, dots, underscores, or hyphens")
+	}
 	switch options.provider {
 	case "fly":
 		if options.region == "" {
 			options.region = "cdg"
 		}
+		if options.controllerApp == "" {
+			options.controllerApp = strings.ToLower(owner) + "-ci-controller"
+		}
+		if options.workerApp == "" {
+			options.workerApp = strings.ToLower(owner) + "-ci-runners"
+		}
+		if !safeFlyApp.MatchString(options.controllerApp) || !safeFlyApp.MatchString(options.workerApp) {
+			return errors.New("--controller-app and --worker-app must contain only lowercase letters, numbers, or hyphens")
+		}
+		if options.controllerApp == options.workerApp {
+			return errors.New("--controller-app and --worker-app must be different apps; workers never share the controller's secrets")
+		}
+		if options.rootfsGB < 1 || options.rootfsGB > 500 {
+			return errors.New("--rootfs-gb must be between 1 and 500")
+		}
 	case "hetzner":
 		if options.region == "" {
 			options.region = "fsn1"
+		}
+		for _, name := range []string{"controller-app", "worker-app", "rootfs-gb"} {
+			if explicit[name] {
+				return fmt.Errorf("--%s applies only to the fly provider", name)
+			}
 		}
 	default:
 		return fmt.Errorf("provider %q is not bundled; see docs/adapter-contract.md", options.provider)
@@ -85,19 +128,22 @@ func runInit(args []string) error {
 	if options.maxRunners < 1 || options.maxRunners > 100 {
 		return errors.New("--max-runners must be between 1 and 100")
 	}
+	if budget, err := time.ParseDuration(options.usageBudget); err != nil || budget <= 0 || strings.TrimSpace(options.usageBudget) != options.usageBudget {
+		return errors.New("--usage-budget must be a positive Go duration such as 166h40m")
+	}
 
 	projectDir, err := filepath.Abs(options.directory)
 	if err != nil {
 		return err
 	}
-	controllerApp := strings.ToLower(owner) + "-ci-controller"
-	workerApp := strings.ToLower(owner) + "-ci-runners"
+	controllerApp := options.controllerApp
+	workerApp := options.workerApp
 	files := []generatedFile{{
-		path: filepath.Join(projectDir, ".github", "workflows", "runneryard-canary.yml"), contents: renderCanary(options.scaleSet), mode: 0o644,
+		path: filepath.Join(projectDir, ".github", "workflows", "runneryard-canary.yml"), contents: renderCanary(options), mode: 0o644,
 	}}
 	if options.provider == "fly" {
 		files = append(files,
-			generatedFile{path: filepath.Join(projectDir, ".runneryard", "controller.env.example"), contents: renderFlyEnv(options, controllerApp, workerApp), mode: 0o600},
+			generatedFile{path: filepath.Join(projectDir, ".runneryard", "controller.env.example"), contents: renderFlyEnv(controllerApp), mode: 0o600},
 			generatedFile{path: filepath.Join(projectDir, ".runneryard", "fly.controller.toml"), contents: renderFly(options, controllerApp, workerApp), mode: 0o644},
 		)
 	} else {
@@ -121,7 +167,7 @@ func runInit(args []string) error {
 	}
 	fmt.Printf("Created RunnerYard configuration for %s\n\n", options.githubURL)
 	if options.provider == "fly" {
-		fmt.Printf("Next:\n  1. Review .runneryard/controller.env.example\n  2. Follow docs/providers/fly.md to create the isolated apps and durable volume\n  3. Run: runneryard auth github create --controller-app %s\n  4. Run: runneryard doctor --provider fly --controller-app %s --worker-app %s\n  5. Deploy the controller, then trigger .github/workflows/runneryard-canary.yml\n  6. Run: runneryard route enable --github %s --label %s --confirm-canary\n", controllerApp, controllerApp, workerApp, options.githubURL, options.scaleSet)
+		fmt.Printf("Next:\n  1. Review .runneryard/fly.controller.toml; it is the deployable source of truth\n  2. Follow docs/providers/fly.md to create the isolated apps and durable volume\n  3. Run: runneryard auth github create --controller-app %s\n  4. Run: runneryard doctor --provider fly --controller-app %s --worker-app %s\n  5. Run: fly deploy --app %s --config .runneryard/fly.controller.toml --ha=false, then trigger .github/workflows/runneryard-canary.yml\n  6. Run: runneryard route enable --github %s --label %s --confirm-canary\n", controllerApp, controllerApp, workerApp, controllerApp, options.githubURL, options.scaleSet)
 	} else {
 		fmt.Printf("Next:\n  1. Create a dedicated Hetzner project and a firewall with no inbound rules\n  2. Run: runneryard auth github create --sink file\n  3. Fill .runneryard/controller.env from the generated example\n  4. Run: runneryard doctor --provider hetzner --firewall-id <id>\n  5. Follow docs/providers/hetzner.md, then trigger .github/workflows/runneryard-canary.yml\n  6. Run: runneryard route enable --github %s --label %s --confirm-canary\n", options.githubURL, options.scaleSet)
 	}
@@ -187,33 +233,19 @@ func writeGenerated(path, contents string, mode os.FileMode) error {
 	return os.WriteFile(path, []byte(contents), mode)
 }
 
-func renderFlyEnv(options initOptions, controllerApp, workerApp string) string {
-	return fmt.Sprintf(`# Copy to a secret store. Never commit the completed file.
-GITHUB_CONFIG_URL=%s
-SCALE_SET_NAME=%s
-COMPUTE_PROVIDER=fly
-CONTROLLER_ID=%s
+func renderFlyEnv(controllerApp string) string {
+	return fmt.Sprintf(`# Controller secrets for the Fly deployment. Copy the completed values into
+# the controller app with "fly secrets set"; never commit the completed file.
+# Every non-secret setting lives in fly.controller.toml so that the reviewed
+# file and the deployed Machine cannot drift apart.
 FLY_APP_NAME=%s
-RUNNER_FLY_APP=%s
-RUNNER_FLY_REGION=%s
-RUNNER_IMAGE=ghcr.io/gwendall/runneryard:%s
-MIN_RUNNERS=0
-MAX_RUNNERS=%d
-RUNNER_CPU_KIND=performance
-RUNNER_CPUS=2
-RUNNER_MEMORY_MB=8192
-RUNNER_ROOTFS_GB=30
-RUNNER_DOCKER_DNS=1.1.1.1,8.8.8.8
-RUNNER_MAX_LIFETIME=2h
-RUNNER_USAGE_BUDGET=166h40m
-RUNNER_BUDGET_WINDOW=720h
-RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json
-RUNNER_STATUS_FILE=/var/lib/runneryard/status.json
 
-# Set only on the controller. The GitHub App is installed separately with
-# runneryard auth github create --controller-app %s
+# A token scoped to the worker app only; see docs/providers/fly.md.
 FLY_API_TOKEN=
-`, options.githubURL, options.scaleSet, options.controllerID, controllerApp, workerApp, options.region, version, options.maxRunners, controllerApp)
+
+# The GitHub App is installed separately with
+# runneryard auth github create --controller-app %s
+`, controllerApp, controllerApp)
 }
 
 func renderHetznerEnv(options initOptions) string {
@@ -261,8 +293,16 @@ volumes:
 }
 
 func renderFly(options initOptions, controllerApp, workerApp string) string {
-	return fmt.Sprintf(`app = %q
+	image := "ghcr.io/gwendall/runneryard:" + version
+	return fmt.Sprintf(`# Deployable source of truth for the RunnerYard controller. Deploy it with
+#   fly deploy --app %s --config .runneryard/fly.controller.toml --ha=false
+# Secrets never belong here; keep them in "fly secrets". Upgrade by changing
+# the release tag in [build] and RUNNER_IMAGE together with the canary pins.
+app = %q
 primary_region = %q
+
+[build]
+  image = %q
 
 [env]
   GITHUB_CONFIG_URL = %q
@@ -271,15 +311,16 @@ primary_region = %q
   CONTROLLER_ID = %q
   RUNNER_FLY_APP = %q
   RUNNER_FLY_REGION = %q
+  RUNNER_IMAGE = %q
   MIN_RUNNERS = "0"
   MAX_RUNNERS = %q
   RUNNER_CPU_KIND = "performance"
   RUNNER_CPUS = "2"
   RUNNER_MEMORY_MB = "8192"
-  RUNNER_ROOTFS_GB = "30"
+  RUNNER_ROOTFS_GB = %q
   RUNNER_DOCKER_DNS = "1.1.1.1,8.8.8.8"
   RUNNER_MAX_LIFETIME = "2h"
-  RUNNER_USAGE_BUDGET = "166h40m"
+  RUNNER_USAGE_BUDGET = %q
   RUNNER_BUDGET_WINDOW = "720h"
   RUNNER_BUDGET_FILE = "/var/lib/runneryard/budget.json"
   RUNNER_STATUS_FILE = "/var/lib/runneryard/status.json"
@@ -295,10 +336,22 @@ primary_region = %q
   cpu_kind = "shared"
   cpus = 1
   memory = "512mb"
-`, controllerApp, options.region, options.githubURL, options.scaleSet, options.controllerID, workerApp, options.region, fmt.Sprint(options.maxRunners))
+`, controllerApp, controllerApp, options.region, image, options.githubURL, options.scaleSet, options.controllerID, workerApp, options.region, image, fmt.Sprint(options.maxRunners), fmt.Sprint(options.rootfsGB), options.usageBudget)
 }
 
-func renderCanary(scaleSet string) string {
+// minimumRootfsGiB converts a provider request in GB into the smallest root
+// filesystem, in GiB, that a worker must present. The five percent allowance
+// covers filesystem overhead; a provider that ignored the request altogether
+// still fails the canary by a wide margin.
+func minimumRootfsGiB(rootfsGB int) int {
+	return int(float64(rootfsGB)*1000*1000*1000/(1024*1024*1024)) * 95 / 100
+}
+
+func renderCanary(options initOptions) string {
+	expectedCommit := ""
+	if releaseCommit.MatchString(commitSHA) {
+		expectedCommit = fmt.Sprintf("  RUNNERYARD_EXPECTED_COMMIT: %q\n", commitSHA)
+	}
 	return fmt.Sprintf(`name: RunnerYard canary
 
 on:
@@ -309,7 +362,8 @@ permissions:
 
 env:
   RUNNERYARD_EXPECTED_VERSION: %q
-  RUNNERYARD_EXPECTED_NODE: %q
+%s  RUNNERYARD_EXPECTED_NODE: %q
+  RUNNERYARD_MIN_ROOTFS_GIB: %q
 
 jobs:
   canary:
@@ -318,6 +372,7 @@ jobs:
     steps:
       - name: Verify prewarmed Node toolcache
         run: |
+          set -euo pipefail
           case "$(uname -m)" in
             x86_64) toolcache_arch=x64 ;;
             aarch64|arm64) toolcache_arch=arm64 ;;
@@ -331,13 +386,33 @@ jobs:
           node-version: ${{ env.RUNNERYARD_EXPECTED_NODE }}
       - name: Verify isolated worker
         run: |
+          set -euo pipefail
           actual_version="$(runneryard version)"
-          case "$actual_version" in
-            "runneryard ${RUNNERYARD_EXPECTED_VERSION} ("*) ;;
-            *) echo "unexpected worker release: $actual_version" >&2; exit 1 ;;
-          esac
+          if [ -n "${RUNNERYARD_EXPECTED_COMMIT:-}" ]; then
+            expected_version="runneryard ${RUNNERYARD_EXPECTED_VERSION} (${RUNNERYARD_EXPECTED_COMMIT})"
+            test "$actual_version" = "$expected_version" || {
+              echo "unexpected worker release: $actual_version" >&2
+              echo "expected worker release: $expected_version" >&2
+              exit 1
+            }
+          else
+            case "$actual_version" in
+              "runneryard ${RUNNERYARD_EXPECTED_VERSION} ("*) ;;
+              *) echo "unexpected worker release: $actual_version" >&2; exit 1 ;;
+            esac
+          fi
           test -n "$RUNNER_NAME"
+          test "$RUNNER_ENVIRONMENT" = self-hosted
           test "$(node --version)" = "v$RUNNERYARD_EXPECTED_NODE"
+          rootfs_bytes="$(df --output=size --block-size=1 / | tail -n 1 | tr -d '[:space:]')"
+          case "$rootfs_bytes" in
+            ''|*[!0-9]*) echo "invalid root filesystem size: $rootfs_bytes" >&2; exit 1 ;;
+          esac
+          minimum_rootfs_bytes=$((RUNNERYARD_MIN_ROOTFS_GIB * 1024 * 1024 * 1024))
+          test "$rootfs_bytes" -ge "$minimum_rootfs_bytes" || {
+            echo "worker root filesystem is below ${RUNNERYARD_MIN_ROOTFS_GIB} GiB: $rootfs_bytes bytes" >&2
+            exit 1
+          }
           docker buildx version
           docker compose version
           storage_driver="$(docker info --format '{{.Driver}}')"
@@ -359,5 +434,5 @@ jobs:
               command: ["cat", "/runneryard-buildkit-canary"]
           EOF
           test "$(docker compose -f /tmp/runneryard-compose-canary.yml run --rm canary)" = passed
-`, version, runtimeNodeVersion, scaleSet, setupNodeCommit, buildCanaryImage)
+`, version, expectedCommit, runtimeNodeVersion, fmt.Sprint(minimumRootfsGiB(options.rootfsGB)), options.scaleSet, setupNodeCommit, buildCanaryImage)
 }

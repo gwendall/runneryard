@@ -4,6 +4,19 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
+## Unreleased
+
+- `runneryard init` can describe a fleet that already exists: `--controller-app`,
+  `--worker-app`, `--controller-id`, `--rootfs-gb`, and `--usage-budget` replace
+  the derived defaults. The generated Fly TOML pins the release in
+  `[build] image` and `RUNNER_IMAGE`, so `fly deploy --config` needs no
+  `--image` argument, and `controller.env.example` now lists only the secrets
+  that belong in the Fly secret store.
+- The generated canary binds the worker to the exact release commit when the
+  generating binary is a release, checks that the root filesystem honours
+  `RUNNER_ROOTFS_GB`, verifies `RUNNER_ENVIRONMENT`, and runs every step under
+  `set -euo pipefail`.
+
 ## 0.4.0 (2026-08-30)
 
 - Compute adapters retry throttling, provider-side errors, and transport

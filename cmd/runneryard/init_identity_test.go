@@ -26,19 +26,19 @@ func TestInitWritesAUniqueControllerID(t *testing.T) {
 	if err := runInit([]string{"--directory", directory, "--github", "https://github.com/acme/widgets"}); err != nil {
 		t.Fatal(err)
 	}
-	expected := "CONTROLLER_ID=" + deriveControllerID("runneryard-linux-x64", "https://github.com/acme/widgets")
-	env, err := os.ReadFile(filepath.Join(directory, ".runneryard", "controller.env.example"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(env), expected+"\n") {
-		t.Fatalf("generated environment lacks %q", expected)
-	}
+	expected := deriveControllerID("runneryard-linux-x64", "https://github.com/acme/widgets")
 	toml, err := os.ReadFile(filepath.Join(directory, ".runneryard", "fly.controller.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(toml), `CONTROLLER_ID = "`+strings.TrimPrefix(expected, "CONTROLLER_ID=")+`"`) {
-		t.Fatal("generated Fly TOML must carry the same unique controller identity")
+	if !strings.Contains(string(toml), `CONTROLLER_ID = "`+expected+`"`) {
+		t.Fatalf("generated Fly TOML lacks the unique controller identity %q", expected)
+	}
+	env, err := os.ReadFile(filepath.Join(directory, ".runneryard", "controller.env.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(env), "CONTROLLER_ID") {
+		t.Fatal("the secret template must not duplicate the controller identity")
 	}
 }

@@ -13,7 +13,7 @@ from code review.
 | `GITHUB_CONFIG_URL` | Exact repository or organization served by the scale set. | Generated from `--github` or the current Git remote. |
 | `SCALE_SET_NAME` | GitHub scale-set name and `runs-on` label. | `runneryard-linux-x64` |
 | `RUNNER_GROUP` | GitHub runner group for organization fleets. | GitHub default group. |
-| `CONTROLLER_ID` | Stable owner recorded in provider metadata. Changing it creates a different ownership boundary. | Scale-set name plus a hash of the GitHub target; unique per fleet. Unset, it falls back to `SCALE_SET_NAME`, which two fleets sharing one worker app would both use. |
+| `CONTROLLER_ID` | Stable owner recorded in provider metadata. Changing it creates a different ownership boundary. | Scale-set name plus a hash of the GitHub target; unique per fleet, or `--controller-id` to describe an existing fleet. Unset, it falls back to `SCALE_SET_NAME`, which two fleets sharing one worker app would both use. |
 | `GITHUB_APP_CLIENT_ID` | Dedicated or bring-your-own App client ID. | Stored by `auth github`. |
 | `GITHUB_APP_INSTALLATION_ID` | Verified installation serving the selected target. | Stored by `auth github`. |
 | `GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_FILE` | App signing key. Use the provider secret sink or a mode-`0600` file. | Stored by `auth github`. |
@@ -35,7 +35,7 @@ never a credential, a job payload, or a runner name.
 | `MIN_RUNNERS` | Warm idle floor. | `0` |
 | `MAX_RUNNERS` | Hard concurrent worker ceiling. | `4`, or `--max-runners` |
 | `RUNNER_MAX_LIFETIME` | Forced worker deadline and per-launch budget reservation. | `2h` |
-| `RUNNER_USAGE_BUDGET` | Maximum settled plus reserved worker time in the rolling window. | `166h40m` (10,000 minutes) |
+| `RUNNER_USAGE_BUDGET` | Maximum settled plus reserved worker time in the rolling window. | `166h40m` (10,000 minutes), or `--usage-budget` |
 | `RUNNER_BUDGET_WINDOW` | Rolling usage window. | `720h` (30 days) |
 | `RUNNER_BUDGET_FILE` | Fail-closed ledger on durable storage. | `/var/lib/runneryard/budget.json` |
 | `RUNNER_STATUS_FILE` | Private atomic health receipt; must differ from the ledger. | `/var/lib/runneryard/status.json` |
@@ -78,13 +78,13 @@ for warm workers.
 
 | Variable | Purpose | Generated value |
 | --- | --- | --- |
-| `RUNNER_FLY_APP` | Dedicated secret-free worker app. | Generated from the GitHub owner. |
+| `RUNNER_FLY_APP` | Dedicated secret-free worker app. | Generated from the GitHub owner, or `--worker-app` |
 | `RUNNER_FLY_REGION` | Worker region. | `cdg`, or `--region` |
 | `RUNNER_IMAGE` | Immutable RunnerYard controller and worker image. | Current CLI release tag. |
 | `RUNNER_CPU_KIND` | Fly CPU class. | `performance` |
 | `RUNNER_CPUS` | CPUs per worker. | `2` |
 | `RUNNER_MEMORY_MB` | Memory per worker. | `8192` |
-| `RUNNER_ROOTFS_GB` | Ephemeral root filesystem per worker. | `30` |
+| `RUNNER_ROOTFS_GB` | Ephemeral root filesystem per worker. The generated canary refuses a worker whose root filesystem is smaller than this request less five percent. | `30`, or `--rootfs-gb` |
 | `RUNNER_DOCKER_DNS` | One to three comma-separated resolver IPs for containers on Fly's nested Docker bridge. | `1.1.1.1,8.8.8.8` |
 
 `FLY_API_TOKEN` is a deploy token scoped only to the worker app and belongs only
@@ -139,10 +139,12 @@ from production.
 
 1. Disable routing or choose a maintenance window; do not start two controllers
    for one scale set.
-2. Change one reviewed policy at a time. On Fly, update the pinned deployment
-   image. On Hetzner, set the same release tag in both `RUNNER_IMAGE` inside
+2. Change one reviewed policy at a time. On Fly, set `[build] image` and
+   `RUNNER_IMAGE` in `.runneryard/fly.controller.toml` to the same release. On
+   Hetzner, set the same release tag in both `RUNNER_IMAGE` inside
    `controller.env` (workers) and `image` inside Compose (controller).
-3. Set `RUNNERYARD_EXPECTED_VERSION` in the generated canary to that release.
+3. Set `RUNNERYARD_EXPECTED_VERSION` and `RUNNERYARD_EXPECTED_COMMIT` in the
+   generated canary to that release.
 4. Preserve the durable volume, budget ledger, retirement journal, and stable
    `CONTROLLER_ID`.
 5. Replace the controller, run `doctor`, and trigger the manual canary.
