@@ -58,6 +58,8 @@ type appConfig struct {
 	ProviderRateLimit  float64
 	GitHubAPIRateLimit float64
 	LaunchConcurrency  int
+	RunnerIdleTimeout  time.Duration
+	DanglingTimeout    time.Duration
 	LogLevel           slog.Level
 }
 
@@ -138,6 +140,12 @@ func loadConfig() (appConfig, error) {
 		return appConfig{}, err
 	}
 	if cfg.LaunchConcurrency, err = envInt("RUNNER_LAUNCH_CONCURRENCY", 8); err != nil {
+		return appConfig{}, err
+	}
+	if cfg.RunnerIdleTimeout, err = envDuration("RUNNER_IDLE_TIMEOUT", 10*time.Minute); err != nil {
+		return appConfig{}, err
+	}
+	if cfg.DanglingTimeout, err = envDuration("RUNNER_DANGLING_TIMEOUT", 25*time.Minute); err != nil {
 		return appConfig{}, err
 	}
 	if cfg.RunnerStatusFile == "" && cfg.RunnerBudgetFile != "" {
@@ -231,6 +239,12 @@ func (c appConfig) validate() error {
 	if c.LaunchConcurrency < 1 || c.LaunchConcurrency > 64 {
 		return fmt.Errorf("RUNNER_LAUNCH_CONCURRENCY must be between 1 and 64")
 	}
+	if c.RunnerIdleTimeout < 0 || (c.RunnerIdleTimeout > 0 && c.RunnerIdleTimeout < time.Minute) || c.RunnerIdleTimeout > c.RunnerMaxLifetime {
+		return fmt.Errorf("RUNNER_IDLE_TIMEOUT must be 0 or between 1m and RUNNER_MAX_LIFETIME")
+	}
+	if c.DanglingTimeout < 0 || (c.DanglingTimeout > 0 && c.DanglingTimeout < c.RunnerIdleTimeout) || c.DanglingTimeout > c.RunnerMaxLifetime {
+		return fmt.Errorf("RUNNER_DANGLING_TIMEOUT must be 0 or between RUNNER_IDLE_TIMEOUT and RUNNER_MAX_LIFETIME")
+	}
 	return nil
 }
 
@@ -304,6 +318,8 @@ func (c appConfig) controllerConfig(logger *slog.Logger) controller.Config {
 		GitHubAPIRate:     c.GitHubAPIRateLimit,
 		GitHubAPIBurst:    int(c.GitHubAPIRateLimit * 2),
 		LaunchConcurrency: c.LaunchConcurrency,
+		IdleTimeout:       c.RunnerIdleTimeout,
+		DanglingTimeout:   c.DanglingTimeout,
 		Logger:            logger,
 	}
 }

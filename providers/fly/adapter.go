@@ -213,6 +213,7 @@ func (a *Adapter) Launch(ctx context.Context, lease provider.Lease) (provider.Wo
 					"ACTIONS_RUNNER_INPUT_JITCONFIG": lease.JITConfig,
 					"RUNNERYARD_DEADLINE":            lease.Deadline.UTC().Format(time.RFC3339),
 					"RUNNERYARD_DOCKER_DNS":          a.dockerDNS,
+					"RUNNERYARD_IDLE_TIMEOUT":        strconv.FormatInt(int64(lease.IdleTimeout/time.Second), 10),
 				},
 				IgnoreAppSecrets: true,
 			}},

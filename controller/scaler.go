@@ -25,6 +25,8 @@ type scaler struct {
 	maxWorkers        int
 	launchConcurrency int
 	maxLifetime       time.Duration
+	idleTimeout       time.Duration
+	danglingTimeout   time.Duration
 	budget            *usageBudget
 	retirements       *retirementQueue
 	reporter          *statusReporter
@@ -162,6 +164,18 @@ func (s *scaler) reconcile(ctx context.Context) error {
 			s.logger.Warn("deleted worker after maximum lifetime", "runner", worker.RunnerName, "worker_id", worker.ID, "maximum_lifetime", s.maxLifetime)
 			continue
 		}
+		if record, known := local[worker.RunnerName]; known && s.danglingTimeout > 0 && record.Observed && !record.Busy &&
+			!worker.CreatedAt.IsZero() && time.Since(worker.CreatedAt) > s.danglingTimeout {
+			// This controller created the worker and never saw a JobStarted for
+			// it. The assignment race lasts seconds; after the dangling timeout
+			// the worker is either stuck or was never assigned, so release it.
+			if err := s.retireWorker(ctx, worker, true, settleActualUsage); err != nil {
+				return fmt.Errorf("retire dangling worker %s: %w", worker.RunnerName, err)
+			}
+			retired[worker.RunnerName] = struct{}{}
+			s.logger.Warn("released worker that never started a job", "runner", worker.RunnerName, "worker_id", worker.ID, "dangling_timeout", s.danglingTimeout)
+			continue
+		}
 		present[worker.ID] = struct{}{}
 		if _, ok := localByWorker[worker.ID]; ok {
 			continue
@@ -288,6 +302,7 @@ func (s *scaler) startWorker(ctx context.Context) (bool, error) {
 	worker, err := s.compute.Launch(ctx, provider.Lease{
 		ID: leaseID, RunnerName: name, RunnerID: retirement.RunnerID, RunnerScaleSetID: s.scaleSetID,
 		JITConfig: jit.EncodedJITConfig, Deadline: time.Now().Add(s.maxLifetime - 30*time.Second),
+		IdleTimeout: s.idleTimeout,
 	})
 	s.reporter.starting(-1)
 	s.reporter.latency(true, time.Since(launchStarted), err != nil)

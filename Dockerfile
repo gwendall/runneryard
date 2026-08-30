@@ -40,7 +40,8 @@ RUN /home/runner/bin/installdependencies.sh
 COPY --from=controller-build /out/runneryard /usr/local/bin/runneryard
 COPY controller-entrypoint /usr/local/bin/controller-entrypoint
 COPY runner-entrypoint /usr/local/bin/runner-entrypoint
-RUN chmod 0755 /usr/local/bin/runneryard /usr/local/bin/controller-entrypoint /usr/local/bin/runner-entrypoint
+COPY runneryard-job-started.sh /usr/local/bin/runneryard-job-started.sh
+RUN chmod 0755 /usr/local/bin/runneryard /usr/local/bin/controller-entrypoint /usr/local/bin/runner-entrypoint /usr/local/bin/runneryard-job-started.sh
 
 ENV HOME=/home/runner
 ENV RUNNER_TOOL_CACHE=/opt/hostedtoolcache

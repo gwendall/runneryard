@@ -46,7 +46,7 @@ func TestLaunchIsEphemeralAndReceivesOnlyJITCredential(t *testing.T) {
 		if len(request.Config.Processes) != 1 || !request.Config.Processes[0].IgnoreAppSecrets {
 			t.Fatalf("worker process must ignore app secrets: %#v", request.Config.Processes)
 		}
-		if len(request.Config.Processes[0].Env) != 3 || request.Config.Processes[0].Env["ACTIONS_RUNNER_INPUT_JITCONFIG"] != "jit-secret" || request.Config.Processes[0].Env["RUNNERYARD_DEADLINE"] == "" || request.Config.Processes[0].Env["RUNNERYARD_DOCKER_DNS"] != defaultDockerDNS {
+		if len(request.Config.Processes[0].Env) != 4 || request.Config.Processes[0].Env["ACTIONS_RUNNER_INPUT_JITCONFIG"] != "jit-secret" || request.Config.Processes[0].Env["RUNNERYARD_DEADLINE"] == "" || request.Config.Processes[0].Env["RUNNERYARD_DOCKER_DNS"] != defaultDockerDNS {
 			t.Fatalf("worker received unexpected process environment: %#v", request.Config.Processes[0].Env)
 		}
 		if request.Config.Guest.CPUKind != "shared" || request.Config.Guest.CPUs != 4 || request.Config.Guest.MemoryMB != 8192 {

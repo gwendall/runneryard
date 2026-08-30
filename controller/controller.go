@@ -49,7 +49,12 @@ type Config struct {
 	// LaunchConcurrency bounds how many worker launches run at once; zero
 	// selects the default of 8.
 	LaunchConcurrency int
-	Logger            *slog.Logger
+	// IdleTimeout is passed to workers so they release themselves when no job
+	// arrives; DanglingTimeout is the controller-side backstop after which an
+	// idle worker it created is retired. Zero disables either one.
+	IdleTimeout     time.Duration
+	DanglingTimeout time.Duration
+	Logger          *slog.Logger
 }
 
 const defaultLaunchConcurrency = 8
@@ -96,6 +101,9 @@ func New(cfg Config, github *scaleset.Client, compute provider.Compute) (*Contro
 	}
 	if cfg.LaunchConcurrency < 1 {
 		cfg.LaunchConcurrency = defaultLaunchConcurrency
+	}
+	if cfg.IdleTimeout < 0 || cfg.IdleTimeout > cfg.MaxLifetime || cfg.DanglingTimeout < 0 || cfg.DanglingTimeout > cfg.MaxLifetime {
+		return nil, fmt.Errorf("idle and dangling timeouts must be between 0 and the maximum worker lifetime")
 	}
 	return &Controller{config: cfg, github: github, compute: compute}, nil
 }
@@ -176,6 +184,8 @@ func (c *Controller) Run(ctx context.Context) error {
 		maxWorkers:        cfg.MaxWorkers,
 		launchConcurrency: cfg.LaunchConcurrency,
 		maxLifetime:       cfg.MaxLifetime,
+		idleTimeout:       cfg.IdleTimeout,
+		danglingTimeout:   cfg.DanglingTimeout,
 		budget:            budget,
 		retirements:       retirements,
 		reporter:          reporter,

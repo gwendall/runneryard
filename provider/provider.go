@@ -17,6 +17,8 @@ type Lease struct {
 	RunnerScaleSetID int
 	JITConfig        string
 	Deadline         time.Time
+	// IdleTimeout releases a worker that received no job; zero disables it.
+	IdleTimeout time.Duration
 }
 
 // Worker is the provider-neutral inventory record used for reconciliation.

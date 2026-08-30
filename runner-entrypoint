@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 if [[ "$(id -u)" -ne 0 ]]; then
-  exec sudo --preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE,RUNNERYARD_DOCKER_DNS,RUNNERYARD_DIAG_HOLD /usr/local/bin/runner-entrypoint "$@"
+  exec sudo --preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE,RUNNERYARD_DOCKER_DNS,RUNNERYARD_DIAG_HOLD,RUNNERYARD_IDLE_TIMEOUT /usr/local/bin/runner-entrypoint "$@"
 fi
 
 if [[ -z "${ACTIONS_RUNNER_INPUT_JITCONFIG:-}" ]]; then
@@ -29,6 +29,16 @@ diag_hold_seconds="${RUNNERYARD_DIAG_HOLD:-30}"
 case "$diag_hold_seconds" in
   ''|*[!0-9]*) diag_hold_seconds=30 ;;
 esac
+
+# A JIT runner that never receives a job would otherwise wait until its lease
+# deadline. The job-started hook records the assignment; without it, the
+# watchdog releases the worker after the idle timeout. Zero disables it.
+idle_timeout_seconds="${RUNNERYARD_IDLE_TIMEOUT:-600}"
+case "$idle_timeout_seconds" in
+  ''|*[!0-9]*) idle_timeout_seconds=600 ;;
+esac
+marker_dir=/run/runneryard
+job_started_hook=/usr/local/bin/runneryard-job-started.sh
 
 diagnostics() {
   echo "--- runneryard worker diagnostics: $1 ---" >&2
@@ -110,8 +120,12 @@ PY
 dockerd --config-file=/etc/docker/daemon.json >/var/log/dockerd.log 2>&1 &
 docker_pid=$!
 runner_pid=
+watchdog_pid=
 
 cleanup() {
+  if [[ -n "$watchdog_pid" ]]; then
+    kill "$watchdog_pid" 2>/dev/null || true
+  fi
   if [[ -n "$runner_pid" ]]; then
     kill "$runner_pid" 2>/dev/null || true
   fi
@@ -119,6 +133,11 @@ cleanup() {
   wait "$docker_pid" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
+
+# The marker directory is writable by the runner user because the hook runs
+# inside the job's unprivileged process tree.
+install -d -o runner -g runner -m 0755 "$marker_dir"
+rm -f "$marker_dir/job-started" "$marker_dir/idle-timeout"
 
 # The runner registers with GitHub while dockerd is still starting. The
 # registration, the queue wait, and the first job steps (checkout, tool
@@ -130,10 +149,35 @@ timeout --signal=TERM --kill-after=30s "${remaining_seconds}s" \
   env HOME=/home/runner USER=runner LOGNAME=runner \
   RUNNER_TOOL_CACHE=/opt/hostedtoolcache ImageOS=ubuntu24 \
   DOCKER_BUILDKIT=1 \
+  ACTIONS_RUNNER_HOOK_JOB_STARTED="$job_started_hook" \
   XDG_CONFIG_HOME=/home/runner/.config \
   /home/runner/run.sh &
 runner_pid=$!
 set -e
+
+idle_watchdog() {
+  local waited=0
+  while (( waited < idle_timeout_seconds )); do
+    if [[ -f "$marker_dir/job-started" ]]; then
+      return 0
+    fi
+    if ! kill -0 "$runner_pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  if [[ ! -f "$marker_dir/job-started" ]]; then
+    echo "no job started within ${idle_timeout_seconds}s; releasing the idle worker" >&2
+    : > "$marker_dir/idle-timeout"
+    kill -TERM "$runner_pid" 2>/dev/null || true
+  fi
+}
+
+if (( idle_timeout_seconds > 0 )); then
+  idle_watchdog &
+  watchdog_pid=$!
+fi
 
 # Docker readiness is still enforced: a worker whose daemon cannot start or
 # selects an unsafe storage driver is released instead of running jobs in a
@@ -182,6 +226,14 @@ wait "$runner_pid"
 runner_status=$?
 set -e
 runner_pid=
+if [[ -n "$watchdog_pid" ]]; then
+  kill "$watchdog_pid" 2>/dev/null || true
+  watchdog_pid=
+fi
+if [[ -f "$marker_dir/idle-timeout" ]]; then
+  echo "idle worker released before any job; exiting cleanly" >&2
+  exit 0
+fi
 if (( runner_status != 0 )); then
   fail "$runner_status" "runner exited with status $runner_status"
 fi
