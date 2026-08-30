@@ -6,6 +6,10 @@ the closed issues, the open items in
 private pilot. Identifiers are stable; open an issue with the identifier when
 you start an item.
 
+Delivery status: R1 is in pull request #62; R2, R3, R4, R5, R6, R7, I8, C2, C8,
+C10, H3, and O7 are in pull request #63, stacked on #62. I1 shipped in 0.3.11
+and 0.3.12.
+
 How to read it:
 
 - Priority: `P0` before routing anything beyond a canary; `P1` during the
