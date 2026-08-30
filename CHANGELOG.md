@@ -20,6 +20,14 @@ operator-facing schema or a trust boundary is called out here first.
   to `.runneryard/fly.controller.toml`) with every live controller Machine and
   fails on environment, image, restart-policy, or mount drift, on divergent
   image pins inside the file, and on more than one controller Machine.
+- A busy worker that leaves provider inventory before GitHub reports its job
+  finished, and the completion message that follows, are logged at `INFO`
+  with the job result; an idle worker that released itself after
+  `RUNNER_IDLE_TIMEOUT` and an adopted worker are explained the same way.
+  Only a worker that vanished before starting a job and a completion for a
+  runner the controller never knew still warn.
+- The generated canary keeps a reviewable version comment next to the pinned
+  `actions/setup-node` commit.
 
 ## 0.4.0 (2026-08-30)
 

@@ -212,6 +212,8 @@ func (s *scaler) reconcile(ctx context.Context) error {
 		s.state.adopt(worker)
 		s.logger.Warn("adopted managed worker missing from local state", "runner", worker.RunnerName, "worker_id", worker.ID)
 	}
+	now := time.Now()
+	s.state.pruneDeparted(now.Add(-departureMemory))
 	for name, record := range local {
 		if _, retiredNow := retired[name]; retiredNow {
 			continue
@@ -222,7 +224,8 @@ func (s *scaler) reconcile(ctx context.Context) error {
 		if err := s.retireWorker(ctx, record.Worker, false, settleActualUsage, time.Time{}); err != nil {
 			return fmt.Errorf("retire disappeared worker %s: %w", name, err)
 		}
-		s.logger.Warn("worker disappeared before completion", "runner", name, "worker_id", record.Worker.ID)
+		s.state.markDeparted(record, now)
+		s.logDeparture(record, now)
 	}
 	s.reporter.orphans(0)
 	s.reportState()
@@ -245,10 +248,42 @@ func (s *scaler) HandleJobStarted(_ context.Context, job *scaleset.JobStarted) e
 	return nil
 }
 
+// departureMemory bounds how long a departed worker is remembered for the
+// completion message that GitHub sends after the job finished. Completion
+// follows departure within minutes; anything older is a genuinely unknown
+// runner again.
+const departureMemory = time.Hour
+
+// logDeparture explains why a worker left inventory before its completion
+// message. A busy worker finishing its job and self-destroying is the normal
+// order of events on providers that destroy the Machine on exit, and an idle
+// worker past the idle timeout released itself by design; only a worker that
+// vanished before it could start a job is worth a warning.
+func (s *scaler) logDeparture(record workerRecord, now time.Time) {
+	age := time.Duration(0)
+	if !record.Worker.CreatedAt.IsZero() {
+		age = now.Sub(record.Worker.CreatedAt).Round(time.Second)
+	}
+	switch {
+	case record.Busy:
+		s.logger.Info("busy worker left inventory; awaiting its job completion", "runner", record.Worker.RunnerName, "worker_id", record.Worker.ID, "age", age)
+	case !record.Observed:
+		s.logger.Info("adopted worker left inventory", "runner", record.Worker.RunnerName, "worker_id", record.Worker.ID, "age", age)
+	case s.idleTimeout > 0 && age >= s.idleTimeout:
+		s.logger.Info("idle worker released itself", "runner", record.Worker.RunnerName, "worker_id", record.Worker.ID, "age", age, "idle_timeout", s.idleTimeout)
+	default:
+		s.logger.Warn("worker disappeared before starting a job", "runner", record.Worker.RunnerName, "worker_id", record.Worker.ID, "age", age)
+	}
+}
+
 func (s *scaler) HandleJobCompleted(ctx context.Context, job *scaleset.JobCompleted) error {
 	s.reporter.githubActivity("job_completed")
 	record, ok := s.state.get(job.RunnerName)
 	if !ok {
+		if departed, known := s.state.takeDeparted(job.RunnerName); known {
+			s.logger.Info("job completed after its worker left inventory", "runner", job.RunnerName, "job_id", job.JobID, "result", job.Result, "worker_id", departed.Worker.ID)
+			return nil
+		}
 		s.logger.Warn("job completed on worker not present in local state", "runner", job.RunnerName, "job_id", job.JobID)
 		return nil
 	}

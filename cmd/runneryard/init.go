@@ -33,6 +33,7 @@ type initOptions struct {
 const (
 	runtimeNodeVersion = "22.23.2"
 	setupNodeCommit    = "820762786026740c76f36085b0efc47a31fe5020"
+	setupNodeVersion   = "v7.0.0"
 	buildCanaryImage   = "busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0"
 )
 
@@ -381,7 +382,7 @@ jobs:
           expected_path="$RUNNER_TOOL_CACHE/node/$RUNNERYARD_EXPECTED_NODE/$toolcache_arch/bin/node"
           test -x "$expected_path"
           test "$("$expected_path" --version)" = "v$RUNNERYARD_EXPECTED_NODE"
-      - uses: actions/setup-node@%s
+      - uses: actions/setup-node@%s # %s
         with:
           node-version: ${{ env.RUNNERYARD_EXPECTED_NODE }}
       - name: Verify isolated worker
@@ -434,5 +435,5 @@ jobs:
               command: ["cat", "/runneryard-buildkit-canary"]
           EOF
           test "$(docker compose -f /tmp/runneryard-compose-canary.yml run --rm canary)" = passed
-`, version, expectedCommit, runtimeNodeVersion, fmt.Sprint(minimumRootfsGiB(options.rootfsGB)), options.scaleSet, setupNodeCommit, buildCanaryImage)
+`, version, expectedCommit, runtimeNodeVersion, fmt.Sprint(minimumRootfsGiB(options.rootfsGB)), options.scaleSet, setupNodeCommit, setupNodeVersion, buildCanaryImage)
 }
