@@ -16,6 +16,10 @@ operator-facing schema or a trust boundary is called out here first.
   generating binary is a release, checks that the root filesystem honours
   `RUNNER_ROOTFS_GB`, verifies `RUNNER_ENVIRONMENT`, and runs every step under
   `set -euo pipefail`.
+- `runneryard doctor` compares the committed Fly TOML (`--config`, defaulting
+  to `.runneryard/fly.controller.toml`) with every live controller Machine and
+  fails on environment, image, restart-policy, or mount drift, on divergent
+  image pins inside the file, and on more than one controller Machine.
 
 ## 0.4.0 (2026-08-30)
 

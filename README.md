@@ -68,6 +68,10 @@ npx runneryard doctor --provider fly \
   --worker-app acme-ci-runners
 ```
 
+Run from the repository, `doctor` also compares the committed
+`.runneryard/fly.controller.toml` with the live controller Machine and fails
+on any drift, so the reviewed file stays the only source of truth.
+
 Initialize the durable usage ledger once, deploy the pinned controller image,
 and trigger the generated canary. A successful canary has three receipts:
 GitHub reports a green job, the controller records the complete lifecycle, and

@@ -13,7 +13,7 @@ func TestDoctorRejectsSecretsOnWorkerApp(t *testing.T) {
 		}
 		return []byte("ready"), nil
 	}
-	checks := doctor("fly", "control", "workers", "", run)
+	checks := doctor("fly", "control", "workers", "", "", run)
 	if !hasDoctorStatus(checks, "worker app secrets", "fail") {
 		t.Fatalf("checks = %#v", checks)
 	}
@@ -26,7 +26,7 @@ func TestDoctorRejectsSharedApp(t *testing.T) {
 		}
 		return []byte("ready"), nil
 	}
-	checks := doctor("fly", "same", "same", "", run)
+	checks := doctor("fly", "same", "same", "", "", run)
 	if !hasDoctorStatus(checks, "control/worker isolation", "fail") {
 		t.Fatalf("checks = %#v", checks)
 	}
@@ -44,7 +44,7 @@ func TestDoctorRejectsControllerSecretThatShadowsPolicy(t *testing.T) {
 				}
 				return []byte("ready"), nil
 			}
-			checks := doctor("fly", "control", "workers", "", run)
+			checks := doctor("fly", "control", "workers", "", "", run)
 			if !hasDoctorStatus(checks, "controller policy source", "fail") {
 				t.Fatalf("checks = %#v", checks)
 			}
@@ -62,7 +62,7 @@ func TestDoctorAcceptsCompleteGitHubAppSecrets(t *testing.T) {
 		}
 		return []byte("ready"), nil
 	}
-	checks := doctor("fly", "control", "workers", "", run)
+	checks := doctor("fly", "control", "workers", "", "", run)
 	if !hasDoctorStatus(checks, "controller GitHub auth", "pass") {
 		t.Fatalf("checks = %#v", checks)
 	}
@@ -83,7 +83,7 @@ func TestDoctorWarnsForUserTokenAndRejectsMixedAuth(t *testing.T) {
 				}
 				return []byte("ready"), nil
 			}
-			checks := doctor("fly", "control", "workers", "", run)
+			checks := doctor("fly", "control", "workers", "", "", run)
 			expected := "warn"
 			if name == "mixed" {
 				expected = "fail"
@@ -110,7 +110,7 @@ func TestDoctorRejectsUnusableFlySecretResponses(t *testing.T) {
 				}
 				return []byte("ready"), nil
 			}
-			checks := doctor("fly", "control", "workers", "", run)
+			checks := doctor("fly", "control", "workers", "", "", run)
 			if !hasDoctorStatus(checks, "controller policy source", "fail") {
 				t.Fatalf("checks = %#v", checks)
 			}
@@ -128,7 +128,7 @@ func TestDoctorRejectsNullWorkerSecretResponse(t *testing.T) {
 		}
 		return []byte("ready"), nil
 	}
-	checks := doctor("fly", "control", "workers", "", run)
+	checks := doctor("fly", "control", "workers", "", "", run)
 	if !hasDoctorStatus(checks, "worker app secrets", "fail") {
 		t.Fatalf("checks = %#v", checks)
 	}
@@ -141,7 +141,7 @@ func TestDoctorRequiresBothAppsToProveIsolation(t *testing.T) {
 		}
 		return []byte("ready"), nil
 	}
-	checks := doctor("fly", "", "workers", "", run)
+	checks := doctor("fly", "", "workers", "", "", run)
 	if !hasDoctorStatus(checks, "control/worker isolation", "fail") {
 		t.Fatalf("checks = %#v", checks)
 	}
@@ -154,7 +154,7 @@ func TestDoctorReportsMissingFlyCLI(t *testing.T) {
 		}
 		return []byte("ready"), nil
 	}
-	checks := doctor("fly", "control", "workers", "", run)
+	checks := doctor("fly", "control", "workers", "", "", run)
 	if !hasDoctorStatus(checks, "Fly CLI", "fail") {
 		t.Fatalf("checks = %#v", checks)
 	}
@@ -175,7 +175,7 @@ func TestDoctorAcceptsHetznerFirewallWithoutInboundRules(t *testing.T) {
 		}
 		return []byte("ready"), nil
 	}
-	checks := doctor("hetzner", "", "", "42", run)
+	checks := doctor("hetzner", "", "", "42", "", run)
 	if !hasDoctorStatus(checks, "Hetzner API", "pass") || !hasDoctorStatus(checks, "worker firewall", "pass") {
 		t.Fatalf("checks = %#v", checks)
 	}
@@ -188,7 +188,7 @@ func TestDoctorRejectsHetznerInboundRules(t *testing.T) {
 		}
 		return []byte(`[]`), nil
 	}
-	checks := doctor("hetzner", "", "", "42", run)
+	checks := doctor("hetzner", "", "", "42", "", run)
 	if !hasDoctorStatus(checks, "worker firewall", "fail") {
 		t.Fatalf("checks = %#v", checks)
 	}
@@ -196,7 +196,7 @@ func TestDoctorRejectsHetznerInboundRules(t *testing.T) {
 
 func TestDoctorRequiresHetznerFirewall(t *testing.T) {
 	run := func(_ string, _ ...string) ([]byte, error) { return []byte(`[]`), nil }
-	checks := doctor("hetzner", "", "", "", run)
+	checks := doctor("hetzner", "", "", "", "", run)
 	if !hasDoctorStatus(checks, "worker firewall", "fail") {
 		t.Fatalf("checks = %#v", checks)
 	}
