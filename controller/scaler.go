@@ -163,9 +163,9 @@ func (s *scaler) reconcile(ctx context.Context) error {
 	}
 	local := s.state.all()
 	s.reporter.orphans(orphanCandidateCount(workers, local, s.maxLifetime, time.Now()))
-	localByWorker := make(map[string]struct{}, len(local))
-	for _, record := range local {
-		localByWorker[record.Worker.ID] = struct{}{}
+	localByWorker := make(map[string]string, len(local))
+	for name, record := range local {
+		localByWorker[record.Worker.ID] = name
 	}
 	present := make(map[string]struct{}, len(workers))
 	retired := make(map[string]struct{})
@@ -202,7 +202,8 @@ func (s *scaler) reconcile(ctx context.Context) error {
 			continue
 		}
 		present[worker.ID] = struct{}{}
-		if _, ok := localByWorker[worker.ID]; ok {
+		if name, ok := localByWorker[worker.ID]; ok {
+			s.state.markPresent(name)
 			continue
 		}
 		if err := s.budget.adopt(worker.LeaseID, worker.CreatedAt); err != nil {
@@ -220,6 +221,24 @@ func (s *scaler) reconcile(ctx context.Context) error {
 		}
 		if _, ok := present[record.Worker.ID]; ok {
 			continue
+		}
+		age := time.Duration(0)
+		if !record.Worker.CreatedAt.IsZero() {
+			age = now.Sub(record.Worker.CreatedAt)
+		}
+		maxLifetimeExpired := s.maxLifetime > 0 && age > s.maxLifetime
+		danglingExpired := s.danglingTimeout > 0 && record.Observed && !record.Busy && age > s.danglingTimeout
+		if !maxLifetimeExpired && !danglingExpired {
+			if record.MissingSince.IsZero() {
+				if !s.state.markMissing(name, now) {
+					continue
+				}
+				s.logger.Info("worker absent from provider inventory; waiting for confirmation", "runner", record.Worker.RunnerName, "worker_id", record.Worker.ID, "grace", inventoryAbsenceGrace)
+				continue
+			}
+			if now.Sub(record.MissingSince) < inventoryAbsenceGrace {
+				continue
+			}
 		}
 		if err := s.retireWorker(ctx, record.Worker, false, settleActualUsage, time.Time{}); err != nil {
 			return fmt.Errorf("retire disappeared worker %s: %w", name, err)
@@ -265,6 +284,13 @@ func (s *scaler) reportRetirements() {
 // follows departure within minutes; anything older is a genuinely unknown
 // runner again.
 const departureMemory = time.Hour
+
+// inventoryAbsenceGrace prevents an eventually consistent provider inventory
+// snapshot from erasing a worker while GitHub's JobStarted message is already
+// in flight. Explicit stopped states, maximum-lifetime expiry, and job
+// completion still retire immediately; only an unexplained absence must remain
+// continuous for this window before it is considered a departure.
+const inventoryAbsenceGrace = 30 * time.Second
 
 // logDeparture explains why a worker left inventory before its completion
 // message. A busy worker finishing its job and self-destroying is the normal

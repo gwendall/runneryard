@@ -25,6 +25,7 @@ func TestBusyWorkerDepartureAndItsCompletionAreNotWarnings(t *testing.T) {
 	worker := provider.Worker{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-00000001", RunnerScaleSetID: 1, CreatedAt: time.Now().Add(-3 * time.Minute)}
 	state := newWorkerState()
 	state.add(worker, true)
+	state.markMissing(worker.RunnerName, time.Now().Add(-inventoryAbsenceGrace-time.Second))
 	scaler, logs := capturingScaler(t, state, &fakeCompute{})
 	if err := scaler.budget.adopt("lease-one", worker.CreatedAt); err != nil {
 		t.Fatal(err)
@@ -65,6 +66,7 @@ func TestIdleWorkerDepartureIsExplainedByItsAge(t *testing.T) {
 			worker := provider.Worker{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-00000001", RunnerScaleSetID: 1, CreatedAt: time.Now().Add(-age)}
 			state := newWorkerState()
 			state.add(worker, false)
+			state.markMissing(worker.RunnerName, time.Now().Add(-inventoryAbsenceGrace-time.Second))
 			scaler, logs := capturingScaler(t, state, &fakeCompute{})
 			if err := scaler.budget.adopt("lease-one", worker.CreatedAt); err != nil {
 				t.Fatal(err)
@@ -83,10 +85,108 @@ func TestIdleWorkerDepartureIsExplainedByItsAge(t *testing.T) {
 	}
 }
 
+func TestReconcileToleratesOneTransientInventoryOmissionBeforeJobStarts(t *testing.T) {
+	worker := provider.Worker{
+		ID:               "worker-one",
+		LeaseID:          "lease-one",
+		RunnerName:       "runner-00000001",
+		RunnerScaleSetID: 1,
+		CreatedAt:        time.Now().Add(-time.Minute),
+	}
+	state := newWorkerState()
+	state.add(worker, false)
+	compute := &fakeCompute{workers: []provider.Worker{worker}}
+	scaler, logs := capturingScaler(t, state, compute)
+
+	// Fly inventory can omit a recently created Machine for one snapshot while
+	// GitHub is already assigning it. That observation must not erase the
+	// runner before the corresponding JobStarted message arrives.
+	compute.workers = nil
+	if err := scaler.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state.get(worker.RunnerName); !ok {
+		t.Fatal("one missing inventory snapshot removed a runner still awaiting assignment")
+	}
+
+	if err := scaler.HandleJobStarted(context.Background(), &scaleset.JobStarted{RunnerName: worker.RunnerName}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), "job started on worker not present in local state") {
+		t.Fatalf("transient inventory omission lost assignment correlation:\n%s", logs.String())
+	}
+}
+
+func TestReappearanceClearsInventoryAbsenceGrace(t *testing.T) {
+	worker := provider.Worker{
+		ID:         "worker-one",
+		LeaseID:    "lease-one",
+		RunnerName: "runner-00000001",
+		CreatedAt:  time.Now().Add(-time.Minute),
+	}
+	state := newWorkerState()
+	state.add(worker, false)
+	compute := &fakeCompute{}
+	scaler, _ := capturingScaler(t, state, compute)
+
+	if err := scaler.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	compute.workers = []provider.Worker{worker}
+	if err := scaler.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	compute.workers = nil
+	if err := scaler.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	record, ok := state.get(worker.RunnerName)
+	if !ok {
+		t.Fatal("a new isolated omission reused the previous grace window")
+	}
+	if record.MissingSince.IsZero() || time.Since(record.MissingSince) >= inventoryAbsenceGrace {
+		t.Fatalf("new omission did not start a fresh grace window: %#v", record)
+	}
+}
+
+func TestInventoryAbsenceGraceDoesNotExtendLifecycleDeadlines(t *testing.T) {
+	for name, configure := range map[string]func(*scaler){
+		"maximum lifetime": func(scaler *scaler) {
+			scaler.maxLifetime = 30 * time.Minute
+		},
+		"dangling timeout": func(scaler *scaler) {
+			scaler.maxLifetime = 2 * time.Hour
+			scaler.danglingTimeout = 30 * time.Minute
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			worker := provider.Worker{
+				ID:               "worker-one",
+				LeaseID:          "lease-one",
+				RunnerName:       "runner-00000001",
+				RunnerScaleSetID: 1,
+				CreatedAt:        time.Now().Add(-time.Hour),
+			}
+			state := newWorkerState()
+			state.add(worker, false)
+			scaler, _ := capturingScaler(t, state, &fakeCompute{})
+			configure(scaler)
+
+			if err := scaler.reconcile(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := state.get(worker.RunnerName); ok {
+				t.Fatal("an expired worker was retained by the inventory absence grace")
+			}
+		})
+	}
+}
+
 func TestAdoptedWorkerDepartureIsInformational(t *testing.T) {
 	worker := provider.Worker{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-00000001", RunnerScaleSetID: 1, CreatedAt: time.Now().Add(-time.Minute)}
 	state := newWorkerState()
 	state.adopt(worker)
+	state.markMissing(worker.RunnerName, time.Now().Add(-inventoryAbsenceGrace-time.Second))
 	scaler, logs := capturingScaler(t, state, &fakeCompute{})
 	if err := scaler.budget.adopt("lease-one", worker.CreatedAt); err != nil {
 		t.Fatal(err)

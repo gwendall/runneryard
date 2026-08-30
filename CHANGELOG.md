@@ -6,6 +6,12 @@ operator-facing schema or a trust boundary is called out here first.
 
 ## Unreleased
 
+- Reconciliation now requires an unexplained provider-inventory absence to
+  remain continuous for 30 seconds before forgetting a worker. Reappearance
+  or `JobStarted` clears the observation, preventing an eventually consistent
+  Fly snapshot from spawning a duplicate replacement while assignment is in
+  flight; explicit stopped states and lifecycle deadlines still retire
+  immediately.
 - `auth github create` and `auth github import` stage the App secrets on Fly
   (`fly secrets import --stage`) instead of redeploying immediately, and both
   sinks print how to bring the credential into service. A controller that
