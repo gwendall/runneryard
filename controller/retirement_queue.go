@@ -35,6 +35,10 @@ type retirementEntry struct {
 	// the ledger charges the worker's lifetime rather than the delay until
 	// GitHub's completion message arrived.
 	StoppedAt time.Time `json:"stopped_at,omitempty"`
+	// RequestedAt is when the retirement was first journaled. GitHub can keep
+	// a runner registered for minutes after its job completed, so a pending
+	// retirement only degrades the fleet once it is older than the grace.
+	RequestedAt time.Time `json:"requested_at,omitempty"`
 }
 
 type retirementQueue struct {
@@ -168,6 +172,9 @@ func (q *retirementQueue) put(entry retirementEntry) error {
 		if entry.StoppedAt.IsZero() {
 			entry.StoppedAt = previous.StoppedAt
 		}
+		if !previous.RequestedAt.IsZero() {
+			entry.RequestedAt = previous.RequestedAt
+		}
 	}
 	q.entries[entry.RunnerName] = entry
 	if err := q.persistLocked(); err != nil {
@@ -224,6 +231,21 @@ func (q *retirementQueue) count() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return len(q.entries)
+}
+
+// overdue counts entries that have been pending for longer than grace. An
+// entry journaled by an earlier release carries no request time and counts
+// as overdue so that it stays visible rather than silently tolerated.
+func (q *retirementQueue) overdue(now time.Time, grace time.Duration) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	overdue := 0
+	for _, entry := range q.entries {
+		if entry.RequestedAt.IsZero() || now.Sub(entry.RequestedAt) > grace {
+			overdue++
+		}
+	}
+	return overdue
 }
 
 func (q *retirementQueue) persist() error {

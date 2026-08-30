@@ -122,7 +122,7 @@ func (a *alerter) message(status FleetStatus, reminder bool) string {
 	case status.Reason == "orphan_candidates":
 		text.WriteString(". Provider inventory holds workers the controller does not recognize; inspect them before deleting anything.")
 	case status.Reason == "runner_retirements_pending":
-		text.WriteString(". A worker's GitHub registration is still being released; reconciliation retries it.")
+		text.WriteString(". A worker's GitHub registration has stayed pending beyond the retirement grace; reconciliation keeps retrying it.")
 	case status.Health == "ready":
 		text.WriteString(". Recovered.")
 	}

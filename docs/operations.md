@@ -29,7 +29,8 @@ If provider ownership is ambiguous, cleanup fails closed and remains pending.
 GitHub can briefly reject removal with `job still running` after an ephemeral
 worker has exited, especially when a workflow is cancelled or superseded. That
 typed response is the only deferred cleanup case: the listener stays available,
-status remains degraded with a pending retirement, and reconciliation retries
+status shows the pending retirement and degrades only once it has stayed
+pending beyond a fifteen-minute grace, and reconciliation retries
 the same immutable registration ID. Identity or provider ambiguity remains a
 hard error.
 
@@ -230,8 +231,8 @@ latency aggregates have fixed fields and no user-controlled metric labels.
 
 Set `ALERT_WEBHOOK_URL` on the controller to receive a message whenever the
 fleet becomes `degraded` (provider unavailable, budget exhausted, orphan
-candidates, pending retirements) and when it recovers, plus an hourly
-reminder while the condition lasts. Delivery never blocks the controller: a
+candidates, a retirement pending for more than fifteen minutes) and when it
+recovers, plus an hourly reminder while the condition lasts. Delivery never blocks the controller: a
 failed POST is logged and the next transition sends again. Pair it with
 `runneryard status` for the detail; the message itself only carries the
 reason, the worker counts, and the budget horizon.

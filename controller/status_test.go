@@ -40,10 +40,22 @@ func TestFleetStatusCoversEmptySaturatedAndDegradedStates(t *testing.T) {
 		t.Fatalf("degraded status = %#v", degraded)
 	}
 
-	reporter.retirements(2)
+	reporter.retirements(2, 0)
+	pending := loadFleetStatus(t, statusFile)
+	if pending.Reason != "orphan_candidates" || pending.Workers.PendingRetirements != 2 || pending.Workers.OverdueRetirements != 0 {
+		t.Fatalf("a fresh pending retirement must not change the reason: %#v", pending)
+	}
+
+	reporter.retirements(2, 1)
 	retiring := loadFleetStatus(t, statusFile)
-	if retiring.Health != "degraded" || retiring.Reason != "runner_retirements_pending" || retiring.Workers.PendingRetirements != 2 {
+	if retiring.Health != "degraded" || retiring.Reason != "runner_retirements_pending" || retiring.Workers.PendingRetirements != 2 || retiring.Workers.OverdueRetirements != 1 {
 		t.Fatalf("retirement status = %#v", retiring)
+	}
+
+	reporter.retirements(1, 3)
+	capped := loadFleetStatus(t, statusFile)
+	if capped.Workers.OverdueRetirements != 1 {
+		t.Fatalf("overdue retirements cannot exceed pending ones: %#v", capped)
 	}
 }
 

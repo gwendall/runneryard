@@ -128,7 +128,7 @@ func (c *Controller) Run(ctx context.Context) error {
 		reporter.degraded("runner_retirement_state_failed")
 		return err
 	}
-	reporter.retirements(retirements.count())
+	reporter.retirements(retirements.count(), retirements.overdue(time.Now(), retirementGrace))
 	runnerGroupID := 1
 	if cfg.RunnerGroup != scaleset.DefaultRunnerGroup {
 		group, err := c.github.GetRunnerGroupByName(ctx, cfg.RunnerGroup)
