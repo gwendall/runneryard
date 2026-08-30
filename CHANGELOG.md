@@ -4,6 +4,15 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
+## Unreleased
+
+- `auth github create` and `auth github import` stage the App secrets on Fly
+  (`fly secrets import --stage`) instead of redeploying immediately, and both
+  sinks print how to bring the credential into service. A controller that
+  still authenticates with `GITHUB_TOKEN` is no longer restarted into a
+  refusal to start with both credential sets; the operator removes the token
+  and the App goes live in that single restart.
+
 ## 0.4.1 (2026-08-30)
 
 - `runneryard init` can describe a fleet that already exists: `--controller-app`,

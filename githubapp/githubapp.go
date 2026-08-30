@@ -101,6 +101,8 @@ func (c Credentials) Validate() error {
 type SecretSink interface {
 	Store(context.Context, Credentials) error
 	Description() string
+	// NextStep explains how the stored credential becomes the live one.
+	NextStep() string
 }
 
 type Browser interface {

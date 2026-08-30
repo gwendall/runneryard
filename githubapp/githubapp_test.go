@@ -318,6 +318,13 @@ func TestFlySinkKeepsPrivateKeyOutOfArguments(t *testing.T) {
 	if strings.Contains(strings.Join(arguments, " "), "PRIVATE KEY") || !strings.Contains(string(stdin), "GITHUB_APP_PRIVATE_KEY=\"\"\"") {
 		t.Fatalf("arguments=%#v stdin format valid=%t", arguments, strings.Contains(string(stdin), "GITHUB_APP_PRIVATE_KEY"))
 	}
+	if strings.Join(arguments, " ") != "secrets import --stage --app octo-ci-controller" {
+		t.Fatalf("the Fly sink must stage secrets so a token-authenticated controller is not restarted into a refusal: %#v", arguments)
+	}
+	next := (FlySink{App: "octo-ci-controller"}).NextStep()
+	if !strings.Contains(next, "fly secrets unset GITHUB_TOKEN --app octo-ci-controller") || !strings.Contains(next, "fly deploy --app octo-ci-controller") {
+		t.Fatalf("next step must name both ways to apply the staged secrets: %q", next)
+	}
 }
 
 type browserFunc func(string) error
@@ -332,6 +339,8 @@ func (sink *captureSink) Store(_ context.Context, credentials Credentials) error
 }
 
 func (*captureSink) Description() string { return "test sink" }
+
+func (*captureSink) NextStep() string { return "" }
 
 func testPrivateKey(t *testing.T) string {
 	t.Helper()

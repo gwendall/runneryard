@@ -109,6 +109,9 @@ func runGitHubAppCreate(args []string) error {
 	}
 	fmt.Printf("GitHub App installed and verified: %s\n", result.AppURL)
 	fmt.Printf("Credentials stored in %s. No private key was printed or sent to RunnerYard.\n", result.SinkDescription)
+	if next := sink.NextStep(); next != "" {
+		fmt.Println(next)
+	}
 	return nil
 }
 
@@ -150,6 +153,9 @@ func runGitHubAppImport(args []string) error {
 	}
 	fmt.Printf("Existing GitHub App verified for %s.\n", target.ConfigURL)
 	fmt.Printf("Credentials stored in %s. No private key was printed or sent to RunnerYard.\n", sink.Description())
+	if next := sink.NextStep(); next != "" {
+		fmt.Println(next)
+	}
 	return nil
 }
 

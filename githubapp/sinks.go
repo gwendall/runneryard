@@ -22,6 +22,11 @@ func (sink FileSink) Description() string {
 	return filepath.Join(".runneryard", "github-app.env") + " and " + filepath.Join(".runneryard", "github-app.pem")
 }
 
+// NextStep tells the operator how to bring the stored files into service.
+func (sink FileSink) NextStep() string {
+	return "Remove GITHUB_TOKEN from " + filepath.Join(".runneryard", "controller.env") + " if it is set, restart the controller so it reads github-app.env, then run runneryard doctor and trigger the canary."
+}
+
 func (sink FileSink) Store(_ context.Context, credentials Credentials) error {
 	if err := credentials.Validate(); err != nil {
 		return err
@@ -223,6 +228,14 @@ func (sink FlySink) Description() string {
 	return "Fly secret store for " + sink.App
 }
 
+// NextStep tells the operator how to bring the staged secrets into service.
+func (sink FlySink) NextStep() string {
+	return "The App secrets are staged, not yet live. Apply them with one controller restart:\n" +
+		"  fly secrets unset GITHUB_TOKEN --app " + sink.App + "    (if the controller still uses a token)\n" +
+		"  fly deploy --app " + sink.App + " --config .runneryard/fly.controller.toml --ha=false    (otherwise)\n" +
+		"Then run: runneryard doctor --provider fly --controller-app " + sink.App + " --worker-app <worker app>, and trigger the canary."
+}
+
 func (sink FlySink) Store(ctx context.Context, credentials Credentials) error {
 	if err := credentials.Validate(); err != nil {
 		return err
@@ -237,7 +250,10 @@ func (sink FlySink) Store(ctx context.Context, credentials Credentials) error {
 	input := "GITHUB_APP_CLIENT_ID=" + credentials.ClientID + "\n" +
 		"GITHUB_APP_INSTALLATION_ID=" + strconv.FormatInt(credentials.InstallationID, 10) + "\n" +
 		"GITHUB_APP_PRIVATE_KEY=\"\"\"" + strings.TrimSuffix(credentials.PrivateKey, "\n") + "\"\"\"\n"
-	if err := run(ctx, []string{"secrets", "import", "--app", sink.App}, []byte(input)); err != nil {
+	// --stage keeps the running controller untouched: a controller that still
+	// authenticates with GITHUB_TOKEN refuses to start with both credential
+	// sets, so the operator applies the App with one deliberate restart.
+	if err := run(ctx, []string{"secrets", "import", "--stage", "--app", sink.App}, []byte(input)); err != nil {
 		return fmt.Errorf("fly secrets import failed: %w", err)
 	}
 	return nil
