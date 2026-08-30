@@ -200,4 +200,6 @@ The release workflow publishes the versioned GHCR image before the matching
 GitHub release. npm publishing uses OIDC trusted publishing and provenance;
 there is no long-lived npm token in CI.
 
+Release history lives in [CHANGELOG.md](CHANGELOG.md).
+
 MIT licensed. See [LICENSE](LICENSE).
