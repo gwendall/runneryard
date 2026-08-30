@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 if [[ "$(id -u)" -ne 0 ]]; then
-  exec sudo --preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE,RUNNERYARD_DOCKER_DNS /usr/local/bin/runner-entrypoint "$@"
+  exec sudo --preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE,RUNNERYARD_DOCKER_DNS,RUNNERYARD_DIAG_HOLD /usr/local/bin/runner-entrypoint "$@"
 fi
 
 if [[ -z "${ACTIONS_RUNNER_INPUT_JITCONFIG:-}" ]]; then
@@ -21,6 +21,38 @@ if (( remaining_seconds < 1 )); then
   echo "runner lease is already expired" >&2
   exit 70
 fi
+
+# A worker that fails to start is destroyed by its provider within seconds,
+# which is usually before any log shipper has seen the cause. On failure,
+# print the runner and Docker diagnostics and hold briefly before exiting.
+diag_hold_seconds="${RUNNERYARD_DIAG_HOLD:-30}"
+case "$diag_hold_seconds" in
+  ''|*[!0-9]*) diag_hold_seconds=30 ;;
+esac
+
+diagnostics() {
+  echo "--- runneryard worker diagnostics: $1 ---" >&2
+  if [[ -f /var/log/dockerd.log ]]; then
+    echo "--- /var/log/dockerd.log (tail) ---" >&2
+    tail -n 100 /var/log/dockerd.log >&2 || true
+  fi
+  for log in /home/runner/_diag/*.log; do
+    [[ -f "$log" ]] || continue
+    echo "--- $log (tail) ---" >&2
+    tail -n 100 "$log" >&2 || true
+  done
+}
+
+fail() {
+  local status=$1 reason=$2
+  echo "$reason" >&2
+  diagnostics "$reason"
+  if (( diag_hold_seconds > 0 )); then
+    echo "holding ${diag_hold_seconds}s for log collection before exiting with status $status" >&2
+    sleep "$diag_hold_seconds"
+  fi
+  exit "$status"
+}
 
 mkdir -p /etc/docker /var/lib/docker
 docker_root_filesystem="$(findmnt --noheadings --output FSTYPE --target /var/lib/docker | tr -d '[:space:]')"
@@ -77,40 +109,21 @@ PY
 
 dockerd --config-file=/etc/docker/daemon.json >/var/log/dockerd.log 2>&1 &
 docker_pid=$!
+runner_pid=
 
 cleanup() {
+  if [[ -n "$runner_pid" ]]; then
+    kill "$runner_pid" 2>/dev/null || true
+  fi
   kill "$docker_pid" 2>/dev/null || true
   wait "$docker_pid" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
-for _attempt in $(seq 1 60); do
-  if docker info >/dev/null 2>&1; then
-    break
-  fi
-  if ! kill -0 "$docker_pid" 2>/dev/null; then
-    cat /var/log/dockerd.log >&2
-    exit 1
-  fi
-  sleep 1
-done
-
-docker info >/dev/null 2>&1 || {
-  cat /var/log/dockerd.log >&2
-  exit 1
-}
-
-storage_driver="$(docker info --format '{{.Driver}}')"
-if [[ "$storage_driver" == vfs ]]; then
-  echo "refusing Docker storage driver vfs" >&2
-  exit 78
-fi
-if [[ "$docker_root_filesystem" == overlay || "$docker_root_filesystem" == overlayfs ]] && [[ "$storage_driver" != fuse-overlayfs ]]; then
-  echo "Docker data root uses $docker_root_filesystem but daemon selected $storage_driver instead of fuse-overlayfs" >&2
-  exit 78
-fi
-
-chown runner:docker /var/run/docker.sock
+# The runner registers with GitHub while dockerd is still starting. The
+# registration, the queue wait, and the first job steps (checkout, tool
+# setup) rarely need Docker, so the two startups overlap instead of adding
+# the daemon's warm-up to every job's assignment latency.
 set +e
 timeout --signal=TERM --kill-after=30s "${remaining_seconds}s" \
   setpriv --reuid=runner --regid=runner --init-groups \
@@ -118,7 +131,58 @@ timeout --signal=TERM --kill-after=30s "${remaining_seconds}s" \
   RUNNER_TOOL_CACHE=/opt/hostedtoolcache ImageOS=ubuntu24 \
   DOCKER_BUILDKIT=1 \
   XDG_CONFIG_HOME=/home/runner/.config \
-  /home/runner/run.sh
+  /home/runner/run.sh &
+runner_pid=$!
+set -e
+
+# Docker readiness is still enforced: a worker whose daemon cannot start or
+# selects an unsafe storage driver is released instead of running jobs in a
+# degraded state.
+docker_ready() {
+  local storage_driver
+  for _attempt in $(seq 1 60); do
+    if docker info >/dev/null 2>&1; then
+      chown runner:docker /var/run/docker.sock
+      storage_driver="$(docker info --format '{{.Driver}}')"
+      if [[ "$storage_driver" == vfs ]]; then
+        echo "refusing Docker storage driver vfs" >&2
+        return 78
+      fi
+      if [[ "$docker_root_filesystem" == overlay || "$docker_root_filesystem" == overlayfs ]] && [[ "$storage_driver" != fuse-overlayfs ]]; then
+        echo "Docker data root uses $docker_root_filesystem but daemon selected $storage_driver instead of fuse-overlayfs" >&2
+        return 78
+      fi
+      return 0
+    fi
+    if ! kill -0 "$docker_pid" 2>/dev/null; then
+      echo "dockerd exited before becoming ready" >&2
+      return 1
+    fi
+    sleep 1
+  done
+  echo "dockerd did not become ready within 60s" >&2
+  return 1
+}
+
+docker_ready &
+docker_ready_pid=$!
+
+set +e
+wait "$docker_ready_pid"
+docker_status=$?
+set -e
+if (( docker_status != 0 )); then
+  kill -TERM "$runner_pid" 2>/dev/null || true
+  wait "$runner_pid" 2>/dev/null || true
+  fail "$docker_status" "Docker daemon did not become ready; releasing the worker"
+fi
+
+set +e
+wait "$runner_pid"
 runner_status=$?
 set -e
-exit "$runner_status"
+runner_pid=
+if (( runner_status != 0 )); then
+  fail "$runner_status" "runner exited with status $runner_status"
+fi
+exit 0

@@ -14,7 +14,7 @@ func TestRunnerEntrypointPreservesCompleteLeaseAcrossPrivilegeEscalation(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(contents), "--preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE,RUNNERYARD_DOCKER_DNS") {
+	if !strings.Contains(string(contents), "--preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE,RUNNERYARD_DOCKER_DNS,RUNNERYARD_DIAG_HOLD") {
 		t.Fatal("sudo must preserve the JIT configuration, lease deadline, and provider Docker DNS policy")
 	}
 	if output, err := exec.Command("bash", "-n", entrypoint).CombinedOutput(); err != nil {
@@ -50,5 +50,39 @@ func TestRunnerEntrypointNormalizesUnprivilegedEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(string(contents), "XDG_CONFIG_HOME=/home/runner/.config") {
 		t.Fatal("job tools must resolve configuration beneath the runner home")
+	}
+}
+
+func TestRunnerEntrypointStartsRunnerBeforeWaitingForDocker(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "runner-entrypoint"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(contents)
+	runnerStart := strings.Index(source, "/home/runner/run.sh &")
+	dockerWait := strings.Index(source, `wait "$docker_ready_pid"`)
+	if runnerStart < 0 || dockerWait < 0 || runnerStart > dockerWait {
+		t.Fatal("the runner must start before the entrypoint waits for Docker readiness")
+	}
+	if !strings.Contains(source, "docker_ready &") {
+		t.Fatal("Docker readiness must be checked in the background")
+	}
+	for _, guard := range []string{`refusing Docker storage driver vfs`, `return 78`, `kill -TERM "$runner_pid"`} {
+		if !strings.Contains(source, guard) {
+			t.Fatalf("Docker readiness must still fail closed; missing %q", guard)
+		}
+	}
+}
+
+func TestRunnerEntrypointPrintsDiagnosticsAndHoldsBeforeFailing(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "runner-entrypoint"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(contents)
+	for _, expected := range []string{"/home/runner/_diag/*.log", "/var/log/dockerd.log", `RUNNERYARD_DIAG_HOLD:-30`, `sleep "$diag_hold_seconds"`, `fail "$runner_status"`} {
+		if !strings.Contains(source, expected) {
+			t.Fatalf("runner entrypoint is missing failure diagnostics %q", expected)
+		}
 	}
 }
