@@ -24,11 +24,13 @@ type slowCompute struct {
 	failWith    error
 	workers     []provider.Worker
 	lastLaunchN int
+	lastLease   provider.Lease
 }
 
 func (c *slowCompute) Launch(_ context.Context, lease provider.Lease) (provider.Worker, error) {
 	c.mu.Lock()
 	c.launched++
+	c.lastLease = lease
 	n := c.launched
 	c.inFlight++
 	if c.inFlight > c.peak {

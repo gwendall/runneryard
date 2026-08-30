@@ -58,6 +58,15 @@ then holds for 30 seconds (`RUNNERYARD_DIAG_HOLD`, adapter-controlled) before
 exiting, so provider log collection captures the cause before the machine is
 destroyed. A successful job exits immediately.
 
+A JIT worker that never receives a job (a cancelled or superseded workflow,
+or a job acquired by another worker) no longer waits for its lease deadline.
+The runner's job-started hook records the assignment; without it the worker
+releases itself after `RUNNER_IDLE_TIMEOUT` and exits cleanly. The controller
+keeps a backstop: an idle worker it created and never saw start a job is
+retired after `RUNNER_DANGLING_TIMEOUT`. Workers adopted after a controller
+restart are never released this way, because their job may already be
+running without the new controller having observed it.
+
 ## Safe upgrades
 
 Pin the runtime image to a release version. Stop the old controller cleanly and

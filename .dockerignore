@@ -2,6 +2,7 @@
 !go.mod
 !go.sum
 !runner-entrypoint
+!runneryard-job-started.sh
 !controller-entrypoint
 !cmd/
 !cmd/**

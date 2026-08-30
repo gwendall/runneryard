@@ -497,7 +497,8 @@ func withLeaseProof(worker provider.Worker, lease provider.Lease) provider.Worke
 
 func renderCloudInit(lease provider.Lease, runnerImage string) (string, error) {
 	leaseFile := "ACTIONS_RUNNER_INPUT_JITCONFIG=" + lease.JITConfig + "\n" +
-		"RUNNERYARD_DEADLINE=" + lease.Deadline.UTC().Format(time.RFC3339) + "\n"
+		"RUNNERYARD_DEADLINE=" + lease.Deadline.UTC().Format(time.RFC3339) + "\n" +
+		"RUNNERYARD_IDLE_TIMEOUT=" + strconv.FormatInt(int64(lease.IdleTimeout/time.Second), 10) + "\n"
 	bootstrap := `set -Eeuo pipefail
 image=$1
 runner_name=$2

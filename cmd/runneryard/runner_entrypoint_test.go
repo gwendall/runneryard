@@ -14,7 +14,7 @@ func TestRunnerEntrypointPreservesCompleteLeaseAcrossPrivilegeEscalation(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(contents), "--preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE,RUNNERYARD_DOCKER_DNS,RUNNERYARD_DIAG_HOLD") {
+	if !strings.Contains(string(contents), "--preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE,RUNNERYARD_DOCKER_DNS,RUNNERYARD_DIAG_HOLD,RUNNERYARD_IDLE_TIMEOUT") {
 		t.Fatal("sudo must preserve the JIT configuration, lease deadline, and provider Docker DNS policy")
 	}
 	if output, err := exec.Command("bash", "-n", entrypoint).CombinedOutput(); err != nil {
@@ -84,5 +84,43 @@ func TestRunnerEntrypointPrintsDiagnosticsAndHoldsBeforeFailing(t *testing.T) {
 		if !strings.Contains(source, expected) {
 			t.Fatalf("runner entrypoint is missing failure diagnostics %q", expected)
 		}
+	}
+}
+
+func TestRunnerEntrypointReleasesIdleWorkersThroughTheJobStartedHook(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "runner-entrypoint"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(contents)
+	for _, expected := range []string{
+		`RUNNERYARD_IDLE_TIMEOUT:-600`,
+		`ACTIONS_RUNNER_HOOK_JOB_STARTED="$job_started_hook"`,
+		`job_started_hook=/usr/local/bin/runneryard-job-started.sh`,
+		`install -d -o runner -g runner -m 0755 "$marker_dir"`,
+		`idle_watchdog &`,
+		`kill -TERM "$runner_pid"`,
+		`idle worker released before any job; exiting cleanly`,
+	} {
+		if !strings.Contains(source, expected) {
+			t.Fatalf("runner entrypoint is missing idle watchdog piece %q", expected)
+		}
+	}
+	hook, err := os.ReadFile(filepath.Join("..", "..", "runneryard-job-started.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(hook), `: > "$marker_dir/job-started"`) {
+		t.Fatal("job-started hook must record the assignment marker")
+	}
+	if output, err := exec.Command("bash", "-n", filepath.Join("..", "..", "runneryard-job-started.sh")).CombinedOutput(); err != nil {
+		t.Fatalf("hook syntax: %v: %s", err, output)
+	}
+	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(dockerfile), "COPY runneryard-job-started.sh /usr/local/bin/runneryard-job-started.sh") {
+		t.Fatal("runtime image must ship the job-started hook")
 	}
 }
