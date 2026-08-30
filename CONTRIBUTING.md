@@ -24,11 +24,18 @@ Run the same checks expected in CI:
 ```sh
 go test -race ./...
 go vet ./...
+staticcheck ./...
+gosec -quiet ./...
+govulncheck ./...
 pnpm check
 pnpm build
-bash -n controller-entrypoint runner-entrypoint scripts/verify-runtime-toolcache.sh
+bash -n controller-entrypoint runner-entrypoint runneryard-job-started.sh scripts/verify-runtime-toolcache.sh
 git diff --check
 ```
+
+Install the analysis tools once with `go install honnef.co/go/tools/cmd/staticcheck@v0.7.0`,
+`go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0`, and
+`go install golang.org/x/vuln/cmd/govulncheck@v1.7.0`; CI pins the same versions.
 
 Add tests for behavior changes. Provider adapters must satisfy the invariants in
 [docs/adapter-contract.md](docs/adapter-contract.md), including ownership
