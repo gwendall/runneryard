@@ -102,7 +102,11 @@ fly deploy \
 The generated TOML pins the release in `[build] image` and again in
 `RUNNER_IMAGE`; keep both on the same tag and change them in one reviewed
 commit together with the canary pins. `latest` is suitable only for a
-disposable canary.
+disposable canary. Run `runneryard doctor` from the repository after every
+deploy and after any incident: it compares the committed file with the live
+controller Machine and fails on any environment, image, restart, or mount
+difference, so a limit raised by hand during an incident cannot linger
+unreviewed or be reverted by the next deploy without anyone noticing.
 The generated TOML sets `[[restart]] policy = "always"` for the controller
 Machine, so Fly restarts it after any exit instead of leaving the fleet
 unattended after repeated failures. Workers keep restart policy `no`.

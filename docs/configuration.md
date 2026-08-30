@@ -147,7 +147,9 @@ from production.
    generated canary to that release.
 4. Preserve the durable volume, budget ledger, retirement journal, and stable
    `CONTROLLER_ID`.
-5. Replace the controller, run `doctor`, and trigger the manual canary.
+5. Replace the controller, run `doctor` (on Fly it compares the committed
+   TOML with the live Machine and fails on drift), and trigger the manual
+   canary.
 6. Verify the controller version from `status`; the canary asserts the exact
    worker release. Require a green job, a complete lifecycle receipt, and zero
    remaining workers before restoring broader routing.

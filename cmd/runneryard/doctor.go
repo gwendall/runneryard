@@ -25,11 +25,17 @@ func runDoctor(args []string) error {
 	workerApp := flags.String("worker-app", strings.TrimSpace(os.Getenv("RUNNER_FLY_APP")), "secret-free Fly worker app")
 	controllerApp := flags.String("controller-app", strings.TrimSpace(os.Getenv("FLY_APP_NAME")), "Fly controller app")
 	firewallID := flags.String("firewall-id", strings.TrimSpace(os.Getenv("RUNNER_HETZNER_FIREWALL_ID")), "Hetzner worker firewall ID")
+	configPath := flags.String("config", "", "committed Fly controller configuration to compare with the live Machine (default: "+defaultFlyConfigPath+" when present)")
 	jsonOutput := flags.Bool("json", false, "print machine-readable JSON")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	checks := doctor(*providerName, *controllerApp, *workerApp, *firewallID, execCommand)
+	if *configPath == "" {
+		if _, err := os.Stat(defaultFlyConfigPath); err == nil {
+			*configPath = defaultFlyConfigPath
+		}
+	}
+	checks := doctor(*providerName, *controllerApp, *workerApp, *firewallID, *configPath, execCommand)
 	failed := false
 	for _, check := range checks {
 		if check.Status == "fail" {
@@ -56,11 +62,13 @@ func runDoctor(args []string) error {
 	return nil
 }
 
-func doctor(providerName, controllerApp, workerApp, firewallID string, run commandRunner) []doctorCheck {
+const defaultFlyConfigPath = ".runneryard/fly.controller.toml"
+
+func doctor(providerName, controllerApp, workerApp, firewallID, configPath string, run commandRunner) []doctorCheck {
 	checks := []doctorCheck{commandCheck(run, "git", "git", "--version")}
 	switch providerName {
 	case "fly":
-		return append(checks, doctorFly(controllerApp, workerApp, run)...)
+		return append(checks, doctorFly(controllerApp, workerApp, configPath, run)...)
 	case "hetzner":
 		return append(checks, doctorHetzner(firewallID, run)...)
 	default:
@@ -69,8 +77,8 @@ func doctor(providerName, controllerApp, workerApp, firewallID string, run comma
 
 }
 
-func doctorFly(controllerApp, workerApp string, run commandRunner) []doctorCheck {
-	checks := make([]doctorCheck, 0, 5)
+func doctorFly(controllerApp, workerApp, configPath string, run commandRunner) []doctorCheck {
+	checks := make([]doctorCheck, 0, 9)
 	checks = append(checks, commandCheck(run, "Fly CLI", "fly", "auth", "whoami"))
 	if workerApp == "" {
 		return append(checks, doctorCheck{Name: "worker app", Status: "fail", Details: "pass --worker-app to verify secret isolation"})
@@ -84,6 +92,7 @@ func doctorFly(controllerApp, workerApp string, run commandRunner) []doctorCheck
 	}
 	if controllerApp != "" {
 		checks = append(checks, controllerSecretChecks(controllerApp, run)...)
+		checks = append(checks, controllerConfigChecks(controllerApp, configPath, run)...)
 	}
 	output, err := run("fly", "secrets", "list", "--app", workerApp, "--json")
 	if err != nil {
