@@ -54,6 +54,9 @@ type Config struct {
 	// idle worker it created is retired. Zero disables either one.
 	IdleTimeout     time.Duration
 	DanglingTimeout time.Duration
+	// AlertWebhookURL receives a JSON {"text": ...} POST on every health
+	// transition and one reminder per hour while degraded. Empty disables it.
+	AlertWebhookURL string
 	Logger          *slog.Logger
 }
 

@@ -101,6 +101,7 @@ type statusReporter struct {
 	started  bool
 	cancel   context.CancelFunc
 	done     chan struct{}
+	alerter  *alerter
 }
 
 func newStatusReporter(cfg Config, budget BudgetStatus) (*statusReporter, error) {
@@ -124,6 +125,11 @@ func newStatusReporter(cfg Config, budget BudgetStatus) (*statusReporter, error)
 			Budget:  budget,
 		},
 	}
+	alerts, err := newAlerter(cfg)
+	if err != nil {
+		return nil, err
+	}
+	reporter.alerter = alerts
 	if err := writeStatusFile(reporter.file, reporter.status); err != nil {
 		return nil, fmt.Errorf("initialize fleet status: %w", err)
 	}
@@ -143,7 +149,9 @@ func (reporter *statusReporter) update(change func(*FleetStatus)) {
 		reporter.revision++
 	}
 	synchronous := !reporter.started
+	snapshot := reporter.status
 	reporter.mu.Unlock()
+	reporter.alerter.observe(snapshot)
 	if synchronous {
 		reporter.flush()
 	}
@@ -244,6 +252,7 @@ func (reporter *statusReporter) start(ctx context.Context, budget *usageBudget) 
 	reporter.done = make(chan struct{})
 	done := reporter.done
 	reporter.mu.Unlock()
+	reporter.alerter.run(loopCtx)
 	go reporter.loop(loopCtx, budget, done)
 }
 
@@ -278,6 +287,7 @@ func (reporter *statusReporter) close() {
 	if done != nil {
 		<-done
 	}
+	reporter.alerter.close()
 	reporter.flush()
 }
 
