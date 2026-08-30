@@ -43,6 +43,21 @@ leaves jobs queued, and a deletion failure keeps the retirement journaled.
 Authorization, validation, and identity failures are not transient and still
 stop the controller.
 
+## Worker startup
+
+The worker starts the GitHub runner and the Docker daemon at the same time.
+Registration, the queue wait, and the first job steps overlap the daemon's
+warm-up instead of waiting for it, which shortens the time between worker
+creation and `JobStarted`. Docker readiness is still enforced in the
+background: a daemon that fails to start or selects an unsafe storage driver
+releases the worker with exit status `78` rather than running jobs degraded.
+
+When a worker fails to start or its runner exits with an error, the
+entrypoint prints the tail of the runner `_diag` logs and of `dockerd.log`,
+then holds for 30 seconds (`RUNNERYARD_DIAG_HOLD`, adapter-controlled) before
+exiting, so provider log collection captures the cause before the machine is
+destroyed. A successful job exits immediately.
+
 ## Safe upgrades
 
 Pin the runtime image to a release version. Stop the old controller cleanly and
