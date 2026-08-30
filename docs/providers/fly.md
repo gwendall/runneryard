@@ -77,8 +77,20 @@ npx runneryard auth github create \
 GitHub shows the exact owner and Repository Administration write permission
 before approval. The generated app is private, has no webhook events, and
 should be installed only on selected repositories. The manifest key is
-verified locally, then passed to `fly secrets import` over stdin. It never
-appears in a command argument or RunnerYard service.
+verified locally, then passed to `fly secrets import --stage` over stdin. It
+never appears in a command argument or RunnerYard service. Staging leaves the
+running controller untouched: a controller that still authenticates with
+`GITHUB_TOKEN` refuses to start with both credential sets, so apply the App
+with one deliberate restart. On a fleet that used a token, remove it and the
+staged secrets go live in the same release:
+
+```sh
+fly secrets unset GITHUB_TOKEN --app acme-ci-controller
+```
+
+On a fresh fleet the first `fly deploy` applies them. Either way, confirm with
+`runneryard doctor` (the GitHub auth check reports the complete App secret
+set) and rerun the canary before revoking the old token.
 
 Use `auth github import` with `--private-key-file` to bring an existing app.
 Do not pass a PEM value directly on the command line.

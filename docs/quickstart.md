@@ -35,7 +35,7 @@ and a persistent controller host. Do not deploy the controller yet.
 
 The recommended flow creates a private GitHub App owned by the target user or
 organization. For Fly, its one-time private key goes from GitHub directly to
-the controller app secret store:
+the controller app secret store, staged until the next deploy or restart:
 
 ```sh
 npx runneryard auth github create \

@@ -59,7 +59,8 @@ The returned installation is verified before any credential is stored.
 protection](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest).
 
 The one-time private key is never printed. The Fly sink sends a triple-quoted
-secret document to `fly secrets import` over stdin, not in process arguments.
+secret document to `fly secrets import --stage` over stdin, not in process
+arguments, and the operator applies it with one deliberate restart.
 The file sink refuses symlinked credential paths, writes files and its
 directory with private modes, and adds those files to `.runneryard/.gitignore`.
 
