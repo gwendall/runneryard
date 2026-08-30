@@ -57,6 +57,7 @@ type appConfig struct {
 	ProviderRetries    int
 	ProviderRateLimit  float64
 	GitHubAPIRateLimit float64
+	LaunchConcurrency  int
 	LogLevel           slog.Level
 }
 
@@ -134,6 +135,9 @@ func loadConfig() (appConfig, error) {
 		return appConfig{}, err
 	}
 	if cfg.GitHubAPIRateLimit, err = envFloat("GITHUB_API_RATE_LIMIT", defaultGitHubAPIRate); err != nil {
+		return appConfig{}, err
+	}
+	if cfg.LaunchConcurrency, err = envInt("RUNNER_LAUNCH_CONCURRENCY", 8); err != nil {
 		return appConfig{}, err
 	}
 	if cfg.RunnerStatusFile == "" && cfg.RunnerBudgetFile != "" {
@@ -224,6 +228,9 @@ func (c appConfig) validate() error {
 	if c.GitHubAPIRateLimit < 0 || c.GitHubAPIRateLimit > 100 {
 		return fmt.Errorf("GITHUB_API_RATE_LIMIT must be between 0 and 100 requests per second")
 	}
+	if c.LaunchConcurrency < 1 || c.LaunchConcurrency > 64 {
+		return fmt.Errorf("RUNNER_LAUNCH_CONCURRENCY must be between 1 and 64")
+	}
 	return nil
 }
 
@@ -280,23 +287,24 @@ func (c appConfig) compute() (provider.Compute, error) {
 
 func (c appConfig) controllerConfig(logger *slog.Logger) controller.Config {
 	return controller.Config{
-		GitHubURL:      c.GitHubURL,
-		ScaleSetName:   c.ScaleSetName,
-		RunnerGroup:    c.RunnerGroup,
-		ControllerID:   c.ControllerID,
-		MinWorkers:     c.MinWorkers,
-		MaxWorkers:     c.MaxWorkers,
-		MaxLifetime:    c.RunnerMaxLifetime,
-		UsageBudget:    c.RunnerUsageBudget,
-		BudgetWindow:   c.RunnerBudgetWindow,
-		BudgetFile:     c.RunnerBudgetFile,
-		StatusFile:     c.RunnerStatusFile,
-		Provider:       c.ComputeProvider,
-		Version:        version,
-		CommitSHA:      commitSHA,
-		GitHubAPIRate:  c.GitHubAPIRateLimit,
-		GitHubAPIBurst: int(c.GitHubAPIRateLimit * 2),
-		Logger:         logger,
+		GitHubURL:         c.GitHubURL,
+		ScaleSetName:      c.ScaleSetName,
+		RunnerGroup:       c.RunnerGroup,
+		ControllerID:      c.ControllerID,
+		MinWorkers:        c.MinWorkers,
+		MaxWorkers:        c.MaxWorkers,
+		MaxLifetime:       c.RunnerMaxLifetime,
+		UsageBudget:       c.RunnerUsageBudget,
+		BudgetWindow:      c.RunnerBudgetWindow,
+		BudgetFile:        c.RunnerBudgetFile,
+		StatusFile:        c.RunnerStatusFile,
+		Provider:          c.ComputeProvider,
+		Version:           version,
+		CommitSHA:         commitSHA,
+		GitHubAPIRate:     c.GitHubAPIRateLimit,
+		GitHubAPIBurst:    int(c.GitHubAPIRateLimit * 2),
+		LaunchConcurrency: c.LaunchConcurrency,
+		Logger:            logger,
 	}
 }
 
