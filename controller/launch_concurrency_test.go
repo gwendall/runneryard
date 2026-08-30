@@ -15,16 +15,15 @@ import (
 // slowCompute records how many launches overlap so the test can prove that
 // launches run concurrently but never beyond the configured bound.
 type slowCompute struct {
-	mu          sync.Mutex
-	delay       time.Duration
-	inFlight    int
-	peak        int
-	launched    int
-	failAfter   int
-	failWith    error
-	workers     []provider.Worker
-	lastLaunchN int
-	lastLease   provider.Lease
+	mu        sync.Mutex
+	delay     time.Duration
+	inFlight  int
+	peak      int
+	launched  int
+	failAfter int
+	failWith  error
+	workers   []provider.Worker
+	lastLease provider.Lease
 }
 
 func (c *slowCompute) Launch(_ context.Context, lease provider.Lease) (provider.Worker, error) {
