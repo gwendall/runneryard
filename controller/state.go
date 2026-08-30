@@ -8,9 +8,10 @@ import (
 )
 
 type workerRecord struct {
-	Worker   provider.Worker
-	Busy     bool
-	Observed bool
+	Worker       provider.Worker
+	Busy         bool
+	Observed     bool
+	MissingSince time.Time
 }
 
 // departure remembers a worker that left provider inventory before GitHub
@@ -109,8 +110,34 @@ func (s *workerState) markBusy(name string) bool {
 	}
 	record.Busy = true
 	record.Observed = true
+	record.MissingSince = time.Time{}
 	s.workers[name] = record
 	return true
+}
+
+func (s *workerState) markMissing(name string, at time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.workers[name]
+	if !ok {
+		return false
+	}
+	if record.MissingSince.IsZero() {
+		record.MissingSince = at
+		s.workers[name] = record
+	}
+	return true
+}
+
+func (s *workerState) markPresent(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.workers[name]
+	if !ok || record.MissingSince.IsZero() {
+		return
+	}
+	record.MissingSince = time.Time{}
+	s.workers[name] = record
 }
 
 func (s *workerState) get(name string) (workerRecord, bool) {

@@ -166,6 +166,7 @@ func TestReconcileRemovesWorkerThatNoLongerExists(t *testing.T) {
 	compute := &fakeCompute{}
 	state := newWorkerState()
 	state.add(provider.Worker{ID: "missing", LeaseID: "lease-one", RunnerName: "runner-00000001"}, true)
+	state.markMissing("runner-00000001", time.Now().Add(-inventoryAbsenceGrace-time.Second))
 	scaler := testScaler(t, state, compute)
 	if err := scaler.reconcile(context.Background()); err != nil {
 		t.Fatal(err)

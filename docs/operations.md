@@ -7,11 +7,14 @@ started`, and `job completed`. Provider inventory should return to
 `MIN_RUNNERS`, normally zero.
 
 The controller reconciles inventory before every desired-count change. It
-adopts managed workers created by the same controller after a restart, removes
-local records for disappeared workers, destroys workers older than
-`RUNNER_MAX_LIFETIME`, and retires workers the provider reports as stopped,
-off, or failed as soon as it sees them, since a stopped server can neither run
-its job nor stop being billed on every provider.
+adopts managed workers created by the same controller after a restart and
+requires an unexplained inventory absence to remain continuous for 30 seconds
+before removing the local record. This short confirmation window absorbs an
+eventually consistent provider snapshot while GitHub assignment is in flight;
+either reappearance or `JobStarted` clears it. Workers older than
+`RUNNER_MAX_LIFETIME`, and workers the provider explicitly reports as stopped,
+off, or failed, still retire immediately, since a stopped server can neither
+run its job nor stop being billed on every provider.
 
 Desired-count updates only scale up. They never opportunistically delete an
 apparently idle JIT runner: GitHub may already be assigning that runner while
