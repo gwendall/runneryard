@@ -205,6 +205,16 @@ The schema contains aggregate counters only. It never writes job IDs,
 repository payloads, runner names, JIT configuration, tokens, or secrets. The
 latency aggregates have fixed fields and no user-controlled metric labels.
 
+## Alerts
+
+Set `ALERT_WEBHOOK_URL` on the controller to receive a message whenever the
+fleet becomes `degraded` (provider unavailable, budget exhausted, orphan
+candidates, pending retirements) and when it recovers, plus an hourly
+reminder while the condition lasts. Delivery never blocks the controller: a
+failed POST is logged and the next transition sends again. Pair it with
+`runneryard status` for the detail; the message itself only carries the
+reason, the worker counts, and the budget horizon.
+
 ## Hard usage budget
 
 `RUNNER_USAGE_BUDGET` is the maximum worker runtime inside the rolling

@@ -60,6 +60,7 @@ type appConfig struct {
 	LaunchConcurrency  int
 	RunnerIdleTimeout  time.Duration
 	DanglingTimeout    time.Duration
+	AlertWebhookURL    string
 	LogLevel           slog.Level
 }
 
@@ -96,6 +97,7 @@ func loadConfig() (appConfig, error) {
 		RunnerCPUKind:      runnerCPUKind,
 		RunnerBudgetFile:   strings.TrimSpace(os.Getenv("RUNNER_BUDGET_FILE")),
 		RunnerStatusFile:   strings.TrimSpace(os.Getenv("RUNNER_STATUS_FILE")),
+		AlertWebhookURL:    strings.TrimSpace(os.Getenv("ALERT_WEBHOOK_URL")),
 		LogLevel:           parseLogLevel(envOr("LOG_LEVEL", "info")),
 	}
 
@@ -245,6 +247,9 @@ func (c appConfig) validate() error {
 	if c.DanglingTimeout < 0 || (c.DanglingTimeout > 0 && c.DanglingTimeout < c.RunnerIdleTimeout) || c.DanglingTimeout > c.RunnerMaxLifetime {
 		return fmt.Errorf("RUNNER_DANGLING_TIMEOUT must be 0 or between RUNNER_IDLE_TIMEOUT and RUNNER_MAX_LIFETIME")
 	}
+	if c.AlertWebhookURL != "" && !strings.HasPrefix(c.AlertWebhookURL, "https://") {
+		return fmt.Errorf("ALERT_WEBHOOK_URL must be an https URL")
+	}
 	return nil
 }
 
@@ -320,6 +325,7 @@ func (c appConfig) controllerConfig(logger *slog.Logger) controller.Config {
 		LaunchConcurrency: c.LaunchConcurrency,
 		IdleTimeout:       c.RunnerIdleTimeout,
 		DanglingTimeout:   c.DanglingTimeout,
+		AlertWebhookURL:   c.AlertWebhookURL,
 		Logger:            logger,
 	}
 }
