@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ type fakeCompute struct {
 }
 
 type fakeRunnerScaleSetClient struct {
+	mu          sync.Mutex
 	runners     map[string]*scaleset.RunnerReference
 	generateJIT *scaleset.RunnerScaleSetJitRunnerConfig
 	generateErr error
@@ -33,6 +35,8 @@ type fakeRunnerScaleSetClient struct {
 }
 
 func (f *fakeRunnerScaleSetClient) GenerateJitRunnerConfig(_ context.Context, setting *scaleset.RunnerScaleSetJitRunnerSetting, scaleSetID int) (*scaleset.RunnerScaleSetJitRunnerConfig, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.generateErr != nil {
 		return nil, f.generateErr
 	}
@@ -50,6 +54,8 @@ func (f *fakeRunnerScaleSetClient) GenerateJitRunnerConfig(_ context.Context, se
 }
 
 func (f *fakeRunnerScaleSetClient) GetRunnerByName(_ context.Context, name string) (*scaleset.RunnerReference, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
@@ -57,6 +63,8 @@ func (f *fakeRunnerScaleSetClient) GetRunnerByName(_ context.Context, name strin
 }
 
 func (f *fakeRunnerScaleSetClient) RemoveRunner(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.removeErr != nil {
 		return f.removeErr
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/actions/scaleset"
@@ -16,17 +17,18 @@ import (
 var errRetirementDeferred = errors.New("runner retirement deferred")
 
 type scaler struct {
-	state          *workerState
-	compute        provider.Compute
-	scaleSetClient runnerScaleSetClient
-	scaleSetID     int
-	minWorkers     int
-	maxWorkers     int
-	maxLifetime    time.Duration
-	budget         *usageBudget
-	retirements    *retirementQueue
-	reporter       *statusReporter
-	logger         *slog.Logger
+	state             *workerState
+	compute           provider.Compute
+	scaleSetClient    runnerScaleSetClient
+	scaleSetID        int
+	minWorkers        int
+	maxWorkers        int
+	launchConcurrency int
+	maxLifetime       time.Duration
+	budget            *usageBudget
+	retirements       *retirementQueue
+	reporter          *statusReporter
+	logger            *slog.Logger
 }
 
 type runnerScaleSetClient interface {
@@ -57,18 +59,8 @@ func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, assignedJobs int)
 	if target > current {
 		needed := target - current
 		s.logger.Info("scaling up", "current", current, "target", target, "count", needed)
-		for range needed {
-			started, err := s.startWorker(ctx)
-			if err != nil {
-				if provider.IsTransient(err) {
-					s.logger.Warn("provider unavailable during launch; leaving jobs queued until the next message", "error", err)
-					return s.state.count(), nil
-				}
-				return s.state.count(), err
-			}
-			if !started {
-				break
-			}
+		if err := s.launchWorkers(ctx, needed); err != nil {
+			return s.state.count(), err
 		}
 		return s.state.count(), nil
 	}
@@ -79,6 +71,61 @@ func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, assignedJobs int)
 	// GitHub's timeout. JobCompleted removes one-job runners synchronously; a
 	// runner that never receives a job is bounded by its provider lease.
 	return current, nil
+}
+
+// launchWorkers starts up to needed workers with at most launchConcurrency
+// provider calls in flight. Budget admission, the retirement journal, and
+// local state stay serialized behind their own locks; only the slow provider
+// and GitHub round trips overlap, so a burst of assigned jobs no longer
+// delays JobCompleted handling behind a queue of sequential launches.
+//
+// The first refusal (exhausted budget) or transient provider failure stops
+// further launches; workers already in flight finish normally. A permanent
+// error is returned after every in-flight launch has settled.
+func (s *scaler) launchWorkers(ctx context.Context, needed int) error {
+	limit := max(1, s.launchConcurrency)
+	slots := make(chan struct{}, limit)
+	var wait sync.WaitGroup
+	var mu sync.Mutex
+	var fatal error
+	stopped := false
+	for range needed {
+		slots <- struct{}{}
+		// Re-check after acquiring a slot: a launch that just finished may have
+		// refused admission or hit a transient failure, and its slot release is
+		// what let this iteration proceed.
+		mu.Lock()
+		stop := stopped
+		mu.Unlock()
+		if stop {
+			<-slots
+			break
+		}
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			defer func() { <-slots }()
+			started, err := s.startWorker(ctx)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				stopped = true
+				if provider.IsTransient(err) {
+					s.logger.Warn("provider unavailable during launch; leaving jobs queued until the next message", "error", err)
+					return
+				}
+				if fatal == nil {
+					fatal = err
+				}
+				return
+			}
+			if !started {
+				stopped = true
+			}
+		}()
+	}
+	wait.Wait()
+	return fatal
 }
 
 func (s *scaler) reconcile(ctx context.Context) error {

@@ -35,6 +35,7 @@ alongside App credentials. The GitHub App flow is the production default.
 | `PROVIDER_RETRY_ATTEMPTS` | Attempts per provider call before a transient failure is reported. | `5` |
 | `PROVIDER_RATE_LIMIT` | Sustained provider API requests per second; the burst is twice this value. | `5` |
 | `GITHUB_API_RATE_LIMIT` | Controller GitHub API requests per second; `0` disables pacing. | `10` |
+| `RUNNER_LAUNCH_CONCURRENCY` | Worker launches in flight at once during a burst. | `8` |
 
 Start with the generated ceiling. Raise `MAX_RUNNERS` only from observed peak
 job concurrency and provider quota, never from pull-request count. The operator

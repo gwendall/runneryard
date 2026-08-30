@@ -46,8 +46,13 @@ type Config struct {
 	// per second; zero disables pacing. GitHubAPIBurst is the bucket depth.
 	GitHubAPIRate  float64
 	GitHubAPIBurst int
-	Logger         *slog.Logger
+	// LaunchConcurrency bounds how many worker launches run at once; zero
+	// selects the default of 8.
+	LaunchConcurrency int
+	Logger            *slog.Logger
 }
+
+const defaultLaunchConcurrency = 8
 
 type Controller struct {
 	config  Config
@@ -88,6 +93,9 @@ func New(cfg Config, github *scaleset.Client, compute provider.Compute) (*Contro
 	}
 	if cfg.Provider == "" {
 		cfg.Provider = "unknown"
+	}
+	if cfg.LaunchConcurrency < 1 {
+		cfg.LaunchConcurrency = defaultLaunchConcurrency
 	}
 	return &Controller{config: cfg, github: github, compute: compute}, nil
 }
@@ -160,17 +168,18 @@ func (c *Controller) Run(ctx context.Context) error {
 	reporter.githubActivity("session_created")
 
 	scaler := &scaler{
-		state:          newWorkerState(),
-		compute:        c.compute,
-		scaleSetClient: newPacedScaleSetClient(c.github, cfg.GitHubAPIRate, cfg.GitHubAPIBurst),
-		scaleSetID:     scaleSet.ID,
-		minWorkers:     cfg.MinWorkers,
-		maxWorkers:     cfg.MaxWorkers,
-		maxLifetime:    cfg.MaxLifetime,
-		budget:         budget,
-		retirements:    retirements,
-		reporter:       reporter,
-		logger:         cfg.Logger.WithGroup("scaler"),
+		state:             newWorkerState(),
+		compute:           c.compute,
+		scaleSetClient:    newPacedScaleSetClient(c.github, cfg.GitHubAPIRate, cfg.GitHubAPIBurst),
+		scaleSetID:        scaleSet.ID,
+		minWorkers:        cfg.MinWorkers,
+		maxWorkers:        cfg.MaxWorkers,
+		launchConcurrency: cfg.LaunchConcurrency,
+		maxLifetime:       cfg.MaxLifetime,
+		budget:            budget,
+		retirements:       retirements,
+		reporter:          reporter,
+		logger:            cfg.Logger.WithGroup("scaler"),
 	}
 	return runControllerSession(ctx, session, scaler, cfg, scaleSet.ID)
 }
