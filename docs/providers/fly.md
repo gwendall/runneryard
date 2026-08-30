@@ -101,6 +101,9 @@ fly deploy \
 ```
 
 Pin a version in production. `latest` is suitable only for a disposable canary.
+The generated TOML sets `[[restart]] policy = "always"` for the controller
+Machine, so Fly restarts it after any exit instead of leaving the fleet
+unattended after repeated failures. Workers keep restart policy `no`.
 For an upgrade, preserve the volume and stable `CONTROLLER_ID`, replace the
 single controller only after its previous listener stops, verify the reported
 version and commit, and rerun the canary. Do not regenerate the budget ledger.

@@ -41,7 +41,7 @@ func TestRunInitCreatesSafeScaffold(t *testing.T) {
 		t.Fatal(err)
 	}
 	tomlContents := string(toml)
-	for _, expected := range []string{`RUNNER_CPU_KIND = "performance"`, `RUNNER_CPUS = "2"`, `RUNNER_DOCKER_DNS = "1.1.1.1,8.8.8.8"`, `cpu_kind = "shared"`, `cpus = 1`} {
+	for _, expected := range []string{`RUNNER_CPU_KIND = "performance"`, `RUNNER_CPUS = "2"`, `RUNNER_DOCKER_DNS = "1.1.1.1,8.8.8.8"`, `cpu_kind = "shared"`, `cpus = 1`, `[[restart]]`, `policy = "always"`} {
 		if !strings.Contains(tomlContents, expected) {
 			t.Fatalf("generated Fly TOML missing %q", expected)
 		}
