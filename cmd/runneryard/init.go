@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,13 +15,14 @@ import (
 )
 
 type initOptions struct {
-	directory  string
-	githubURL  string
-	provider   string
-	scaleSet   string
-	region     string
-	maxRunners int
-	force      bool
+	directory    string
+	githubURL    string
+	provider     string
+	scaleSet     string
+	controllerID string
+	region       string
+	maxRunners   int
+	force        bool
 }
 
 const (
@@ -60,6 +63,7 @@ func runInit(args []string) error {
 		return fmt.Errorf("--github: %w", err)
 	}
 	options.githubURL = normalizedGitHubURL
+	options.controllerID = deriveControllerID(options.scaleSet, normalizedGitHubURL)
 	switch options.provider {
 	case "fly":
 		if options.region == "" {
@@ -122,6 +126,15 @@ func runInit(args []string) error {
 		fmt.Printf("Next:\n  1. Create a dedicated Hetzner project and a firewall with no inbound rules\n  2. Run: runneryard auth github create --sink file\n  3. Fill .runneryard/controller.env from the generated example\n  4. Run: runneryard doctor --provider hetzner --firewall-id <id>\n  5. Follow docs/providers/hetzner.md, then trigger .github/workflows/runneryard-canary.yml\n  6. Run: runneryard route enable --github %s --label %s --confirm-canary\n", options.githubURL, options.scaleSet)
 	}
 	return nil
+}
+
+// deriveControllerID makes the ownership identity recorded in provider
+// metadata unique per GitHub target. Two fleets that share a worker app but
+// serve different repositories must never claim each other's workers, which
+// the bare scale-set name (identical by default) would allow.
+func deriveControllerID(scaleSet, githubURL string) string {
+	digest := sha256.Sum256([]byte(strings.ToLower(githubURL)))
+	return scaleSet + "-" + hex.EncodeToString(digest[:4])
 }
 
 func inferGitHubURL(directory string) string {
@@ -200,7 +213,7 @@ RUNNER_STATUS_FILE=/var/lib/runneryard/status.json
 # Set only on the controller. The GitHub App is installed separately with
 # runneryard auth github create --controller-app %s
 FLY_API_TOKEN=
-`, options.githubURL, options.scaleSet, options.scaleSet, controllerApp, workerApp, options.region, version, options.maxRunners, controllerApp)
+`, options.githubURL, options.scaleSet, options.controllerID, controllerApp, workerApp, options.region, version, options.maxRunners, controllerApp)
 }
 
 func renderHetznerEnv(options initOptions) string {
@@ -227,7 +240,7 @@ RUNNER_STATUS_FILE=/var/lib/runneryard/status.json
 # Set only on the controller. GitHub App values are supplied by the generated
 # github-app.env and github-app.pem files.
 HCLOUD_TOKEN=
-`, options.githubURL, options.scaleSet, options.scaleSet, options.region, version, options.maxRunners)
+`, options.githubURL, options.scaleSet, options.controllerID, options.region, version, options.maxRunners)
 }
 
 func renderHetznerCompose() string {
@@ -282,7 +295,7 @@ primary_region = %q
   cpu_kind = "shared"
   cpus = 1
   memory = "512mb"
-`, controllerApp, options.region, options.githubURL, options.scaleSet, options.scaleSet, workerApp, options.region, fmt.Sprint(options.maxRunners))
+`, controllerApp, options.region, options.githubURL, options.scaleSet, options.controllerID, workerApp, options.region, fmt.Sprint(options.maxRunners))
 }
 
 func renderCanary(scaleSet string) string {
