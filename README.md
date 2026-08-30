@@ -35,6 +35,13 @@ uploads a credential:
 - `.runneryard/fly.controller.toml`
 - `.github/workflows/runneryard-canary.yml`
 
+`fly.controller.toml` is the deployable source of truth: it pins the release
+image, the worker shape, and every operator limit, so `fly deploy --config`
+needs no other input. `controller.env.example` names only the secrets that go
+to the Fly secret store. To describe a fleet that already exists, pass
+`--controller-app`, `--worker-app`, `--controller-id`, `--rootfs-gb`, and
+`--usage-budget` so the generated files match it instead of the defaults.
+
 The generated Fly worker uses two sustained performance CPUs and 8 GB of RAM.
 Shared CPUs remain an explicit option for short, bursty jobs; see
 [Fly worker sizing](docs/configuration.md#fly-worker-shape) before changing the

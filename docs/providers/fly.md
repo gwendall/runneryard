@@ -96,11 +96,13 @@ fly secrets set --app acme-ci-controller \
 fly deploy \
   --app acme-ci-controller \
   --config .runneryard/fly.controller.toml \
-  --image ghcr.io/gwendall/runneryard:0.4.0 \
   --ha=false
 ```
 
-Pin a version in production. `latest` is suitable only for a disposable canary.
+The generated TOML pins the release in `[build] image` and again in
+`RUNNER_IMAGE`; keep both on the same tag and change them in one reviewed
+commit together with the canary pins. `latest` is suitable only for a
+disposable canary.
 The generated TOML sets `[[restart]] policy = "always"` for the controller
 Machine, so Fly restarts it after any exit instead of leaving the fleet
 unattended after repeated failures. Workers keep restart policy `no`.
