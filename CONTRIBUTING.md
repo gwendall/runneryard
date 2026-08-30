@@ -54,3 +54,6 @@ filtering, secret isolation, idempotent deletion, and partial-create cleanup.
 
 Security reports belong in the private channel described in
 [SECURITY.md](SECURITY.md), not in a public issue.
+
+Planned work is tracked in [docs/backlog.md](docs/backlog.md); open an issue
+with the backlog identifier when you start an item.
