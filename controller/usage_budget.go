@@ -144,7 +144,16 @@ func (b *usageBudget) reserve(leaseID string, now time.Time, maximum time.Durati
 	return true, time.Time{}, nil
 }
 
+// settle charges a lease for the time between its start and now.
 func (b *usageBudget) settle(leaseID string, now time.Time) error {
+	return b.settleAt(leaseID, now, now)
+}
+
+// settleAt charges a lease for the worker's actual lifetime, from its start to
+// stoppedAt, capped at the reservation. A zero or earlier-than-start stoppedAt
+// falls back to now. The charge is recorded at now so window expiry follows
+// the settlement, not the stop.
+func (b *usageBudget) settleAt(leaseID string, stoppedAt, now time.Time) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -154,9 +163,12 @@ func (b *usageBudget) settle(leaseID string, now time.Time) error {
 	}
 	previousEntries := slices.Clone(b.entries)
 	previous := b.entries[index]
+	if stoppedAt.IsZero() || stoppedAt.Before(previous.StartedAt) || stoppedAt.After(now) {
+		stoppedAt = now
+	}
 	b.entries[index].Active = false
 	b.entries[index].ChargedAt = now.UTC()
-	b.entries[index].Seconds = min(previous.Seconds, max(1, durationSeconds(now.Sub(previous.StartedAt))))
+	b.entries[index].Seconds = min(previous.Seconds, max(1, durationSeconds(stoppedAt.Sub(previous.StartedAt))))
 	b.prune(now)
 	if err := b.persist(); err != nil {
 		b.entries = previousEntries
@@ -328,11 +340,38 @@ func (b *usageBudget) snapshot(now time.Time) BudgetStatus {
 		LimitSeconds: limit, UsedSeconds: used, ReservedSeconds: reserved,
 		RemainingSeconds: remaining, WindowSeconds: durationSeconds(b.window),
 	}
+	status.BurnSecondsPerDay = b.burnPerDay(now)
+	if status.BurnSecondsPerDay > 0 {
+		status.HorizonSeconds = remaining * int64(24*time.Hour/time.Second) / status.BurnSecondsPerDay
+	}
 	if remaining < durationSeconds(b.reservation) {
 		status.RefusalReason = "usage_budget_exhausted"
 		status.NextAvailableAt = b.nextAvailable(now).UTC()
 	}
 	return status
+}
+
+// burnPerDay extrapolates the settled usage of the trailing day to a daily
+// rate. Ledgers younger than an hour are extrapolated from one hour so a few
+// minutes of history do not produce a wild horizon.
+func (b *usageBudget) burnPerDay(now time.Time) int64 {
+	cutoff := now.Add(-24 * time.Hour)
+	var recent int64
+	oldest := now
+	for _, entry := range b.entries {
+		if entry.Active || entry.ChargedAt.Before(cutoff) {
+			continue
+		}
+		recent += entry.Seconds
+		if entry.ChargedAt.Before(oldest) {
+			oldest = entry.ChargedAt
+		}
+	}
+	if recent == 0 {
+		return 0
+	}
+	span := max(now.Sub(oldest), time.Hour)
+	return int64(float64(recent) * float64(24*time.Hour) / float64(span))
 }
 
 func (b *usageBudget) validate() error {

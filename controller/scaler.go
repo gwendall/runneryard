@@ -16,6 +16,19 @@ import (
 
 var errRetirementDeferred = errors.New("runner retirement deferred")
 
+// workerTeardownGrace approximates the time between GitHub's job finish
+// timestamp and the one-job worker's exit and destruction.
+const workerTeardownGrace = 15 * time.Second
+
+// workerStoppedAt derives the worker's stop time from GitHub's job finish
+// timestamp; a zero timestamp leaves the ledger to settle at message arrival.
+func workerStoppedAt(finished time.Time) time.Time {
+	if finished.IsZero() {
+		return time.Time{}
+	}
+	return finished.Add(workerTeardownGrace)
+}
+
 type scaler struct {
 	state             *workerState
 	compute           provider.Compute
@@ -157,7 +170,7 @@ func (s *scaler) reconcile(ctx context.Context) error {
 	retired := make(map[string]struct{})
 	for _, worker := range workers {
 		if !worker.CreatedAt.IsZero() && time.Since(worker.CreatedAt) > s.maxLifetime {
-			if err := s.retireWorker(ctx, worker, true, settleActualUsage); err != nil {
+			if err := s.retireWorker(ctx, worker, true, settleActualUsage, time.Time{}); err != nil {
 				return fmt.Errorf("retire worker %s after maximum lifetime: %w", worker.RunnerName, err)
 			}
 			retired[worker.RunnerName] = struct{}{}
@@ -169,7 +182,7 @@ func (s *scaler) reconcile(ctx context.Context) error {
 			// This controller created the worker and never saw a JobStarted for
 			// it. The assignment race lasts seconds; after the dangling timeout
 			// the worker is either stuck or was never assigned, so release it.
-			if err := s.retireWorker(ctx, worker, true, settleActualUsage); err != nil {
+			if err := s.retireWorker(ctx, worker, true, settleActualUsage, time.Time{}); err != nil {
 				return fmt.Errorf("retire dangling worker %s: %w", worker.RunnerName, err)
 			}
 			retired[worker.RunnerName] = struct{}{}
@@ -194,7 +207,7 @@ func (s *scaler) reconcile(ctx context.Context) error {
 		if _, ok := present[record.Worker.ID]; ok {
 			continue
 		}
-		if err := s.retireWorker(ctx, record.Worker, false, settleActualUsage); err != nil {
+		if err := s.retireWorker(ctx, record.Worker, false, settleActualUsage, time.Time{}); err != nil {
 			return fmt.Errorf("retire disappeared worker %s: %w", name, err)
 		}
 		s.logger.Warn("worker disappeared before completion", "runner", name, "worker_id", record.Worker.ID)
@@ -227,7 +240,7 @@ func (s *scaler) HandleJobCompleted(ctx context.Context, job *scaleset.JobComple
 		s.logger.Warn("job completed on worker not present in local state", "runner", job.RunnerName, "job_id", job.JobID)
 		return nil
 	}
-	if err := s.retireWorker(ctx, record.Worker, true, settleActualUsage); err != nil {
+	if err := s.retireWorker(ctx, record.Worker, true, settleActualUsage, workerStoppedAt(job.FinishTime)); err != nil {
 		return fmt.Errorf("retire completed worker %s: %w", job.RunnerName, err)
 	}
 	s.reportState()
@@ -323,7 +336,7 @@ func (s *scaler) startWorker(ctx context.Context) (bool, error) {
 	}
 	if err := s.budget.adopt(leaseID, worker.CreatedAt); err != nil {
 		s.reporter.degraded("usage_budget_write_failed")
-		cleanupErr := s.retireWorker(context.WithoutCancel(ctx), worker, true, forfeitReservation)
+		cleanupErr := s.retireWorker(context.WithoutCancel(ctx), worker, true, forfeitReservation, time.Time{})
 		s.reporter.budget(s.budget.snapshot(time.Now()))
 		return false, errors.Join(
 			fmt.Errorf("confirm launched worker in runner usage budget: %w", err),
@@ -374,7 +387,7 @@ func (s *scaler) cleanupJITGenerationFailure(ctx context.Context, retirement ret
 func (s *scaler) cleanupAmbiguousLaunch(ctx context.Context, retirement retirementEntry, launchErr error) error {
 	var partial *provider.PartialLaunchError
 	if errors.As(launchErr, &partial) && partial.Worker.ID != "" {
-		if err := s.retireWorker(ctx, partial.Worker, true, forfeitReservation); err != nil {
+		if err := s.retireWorker(ctx, partial.Worker, true, forfeitReservation, time.Time{}); err != nil {
 			return errors.Join(launchErr, fmt.Errorf("clean up partial worker %s: %w", partial.Worker.ID, err))
 		}
 	}
@@ -387,7 +400,7 @@ func (s *scaler) cleanupAmbiguousLaunch(ctx context.Context, retirement retireme
 		if worker.LeaseID != retirement.LeaseID || (partial != nil && worker.ID == partial.Worker.ID) {
 			continue
 		}
-		if err := s.retireWorker(ctx, worker, true, forfeitReservation); err != nil {
+		if err := s.retireWorker(ctx, worker, true, forfeitReservation, time.Time{}); err != nil {
 			return errors.Join(launchErr, fmt.Errorf("clean up ambiguous worker %s: %w", worker.ID, err))
 		}
 		cleanedWorker = true
@@ -477,10 +490,13 @@ func (s *scaler) finishPendingRetirements(ctx context.Context, workers []provide
 	return nil
 }
 
-func (s *scaler) retireWorker(ctx context.Context, worker provider.Worker, providerPresent bool, disposition budgetDisposition) error {
+func (s *scaler) retireWorker(ctx context.Context, worker provider.Worker, providerPresent bool, disposition budgetDisposition, stoppedAt time.Time) error {
 	retirement := retirementEntry{
 		RunnerName: worker.RunnerName, RunnerID: worker.RunnerID, RunnerScaleSetID: worker.RunnerScaleSetID,
-		LeaseID: worker.LeaseID, BudgetDisposition: disposition,
+		LeaseID: worker.LeaseID, BudgetDisposition: disposition, StoppedAt: stoppedAt.UTC(),
+	}
+	if stoppedAt.IsZero() {
+		retirement.StoppedAt = time.Time{}
 	}
 	if retirement.RunnerScaleSetID == 0 {
 		retirement.RunnerScaleSetID = s.scaleSetID
@@ -542,7 +558,7 @@ func (s *scaler) finishRetirement(ctx context.Context, worker provider.Worker, p
 	if retirement.BudgetDisposition == forfeitReservation {
 		budgetErr = s.budget.forfeit(retirement.LeaseID, time.Now())
 	} else {
-		budgetErr = s.budget.settle(retirement.LeaseID, time.Now())
+		budgetErr = s.budget.settleAt(retirement.LeaseID, retirement.StoppedAt, time.Now())
 	}
 	if budgetErr != nil {
 		s.reporter.degraded("usage_budget_write_failed")

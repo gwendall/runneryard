@@ -196,6 +196,10 @@ Healthy interpretation:
 - budget used is settled compute, reserved is worst-case time held by active
   workers, and remaining is admission headroom. `usage_budget_exhausted` means
   new jobs intentionally stay queued.
+- burn is the settled usage of the trailing day extrapolated to a daily rate,
+  and horizon is how long the remaining budget lasts at that rate. Raise the
+  budget before the horizon reaches zero; queued jobs otherwise wait until
+  the oldest charges leave the rolling window.
 
 The schema contains aggregate counters only. It never writes job IDs,
 repository payloads, runner names, JIT configuration, tokens, or secrets. The
@@ -207,7 +211,10 @@ latency aggregates have fixed fields and no user-controlled metric labels.
 `RUNNER_BUDGET_WINDOW`. The default scaffold allows 10,000 runner-minutes per
 30 days. The controller reserves a full `RUNNER_MAX_LIFETIME` before launch,
 stores the ledger at `RUNNER_BUDGET_FILE`, and refunds unused time only after a
-confirmed worker deletion. The job deadline leaves 30 seconds of that
+confirmed worker deletion. A completed job is charged from the worker's
+creation to GitHub's job finish time plus a short teardown grace, not to the
+moment the completion message arrived, so message latency never counts as
+compute. The job deadline leaves 30 seconds of that
 reservation for forced shutdown. Keep the file on a durable volume. Missing,
 corrupt, or unwritable state stops new compute rather than resetting the cap.
 The separate `runneryard budget init --file PATH` command bootstraps a new

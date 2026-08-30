@@ -51,6 +51,9 @@ func writeFleetStatus(output io.Writer, status controller.FleetStatus, asJSON bo
 	writeLatency(output, "Assignment", status.Latency.Assignment, false)
 	fmt.Fprintf(output, "Budget      %s used  %s reserved  %s remaining / %s per %s\n",
 		seconds(status.Budget.UsedSeconds), seconds(status.Budget.ReservedSeconds), seconds(status.Budget.RemainingSeconds), seconds(status.Budget.LimitSeconds), seconds(status.Budget.WindowSeconds))
+	if status.Budget.BurnSecondsPerDay > 0 {
+		fmt.Fprintf(output, "Burn        %s per day  horizon %s at this rate\n", seconds(status.Budget.BurnSecondsPerDay), seconds(status.Budget.HorizonSeconds))
+	}
 	if !status.GitHub.LastActivityAt.IsZero() {
 		fmt.Fprintf(output, "GitHub      %s at %s\n", status.GitHub.LastEvent, status.GitHub.LastActivityAt.Format(time.RFC3339))
 	}

@@ -82,6 +82,11 @@ type BudgetStatus struct {
 	WindowSeconds    int64     `json:"window_seconds"`
 	RefusalReason    string    `json:"refusal_reason,omitempty"`
 	NextAvailableAt  time.Time `json:"next_available_at,omitempty"`
+	// BurnSecondsPerDay is the settled usage of the trailing day extrapolated
+	// to a daily rate; HorizonSeconds is how long the remaining budget lasts at
+	// that rate. Both are zero when there is no recent usage.
+	BurnSecondsPerDay int64 `json:"burn_seconds_per_day"`
+	HorizonSeconds    int64 `json:"horizon_seconds,omitempty"`
 }
 
 type statusReporter struct {
@@ -436,7 +441,7 @@ func (status FleetStatus) validate() error {
 			return errors.New("fleet status contains invalid latency metrics")
 		}
 	}
-	budgetValues := []int64{status.Budget.LimitSeconds, status.Budget.UsedSeconds, status.Budget.ReservedSeconds, status.Budget.RemainingSeconds, status.Budget.WindowSeconds}
+	budgetValues := []int64{status.Budget.LimitSeconds, status.Budget.UsedSeconds, status.Budget.ReservedSeconds, status.Budget.RemainingSeconds, status.Budget.WindowSeconds, status.Budget.BurnSecondsPerDay, status.Budget.HorizonSeconds}
 	for _, value := range budgetValues {
 		if value < 0 {
 			return errors.New("fleet status contains a negative budget value")
