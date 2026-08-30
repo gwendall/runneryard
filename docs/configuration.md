@@ -60,6 +60,9 @@ limits only when the provider quota is confirmed; lower them if the provider
 returns `429`.
 
 Lower the maximum lifetime to the longest legitimate job plus cleanup margin.
+Lowering it on a running fleet is safe: reservations made under the previous,
+larger value stay charged at that value until their workers finish, and the
+controller accepts them at startup.
 Do not use it to mask a slow test: move advisory or periodic work out of the PR
 gate first. Keep `MIN_RUNNERS=0` unless measured queue latency justifies paying
 for warm workers.
