@@ -4,7 +4,7 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
-## Unreleased
+## 0.4.0 (2026-08-30)
 
 - Compute adapters retry throttling, provider-side errors, and transport
   failures with bounded backoff and request pacing; a create is only repeated
@@ -30,6 +30,8 @@ operator-facing schema or a trust boundary is called out here first.
 - `runneryard init` writes a controller identity that is unique per GitHub
   target; the controller warns when `CONTROLLER_ID` is left unset.
 - CI runs staticcheck, gosec, and govulncheck.
+- The Go toolchain and the release image move to Go 1.25.14 for the standard
+  library security fixes.
 
 ## 0.3.15 (2026-08-29)
 
