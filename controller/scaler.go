@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -175,6 +176,17 @@ func (s *scaler) reconcile(ctx context.Context) error {
 			}
 			retired[worker.RunnerName] = struct{}{}
 			s.logger.Warn("deleted worker after maximum lifetime", "runner", worker.RunnerName, "worker_id", worker.ID, "maximum_lifetime", s.maxLifetime)
+			continue
+		}
+		if workerStopped(worker.State) {
+			// A stopped worker cannot run its job any more and, on providers
+			// that bill stopped machines, still costs money. Retire it now
+			// instead of waiting for the maximum lifetime.
+			if err := s.retireWorker(ctx, worker, true, settleActualUsage, time.Time{}); err != nil {
+				return fmt.Errorf("retire stopped worker %s: %w", worker.RunnerName, err)
+			}
+			retired[worker.RunnerName] = struct{}{}
+			s.logger.Warn("retired stopped worker", "runner", worker.RunnerName, "worker_id", worker.ID, "state", worker.State)
 			continue
 		}
 		if record, known := local[worker.RunnerName]; known && s.danglingTimeout > 0 && record.Observed && !record.Busy &&
@@ -640,6 +652,17 @@ func (s *scaler) destroyWorker(ctx context.Context, worker provider.Worker) erro
 func (s *scaler) reportState() {
 	actual, busy, idle, unknown := s.state.summary()
 	s.reporter.workers(actual, busy, idle, unknown)
+}
+
+// workerStopped reports provider states in which a worker can no longer run
+// a job. "stopped" and "off" come from Fly and Hetzner respectively.
+func workerStopped(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "stopped", "off", "failed", "destroyed", "suspended":
+		return true
+	default:
+		return false
+	}
 }
 
 func orphanCandidateCount(workers []provider.Worker, local map[string]workerRecord, maximumLifetime time.Duration, now time.Time) int {
