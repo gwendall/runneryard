@@ -13,7 +13,7 @@ from code review.
 | `GITHUB_CONFIG_URL` | Exact repository or organization served by the scale set. | Generated from `--github` or the current Git remote. |
 | `SCALE_SET_NAME` | GitHub scale-set name and `runs-on` label. | `runneryard-linux-x64` |
 | `RUNNER_GROUP` | GitHub runner group for organization fleets. | GitHub default group. |
-| `CONTROLLER_ID` | Stable owner recorded in provider metadata. Changing it creates a different ownership boundary. | Same as `SCALE_SET_NAME`. |
+| `CONTROLLER_ID` | Stable owner recorded in provider metadata. Changing it creates a different ownership boundary. | Scale-set name plus a hash of the GitHub target; unique per fleet. Unset, it falls back to `SCALE_SET_NAME`, which two fleets sharing one worker app would both use. |
 | `GITHUB_APP_CLIENT_ID` | Dedicated or bring-your-own App client ID. | Stored by `auth github`. |
 | `GITHUB_APP_INSTALLATION_ID` | Verified installation serving the selected target. | Stored by `auth github`. |
 | `GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_FILE` | App signing key. Use the provider secret sink or a mode-`0600` file. | Stored by `auth github`. |
