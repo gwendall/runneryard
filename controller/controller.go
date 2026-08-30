@@ -42,6 +42,10 @@ type Config struct {
 	Provider       string
 	Version        string
 	CommitSHA      string
+	// GitHubAPIRate paces the controller's own GitHub API calls in requests
+	// per second; zero disables pacing. GitHubAPIBurst is the bucket depth.
+	GitHubAPIRate  float64
+	GitHubAPIBurst int
 	Logger         *slog.Logger
 }
 
@@ -158,7 +162,7 @@ func (c *Controller) Run(ctx context.Context) error {
 	scaler := &scaler{
 		state:          newWorkerState(),
 		compute:        c.compute,
-		scaleSetClient: c.github,
+		scaleSetClient: newPacedScaleSetClient(c.github, cfg.GitHubAPIRate, cfg.GitHubAPIBurst),
 		scaleSetID:     scaleSet.ID,
 		minWorkers:     cfg.MinWorkers,
 		maxWorkers:     cfg.MaxWorkers,

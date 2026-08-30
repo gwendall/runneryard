@@ -39,6 +39,14 @@ func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, assignedJobs int)
 	target := min(s.maxWorkers, s.minWorkers+assignedJobs)
 	s.reporter.desired(assignedJobs, target)
 	if err := s.reconcile(ctx); err != nil {
+		// A transient provider failure already exhausted the adapter's retry
+		// policy. Keep the GitHub session and the degraded status, skip this
+		// cycle, and let the next message reconcile again. Every other error
+		// remains fatal so identity and state corruption still fail closed.
+		if provider.IsTransient(err) {
+			s.logger.Warn("provider unavailable during reconciliation; retrying on the next message", "error", err)
+			return s.state.count(), nil
+		}
 		return s.state.count(), err
 	}
 	current := s.state.count()
@@ -52,6 +60,10 @@ func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, assignedJobs int)
 		for range needed {
 			started, err := s.startWorker(ctx)
 			if err != nil {
+				if provider.IsTransient(err) {
+					s.logger.Warn("provider unavailable during launch; leaving jobs queued until the next message", "error", err)
+					return s.state.count(), nil
+				}
 				return s.state.count(), err
 			}
 			if !started {
@@ -392,6 +404,11 @@ func (s *scaler) finishPendingRetirements(ctx context.Context, workers []provide
 			if errors.Is(err, errRetirementDeferred) {
 				continue
 			}
+			if provider.IsTransient(err) {
+				// The journal keeps the proof; the next reconciliation retries.
+				s.logger.Warn("provider unavailable while finishing retirement; keeping it pending", "runner", retirement.RunnerName, "error", err)
+				continue
+			}
 			return fmt.Errorf("finish pending retirement for %s: %w", retirement.RunnerName, err)
 		}
 	}
@@ -413,6 +430,12 @@ func (s *scaler) retireWorker(ctx context.Context, worker provider.Worker, provi
 	s.reporter.retirements(s.retirements.count())
 	err := s.finishRetirement(ctx, worker, providerPresent, retirement)
 	if errors.Is(err, errRetirementDeferred) {
+		return nil
+	}
+	if provider.IsTransient(err) {
+		// The retirement intent is journaled and the worker record is kept, so
+		// reconciliation finishes the cleanup once the provider answers again.
+		s.logger.Warn("provider unavailable during retirement; keeping it pending", "runner", worker.RunnerName, "worker_id", worker.ID, "error", err)
 		return nil
 	}
 	return err

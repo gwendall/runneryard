@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gwendall/runneryard/provider"
+	"github.com/gwendall/runneryard/provider/retry"
 )
 
 const (
@@ -44,6 +45,9 @@ type Config struct {
 	RootFSGB     int
 	DockerDNS    string
 	HTTPClient   *http.Client
+	// Retry bounds repeated attempts and paces requests to the Machines API.
+	// Zero fields take the retry package defaults.
+	Retry retry.Policy
 }
 
 type Adapter struct {
@@ -59,6 +63,7 @@ type Adapter struct {
 	rootFSGB     int
 	dockerDNS    string
 	httpClient   *http.Client
+	retryer      *retry.Retryer
 }
 
 func New(cfg Config) (*Adapter, error) {
@@ -94,6 +99,7 @@ func New(cfg Config) (*Adapter, error) {
 		rootFSGB:     cfg.RootFSGB,
 		dockerDNS:    dockerDNS,
 		httpClient:   cfg.HTTPClient,
+		retryer:      retry.New(cfg.Retry),
 	}, nil
 }
 
@@ -227,22 +233,80 @@ func (a *Adapter) Launch(ctx context.Context, lease provider.Lease) (provider.Wo
 		},
 	}
 
-	var created machine
-	if err := a.doJSON(ctx, http.MethodPost, a.machinesURL(), payload, &created); err != nil {
+	// A create request is only repeated after inventory proves the previous
+	// attempt did not produce a Machine for this lease. A transport failure can
+	// hide a successful create, and two Machines for one lease would share a
+	// single-use JIT configuration.
+	var lastErr error
+	attempts := a.retryer.Policy().Attempts
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err := a.retryer.Wait(ctx); err != nil {
+			return provider.Worker{}, err
+		}
+		var created machine
+		err := a.doJSON(ctx, http.MethodPost, a.machinesURL(), payload, &created)
+		if err == nil {
+			if created.ID == "" {
+				return provider.Worker{}, fmt.Errorf("create Fly worker %s: response did not include a machine id", lease.RunnerName)
+			}
+			return withLeaseProof(toWorker(created), lease), nil
+		}
 		if created.ID != "" {
 			return provider.Worker{}, &provider.PartialLaunchError{Worker: withLeaseProof(toWorker(created), lease), Err: err}
 		}
-		return provider.Worker{}, fmt.Errorf("create Fly worker %s: %w", lease.RunnerName, err)
+		lastErr = fmt.Errorf("create Fly worker %s: %w", lease.RunnerName, err)
+		if !provider.IsTransient(err) {
+			return provider.Worker{}, lastErr
+		}
+		existing, lookupErr := a.findByLease(ctx, lease.ID)
+		if lookupErr != nil {
+			return provider.Worker{}, errors.Join(lastErr, fmt.Errorf("confirm Fly worker absence before retry: %w", lookupErr))
+		}
+		if existing != nil {
+			return withLeaseProof(*existing, lease), nil
+		}
+		if attempt == attempts {
+			break
+		}
+		if err := sleepContext(ctx, a.retryer.Backoff(attempt)); err != nil {
+			return provider.Worker{}, errors.Join(lastErr, err)
+		}
 	}
-	if created.ID == "" {
-		return provider.Worker{}, fmt.Errorf("create Fly worker %s: response did not include a machine id", lease.RunnerName)
+	return provider.Worker{}, lastErr
+}
+
+// findByLease returns the owned Machine carrying the lease, or nil.
+func (a *Adapter) findByLease(ctx context.Context, leaseID string) (*provider.Worker, error) {
+	workers, err := a.Inventory(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return withLeaseProof(toWorker(created), lease), nil
+	for _, worker := range workers {
+		if worker.LeaseID == leaseID {
+			return &worker, nil
+		}
+	}
+	return nil, nil
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (a *Adapter) Inventory(ctx context.Context) ([]provider.Worker, error) {
 	var machines []machine
-	if err := a.doJSON(ctx, http.MethodGet, a.machinesURL(), nil, &machines); err != nil {
+	err := a.retryer.Do(ctx, func(ctx context.Context) error {
+		machines = nil
+		return a.doJSON(ctx, http.MethodGet, a.machinesURL(), nil, &machines)
+	})
+	if err != nil {
 		return nil, fmt.Errorf("list Fly Machines: %w", err)
 	}
 	workers := make([]provider.Worker, 0, len(machines))
@@ -260,21 +324,27 @@ func (a *Adapter) Destroy(ctx context.Context, workerID string) error {
 		return nil
 	}
 	requestURL := a.machinesURL() + "/" + url.PathEscape(workerID) + "?force=true"
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, requestURL, nil)
-	if err != nil {
-		return fmt.Errorf("build delete request: %w", err)
-	}
-	a.setHeaders(req)
-	resp, err := a.httpClient.Do(req)
+	err := a.retryer.Do(ctx, func(ctx context.Context) error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, requestURL, nil)
+		if err != nil {
+			return fmt.Errorf("build delete request: %w", err)
+		}
+		a.setHeaders(req)
+		resp, err := a.httpClient.Do(req)
+		if err != nil {
+			return retry.ClassifyRequestError(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusNotFound {
+			return nil
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return responseError(resp)
+		}
+		return nil
+	})
 	if err != nil {
 		return fmt.Errorf("delete Fly worker %s: %w", workerID, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return nil
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return responseError(resp)
 	}
 	return nil
 }
@@ -329,7 +399,7 @@ func (a *Adapter) doJSON(ctx context.Context, method, requestURL string, body, t
 	a.setHeaders(req)
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return err
+		return retry.ClassifyRequestError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -352,16 +422,14 @@ func (a *Adapter) setHeaders(req *http.Request) {
 	}
 }
 
+// responseError classifies a non-2xx response. Throttling and provider-side
+// errors are transient; every other status is a permanent failure.
 func responseError(resp *http.Response) error {
 	contents, readErr := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if readErr != nil {
-		return errors.Join(fmt.Errorf("fly API returned %s", resp.Status), readErr)
+		return errors.Join(retry.ClassifyStatus("fly", resp.StatusCode, ""), readErr)
 	}
-	message := strings.TrimSpace(string(contents))
-	if message == "" {
-		return fmt.Errorf("fly API returned %s", resp.Status)
-	}
-	return fmt.Errorf("fly API returned %s: %s", resp.Status, message)
+	return retry.ClassifyStatus("fly", resp.StatusCode, strings.TrimSpace(string(contents)))
 }
 
 var _ provider.Compute = (*Adapter)(nil)

@@ -12,9 +12,14 @@ import (
 	"github.com/actions/scaleset"
 	"github.com/gwendall/runneryard/controller"
 	"github.com/gwendall/runneryard/provider"
+	"github.com/gwendall/runneryard/provider/retry"
 	flyprovider "github.com/gwendall/runneryard/providers/fly"
 	hetznerprovider "github.com/gwendall/runneryard/providers/hetzner"
 )
+
+// defaultGitHubAPIRate spreads the controller's own GitHub calls (three or
+// four per job) well under GitHub's secondary rate limits.
+const defaultGitHubAPIRate = 10.0
 
 type appConfig struct {
 	GitHubURL          string
@@ -49,6 +54,9 @@ type appConfig struct {
 	RunnerBudgetWindow time.Duration
 	RunnerBudgetFile   string
 	RunnerStatusFile   string
+	ProviderRetries    int
+	ProviderRateLimit  float64
+	GitHubAPIRateLimit float64
 	LogLevel           slog.Level
 }
 
@@ -117,6 +125,15 @@ func loadConfig() (appConfig, error) {
 		return appConfig{}, err
 	}
 	if cfg.RunnerBudgetWindow, err = envDuration("RUNNER_BUDGET_WINDOW", 30*24*time.Hour); err != nil {
+		return appConfig{}, err
+	}
+	if cfg.ProviderRetries, err = envInt("PROVIDER_RETRY_ATTEMPTS", retry.DefaultAttempts); err != nil {
+		return appConfig{}, err
+	}
+	if cfg.ProviderRateLimit, err = envFloat("PROVIDER_RATE_LIMIT", retry.DefaultRate); err != nil {
+		return appConfig{}, err
+	}
+	if cfg.GitHubAPIRateLimit, err = envFloat("GITHUB_API_RATE_LIMIT", defaultGitHubAPIRate); err != nil {
 		return appConfig{}, err
 	}
 	if cfg.RunnerStatusFile == "" && cfg.RunnerBudgetFile != "" {
@@ -198,6 +215,15 @@ func (c appConfig) validate() error {
 	if c.RunnerStatusFile == "" || c.RunnerStatusFile == c.RunnerBudgetFile {
 		return fmt.Errorf("RUNNER_STATUS_FILE must be set and differ from RUNNER_BUDGET_FILE")
 	}
+	if c.ProviderRetries < 1 || c.ProviderRetries > 20 {
+		return fmt.Errorf("PROVIDER_RETRY_ATTEMPTS must be between 1 and 20")
+	}
+	if c.ProviderRateLimit <= 0 || c.ProviderRateLimit > 100 {
+		return fmt.Errorf("PROVIDER_RATE_LIMIT must be between 0 and 100 requests per second")
+	}
+	if c.GitHubAPIRateLimit < 0 || c.GitHubAPIRateLimit > 100 {
+		return fmt.Errorf("GITHUB_API_RATE_LIMIT must be between 0 and 100 requests per second")
+	}
 	return nil
 }
 
@@ -232,6 +258,7 @@ func (c appConfig) compute() (provider.Compute, error) {
 			MemoryMB:     c.RunnerMemoryMB,
 			RootFSGB:     c.RunnerRootFSGB,
 			DockerDNS:    c.RunnerDockerDNS,
+			Retry:        c.retryPolicy(),
 		})
 	case "hetzner":
 		return hetznerprovider.New(hetznerprovider.Config{
@@ -244,6 +271,7 @@ func (c appConfig) compute() (provider.Compute, error) {
 			ControllerID: c.ControllerID,
 			FirewallID:   c.HetznerFirewallID,
 			NetworkID:    c.HetznerNetworkID,
+			Retry:        c.retryPolicy(),
 		})
 	default:
 		return nil, fmt.Errorf("unsupported COMPUTE_PROVIDER %q", c.ComputeProvider)
@@ -252,22 +280,44 @@ func (c appConfig) compute() (provider.Compute, error) {
 
 func (c appConfig) controllerConfig(logger *slog.Logger) controller.Config {
 	return controller.Config{
-		GitHubURL:    c.GitHubURL,
-		ScaleSetName: c.ScaleSetName,
-		RunnerGroup:  c.RunnerGroup,
-		ControllerID: c.ControllerID,
-		MinWorkers:   c.MinWorkers,
-		MaxWorkers:   c.MaxWorkers,
-		MaxLifetime:  c.RunnerMaxLifetime,
-		UsageBudget:  c.RunnerUsageBudget,
-		BudgetWindow: c.RunnerBudgetWindow,
-		BudgetFile:   c.RunnerBudgetFile,
-		StatusFile:   c.RunnerStatusFile,
-		Provider:     c.ComputeProvider,
-		Version:      version,
-		CommitSHA:    commitSHA,
-		Logger:       logger,
+		GitHubURL:      c.GitHubURL,
+		ScaleSetName:   c.ScaleSetName,
+		RunnerGroup:    c.RunnerGroup,
+		ControllerID:   c.ControllerID,
+		MinWorkers:     c.MinWorkers,
+		MaxWorkers:     c.MaxWorkers,
+		MaxLifetime:    c.RunnerMaxLifetime,
+		UsageBudget:    c.RunnerUsageBudget,
+		BudgetWindow:   c.RunnerBudgetWindow,
+		BudgetFile:     c.RunnerBudgetFile,
+		StatusFile:     c.RunnerStatusFile,
+		Provider:       c.ComputeProvider,
+		Version:        version,
+		CommitSHA:      commitSHA,
+		GitHubAPIRate:  c.GitHubAPIRateLimit,
+		GitHubAPIBurst: int(c.GitHubAPIRateLimit * 2),
+		Logger:         logger,
 	}
+}
+
+func (c appConfig) retryPolicy() retry.Policy {
+	return retry.Policy{
+		Attempts: c.ProviderRetries,
+		Rate:     c.ProviderRateLimit,
+		Burst:    int(c.ProviderRateLimit * 2),
+	}
+}
+
+func envFloat(name string, fallback float64) (float64, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a number: %w", name, err)
+	}
+	return parsed, nil
 }
 
 func envOr(name, fallback string) string {

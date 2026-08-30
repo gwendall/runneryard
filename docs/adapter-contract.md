@@ -25,6 +25,13 @@ and state translation inside its implementation. It must never put provider or
 controller credentials into worker environment variables, metadata, user data,
 logs, or disk.
 
+An adapter retries throttling, provider-side errors, and transport failures
+itself, with backoff and request pacing (`provider/retry`), and returns a
+`provider.TransientError` once its attempts are exhausted so the core keeps
+the listener alive. A create may only be repeated after the adapter has
+confirmed through inventory that the lease has no worker. Authorization,
+validation, and identity failures must never be reported as transient.
+
 ## Required capabilities
 
 An adapter is accepted only if it can prove:

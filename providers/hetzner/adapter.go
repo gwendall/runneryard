@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gwendall/runneryard/provider"
+	"github.com/gwendall/runneryard/provider/retry"
 )
 
 const (
@@ -48,6 +49,9 @@ type Config struct {
 	ActionPollInterval time.Duration
 	// ActionTimeout bounds the complete provider-side qualification sequence.
 	ActionTimeout time.Duration
+	// Retry bounds repeated attempts and paces requests to the Cloud API.
+	// Zero fields take the retry package defaults.
+	Retry retry.Policy
 }
 
 type Adapter struct {
@@ -63,6 +67,7 @@ type Adapter struct {
 	httpClient         *http.Client
 	actionPollInterval time.Duration
 	actionTimeout      time.Duration
+	retryer            *retry.Retryer
 }
 
 func New(cfg Config) (*Adapter, error) {
@@ -103,6 +108,7 @@ func New(cfg Config) (*Adapter, error) {
 		httpClient:         cfg.HTTPClient,
 		actionPollInterval: cfg.ActionPollInterval,
 		actionTimeout:      cfg.ActionTimeout,
+		retryer:            retry.New(cfg.Retry),
 	}, nil
 }
 
@@ -203,15 +209,9 @@ func (a *Adapter) Launch(ctx context.Context, lease provider.Lease) (provider.Wo
 		payload.Networks = []int64{a.networkID}
 	}
 
-	var created createServerResponse
-	if err := a.doJSON(ctx, http.MethodPost, a.baseURL+"/servers", payload, &created); err != nil {
-		if created.Server.ID != 0 {
-			return provider.Worker{}, &provider.PartialLaunchError{Worker: withLeaseProof(toWorker(created.Server), lease), Err: err}
-		}
-		return provider.Worker{}, fmt.Errorf("create Hetzner worker %s: %w", lease.RunnerName, err)
-	}
-	if created.Server.ID == 0 {
-		return provider.Worker{}, fmt.Errorf("create Hetzner worker %s: response did not include a server id", lease.RunnerName)
+	created, err := a.createServer(ctx, lease, payload)
+	if err != nil {
+		return provider.Worker{}, err
 	}
 	worker := withLeaseProof(toWorker(created.Server), lease)
 	qualifyCtx, cancelQualification := context.WithTimeout(ctx, a.actionTimeout)
@@ -250,7 +250,83 @@ func (a *Adapter) Launch(ctx context.Context, lease provider.Lease) (provider.Wo
 	return withLeaseProof(toWorker(running.Server), lease), nil
 }
 
+// createServer repeats the create request only after the lease selector proves
+// the previous attempt did not produce a server. Two servers for one lease
+// would share a single-use JIT configuration.
+func (a *Adapter) createServer(ctx context.Context, lease provider.Lease, payload createServerRequest) (createServerResponse, error) {
+	var lastErr error
+	attempts := a.retryer.Policy().Attempts
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err := a.retryer.Wait(ctx); err != nil {
+			return createServerResponse{}, err
+		}
+		var created createServerResponse
+		err := a.doJSON(ctx, http.MethodPost, a.baseURL+"/servers", payload, &created)
+		if err == nil {
+			if created.Server.ID == 0 {
+				return createServerResponse{}, fmt.Errorf("create Hetzner worker %s: response did not include a server id", lease.RunnerName)
+			}
+			return created, nil
+		}
+		if created.Server.ID != 0 {
+			return createServerResponse{}, &provider.PartialLaunchError{Worker: withLeaseProof(toWorker(created.Server), lease), Err: err}
+		}
+		lastErr = fmt.Errorf("create Hetzner worker %s: %w", lease.RunnerName, err)
+		if !provider.IsTransient(err) {
+			return createServerResponse{}, lastErr
+		}
+		existing, lookupErr := a.findByLease(ctx, lease.ID)
+		if lookupErr != nil {
+			return createServerResponse{}, errors.Join(lastErr, fmt.Errorf("confirm Hetzner worker absence before retry: %w", lookupErr))
+		}
+		if existing != nil {
+			// The server exists but its qualification did not complete; report
+			// it as partial so the core cleans it up and launches again.
+			return createServerResponse{}, &provider.PartialLaunchError{Worker: withLeaseProof(*existing, lease), Err: lastErr}
+		}
+		if attempt == attempts {
+			break
+		}
+		if err := sleepContext(ctx, a.retryer.Backoff(attempt)); err != nil {
+			return createServerResponse{}, errors.Join(lastErr, err)
+		}
+	}
+	return createServerResponse{}, lastErr
+}
+
+// findByLease returns the owned server carrying the lease, or nil.
+func (a *Adapter) findByLease(ctx context.Context, leaseID string) (*provider.Worker, error) {
+	if !safeLabelValue.MatchString(leaseID) {
+		return nil, fmt.Errorf("lease id %q is not a valid label value", leaseID)
+	}
+	workers, err := a.listServers(ctx, managedByKey+"=true,"+controllerIDKey+"="+a.controllerID+","+leaseIDKey+"="+leaseID)
+	if err != nil {
+		return nil, err
+	}
+	for _, worker := range workers {
+		if worker.LeaseID == leaseID {
+			return &worker, nil
+		}
+	}
+	return nil, nil
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 func (a *Adapter) Inventory(ctx context.Context) ([]provider.Worker, error) {
+	return a.listServers(ctx, managedByKey+"=true,"+controllerIDKey+"="+a.controllerID)
+}
+
+func (a *Adapter) listServers(ctx context.Context, labelSelector string) ([]provider.Worker, error) {
 	workers := make([]provider.Worker, 0)
 	page := 1
 	for {
@@ -259,13 +335,17 @@ func (a *Adapter) Inventory(ctx context.Context) ([]provider.Worker, error) {
 			return nil, fmt.Errorf("build Hetzner inventory URL: %w", err)
 		}
 		query := requestURL.Query()
-		query.Set("label_selector", managedByKey+"=true,"+controllerIDKey+"="+a.controllerID)
+		query.Set("label_selector", labelSelector)
 		query.Set("page", strconv.Itoa(page))
 		query.Set("per_page", "50")
 		requestURL.RawQuery = query.Encode()
 
 		var response serverListResponse
-		if err := a.doJSON(ctx, http.MethodGet, requestURL.String(), nil, &response); err != nil {
+		err = a.retryer.Do(ctx, func(ctx context.Context) error {
+			response = serverListResponse{}
+			return a.doJSON(ctx, http.MethodGet, requestURL.String(), nil, &response)
+		})
+		if err != nil {
 			return nil, fmt.Errorf("list Hetzner servers: %w", err)
 		}
 		for _, item := range response.Servers {
@@ -289,28 +369,35 @@ func (a *Adapter) Destroy(ctx context.Context, workerID string) error {
 	if _, err := strconv.ParseInt(workerID, 10, 64); err != nil {
 		return fmt.Errorf("invalid Hetzner worker id %q", workerID)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, a.baseURL+"/servers/"+url.PathEscape(workerID), nil)
-	if err != nil {
-		return fmt.Errorf("build delete request: %w", err)
-	}
-	a.setHeaders(req)
-	resp, err := a.httpClient.Do(req)
+	var deleted actionResponse
+	err := a.retryer.Do(ctx, func(ctx context.Context) error {
+		deleted = actionResponse{}
+		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, a.baseURL+"/servers/"+url.PathEscape(workerID), nil)
+		if err != nil {
+			return fmt.Errorf("build delete request: %w", err)
+		}
+		a.setHeaders(req)
+		resp, err := a.httpClient.Do(req)
+		if err != nil {
+			return retry.ClassifyRequestError(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusNoContent {
+			return nil
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return responseError(resp)
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&deleted); err != nil {
+			return fmt.Errorf("decode Hetzner delete action: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
 		return fmt.Errorf("delete Hetzner worker %s: %w", workerID, err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
+	if deleted.Action.ID == 0 {
 		return nil
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return responseError(resp)
-	}
-	if resp.StatusCode == http.StatusNoContent {
-		return nil
-	}
-	var deleted actionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&deleted); err != nil {
-		return fmt.Errorf("decode Hetzner delete action: %w", err)
 	}
 	actionCtx, cancelAction := context.WithTimeout(ctx, a.actionTimeout)
 	defer cancelAction()
@@ -367,7 +454,11 @@ func (a *Adapter) waitAction(ctx context.Context, current action) error {
 		}
 
 		var response actionResponse
-		if err := a.doJSON(ctx, http.MethodGet, a.baseURL+"/actions/"+strconv.FormatInt(current.ID, 10), nil, &response); err != nil {
+		err := a.retryer.Do(ctx, func(ctx context.Context) error {
+			response = actionResponse{}
+			return a.doJSON(ctx, http.MethodGet, a.baseURL+"/actions/"+strconv.FormatInt(current.ID, 10), nil, &response)
+		})
+		if err != nil {
 			return fmt.Errorf("poll Hetzner action %d: %w", current.ID, err)
 		}
 		current = response.Action
@@ -477,7 +568,7 @@ func (a *Adapter) doJSON(ctx context.Context, method, requestURL string, body, t
 	a.setHeaders(req)
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return err
+		return retry.ClassifyRequestError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -500,16 +591,14 @@ func (a *Adapter) setHeaders(req *http.Request) {
 	}
 }
 
+// responseError classifies a non-2xx response. Throttling and provider-side
+// errors are transient; every other status is a permanent failure.
 func responseError(resp *http.Response) error {
 	contents, readErr := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if readErr != nil {
-		return errors.Join(fmt.Errorf("hetzner API returned %s", resp.Status), readErr)
+		return errors.Join(retry.ClassifyStatus("hetzner", resp.StatusCode, ""), readErr)
 	}
-	message := strings.TrimSpace(string(contents))
-	if message == "" {
-		return fmt.Errorf("hetzner API returned %s", resp.Status)
-	}
-	return fmt.Errorf("hetzner API returned %s: %s", resp.Status, message)
+	return retry.ClassifyStatus("hetzner", resp.StatusCode, strings.TrimSpace(string(contents)))
 }
 
 var _ provider.Compute = (*Adapter)(nil)

@@ -3,6 +3,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -49,3 +50,26 @@ func (e *PartialLaunchError) Error() string {
 }
 
 func (e *PartialLaunchError) Unwrap() error { return e.Err }
+
+// TransientError reports a provider failure that the adapter already retried
+// within its policy and that may succeed later: throttling, a provider-side
+// outage, or a transport failure. The core keeps its GitHub session open,
+// reports degraded status, and retries on the next reconciliation instead of
+// exiting. Identity, authorization, and validation failures must never be
+// wrapped as transient.
+type TransientError struct {
+	Err error
+}
+
+func (e *TransientError) Error() string {
+	return fmt.Sprintf("transient provider failure: %v", e.Err)
+}
+
+func (e *TransientError) Unwrap() error { return e.Err }
+
+// IsTransient reports whether err, or any error it wraps or joins, is a
+// TransientError.
+func IsTransient(err error) bool {
+	var transient *TransientError
+	return errors.As(err, &transient)
+}
