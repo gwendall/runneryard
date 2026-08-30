@@ -8,8 +8,10 @@ started`, and `job completed`. Provider inventory should return to
 
 The controller reconciles inventory before every desired-count change. It
 adopts managed workers created by the same controller after a restart, removes
-local records for disappeared workers, and destroys workers older than
-`RUNNER_MAX_LIFETIME`.
+local records for disappeared workers, destroys workers older than
+`RUNNER_MAX_LIFETIME`, and retires workers the provider reports as stopped,
+off, or failed as soon as it sees them, since a stopped server can neither run
+its job nor stop being billed on every provider.
 
 Desired-count updates only scale up. They never opportunistically delete an
 apparently idle JIT runner: GitHub may already be assigning that runner while
@@ -93,6 +95,21 @@ npx runneryard route enable \
   --label acme-linux \
   --confirm-canary
 ```
+
+## Versioning and support
+
+Releases follow semantic versioning while pre-1.0. A patch or minor upgrade is
+a drop-in replacement of the controller image: the only interruption is the
+controller restart, during which existing workers keep running and are
+adopted by the successor. A change to the status schema, the ledger format,
+the retirement journal, or a trust boundary is announced in `CHANGELOG.md`
+before it ships and bumps the minor version.
+
+Fixes land on the latest release and on the default branch; the two most
+recent minor versions receive security fixes. Roll back by pinning the
+previous image and redeploying with the same volume: never run `budget init`
+during a rollback, and never downgrade across a ledger or journal format
+change without draining the fleet first.
 
 ## Capacity
 
