@@ -21,6 +21,11 @@ var errRetirementDeferred = errors.New("runner retirement deferred")
 // timestamp and the one-job worker's exit and destruction.
 const workerTeardownGrace = 15 * time.Second
 
+const (
+	capacityInitialBackoff = time.Minute
+	capacityMaximumBackoff = 15 * time.Minute
+)
+
 // workerStoppedAt derives the worker's stop time from GitHub's job finish
 // timestamp; a zero timestamp leaves the ledger to settle at message arrival.
 func workerStoppedAt(finished time.Time) time.Time {
@@ -45,6 +50,12 @@ type scaler struct {
 	retirements       *retirementQueue
 	reporter          *statusReporter
 	logger            *slog.Logger
+	capacityMu        sync.Mutex
+	capacityEffective int
+	capacityReason    string
+	capacityRetryAt   time.Time
+	capacityBackoff   time.Duration
+	capacityNow       func() time.Time
 }
 
 type runnerScaleSetClient interface {
@@ -73,10 +84,16 @@ func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, assignedJobs int)
 	}
 
 	if target > current {
-		needed := target - current
+		needed, probing := s.capacityAllowance(current, target)
+		if needed == 0 {
+			return current, nil
+		}
 		s.logger.Info("scaling up", "current", current, "target", target, "count", needed)
 		if err := s.launchWorkers(ctx, needed); err != nil {
 			return s.state.count(), err
+		}
+		if probing && s.state.count() > current {
+			s.clearCapacityRejection()
 		}
 		return s.state.count(), nil
 	}
@@ -104,6 +121,7 @@ func (s *scaler) launchWorkers(ctx context.Context, needed int) error {
 	var wait sync.WaitGroup
 	var mu sync.Mutex
 	var fatal error
+	var capacityErr error
 	stopped := false
 	for range needed {
 		slots <- struct{}{}
@@ -126,6 +144,12 @@ func (s *scaler) launchWorkers(ctx context.Context, needed int) error {
 			defer mu.Unlock()
 			if err != nil {
 				stopped = true
+				if provider.IsCapacity(err) {
+					if capacityErr == nil {
+						capacityErr = err
+					}
+					return
+				}
 				if provider.IsTransient(err) {
 					s.logger.Warn("provider unavailable during launch; leaving jobs queued until the next message", "error", err)
 					return
@@ -141,7 +165,75 @@ func (s *scaler) launchWorkers(ctx context.Context, needed int) error {
 		}()
 	}
 	wait.Wait()
+	if capacityErr != nil {
+		s.recordCapacityRejection(capacityErr)
+	}
 	return fatal
+}
+
+func (s *scaler) now() time.Time {
+	if s.capacityNow != nil {
+		return s.capacityNow()
+	}
+	return time.Now()
+}
+
+// capacityAllowance keeps replacing workers below the last proven provider
+// ceiling, suppresses launches above it until the backoff expires, then admits
+// exactly one probe. A successful probe clears the ceiling for later messages.
+func (s *scaler) capacityAllowance(current, target int) (needed int, probing bool) {
+	s.capacityMu.Lock()
+	defer s.capacityMu.Unlock()
+	requested := max(0, target-current)
+	if requested == 0 || s.capacityReason == "" {
+		return requested, false
+	}
+	if current < s.capacityEffective {
+		return min(requested, s.capacityEffective-current), false
+	}
+	if s.now().Before(s.capacityRetryAt) {
+		return 0, false
+	}
+	return min(1, requested), true
+}
+
+func (s *scaler) recordCapacityRejection(err error) {
+	now := s.now()
+	effective := s.state.count()
+	reason := provider.CapacityReason(err)
+	s.capacityMu.Lock()
+	if s.capacityBackoff == 0 {
+		s.capacityBackoff = capacityInitialBackoff
+	} else {
+		s.capacityBackoff = min(s.capacityBackoff*2, capacityMaximumBackoff)
+	}
+	s.capacityEffective = effective
+	s.capacityReason = reason
+	s.capacityRetryAt = now.Add(s.capacityBackoff)
+	retryAt := s.capacityRetryAt
+	s.capacityMu.Unlock()
+	s.reporter.capacityRejected(effective, reason, retryAt)
+	s.logger.Warn("provider capacity rejected worker launch; keeping the listener alive",
+		"configured_capacity", s.maxWorkers,
+		"effective_capacity", effective,
+		"provider_rejection", reason,
+		"retry_at", retryAt,
+		"error", err,
+	)
+}
+
+func (s *scaler) clearCapacityRejection() {
+	s.capacityMu.Lock()
+	hadRejection := s.capacityReason != ""
+	s.capacityEffective = 0
+	s.capacityReason = ""
+	s.capacityRetryAt = time.Time{}
+	s.capacityBackoff = 0
+	s.capacityMu.Unlock()
+	if hadRejection {
+		s.reporter.capacityRecovered()
+		s.logger.Info("provider capacity probe succeeded", "configured_capacity", s.maxWorkers)
+	}
 }
 
 func (s *scaler) reconcile(ctx context.Context) error {
@@ -406,6 +498,13 @@ func (s *scaler) startWorker(ctx context.Context) (bool, error) {
 	s.reporter.starting(-1)
 	s.reporter.latency(true, time.Since(launchStarted), err != nil)
 	if err != nil {
+		if provider.IsCapacity(err) {
+			if cleanupErr := s.cleanupRejectedLaunch(context.WithoutCancel(ctx), retirement); cleanupErr != nil {
+				return false, fmt.Errorf("clean up capacity-rejected launch: %w", cleanupErr)
+			}
+			s.reporter.budget(s.budget.snapshot(time.Now()))
+			return false, err
+		}
 		s.reporter.degraded("provider_launch_failed")
 		cleanupErr := s.cleanupAmbiguousLaunch(context.WithoutCancel(ctx), retirement, err)
 		if cleanupErr != nil {
@@ -440,6 +539,26 @@ func (s *scaler) startWorker(ctx context.Context) (bool, error) {
 	s.reporter.recovered()
 	s.logger.Info("worker created", "runner", name, "worker_id", worker.ID)
 	return true, nil
+}
+
+// cleanupRejectedLaunch handles a provider response that definitively proves
+// no worker was created. It removes the unused JIT registration and refunds
+// the reservation without an unnecessary provider inventory call.
+func (s *scaler) cleanupRejectedLaunch(ctx context.Context, retirement retirementEntry) error {
+	if err := s.removeRunnerRegistration(ctx, retirement); err != nil {
+		s.reporter.degraded("github_runner_cleanup_failed")
+		return err
+	}
+	if err := s.budget.release(retirement.LeaseID); err != nil {
+		s.reporter.degraded("usage_budget_write_failed")
+		return err
+	}
+	if err := s.retirements.remove(retirement.RunnerName); err != nil {
+		s.reporter.degraded("runner_retirement_state_failed")
+		return err
+	}
+	s.reportRetirements()
+	return nil
 }
 
 func (s *scaler) cleanupJITGenerationFailure(ctx context.Context, retirement retirementEntry, generationErr error) error {

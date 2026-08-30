@@ -47,6 +47,22 @@ func writeFleetStatus(output io.Writer, status controller.FleetStatus, asJSON bo
 	}
 	fmt.Fprintf(output, "Workers     %d actual  %d starting  %d busy  %d idle  %d unknown  %d orphan candidate(s)  %d retirement(s) pending  max %d%s\n",
 		status.Workers.Actual, status.Workers.Starting, status.Workers.Busy, status.Workers.Idle, status.Workers.Unknown, status.Workers.OrphanCandidates, status.Workers.PendingRetirements, status.Workers.Maximum, capacity)
+	configuredCapacity := status.Capacity.Configured
+	effectiveCapacity := status.Capacity.Effective
+	if configuredCapacity == 0 {
+		// Capacity is additive to schema v2. Keep status files written by an
+		// older controller useful during a rolling controller/CLI upgrade.
+		configuredCapacity = status.Workers.Maximum
+		effectiveCapacity = status.Workers.Maximum
+	}
+	fmt.Fprintf(output, "Capacity    %d effective / %d configured  %d provider rejection(s)", effectiveCapacity, configuredCapacity, status.Capacity.Rejections)
+	if status.Capacity.Rejection != "" {
+		fmt.Fprintf(output, "  %s", status.Capacity.Rejection)
+	}
+	if !status.Capacity.RetryAt.IsZero() {
+		fmt.Fprintf(output, "  retry after %s", status.Capacity.RetryAt.Format(time.RFC3339))
+	}
+	fmt.Fprintln(output)
 	writeLatency(output, "Create", status.Latency.ProviderCreate, true)
 	writeLatency(output, "Assignment", status.Latency.Assignment, false)
 	fmt.Fprintf(output, "Budget      %s used  %s reserved  %s remaining / %s per %s\n",

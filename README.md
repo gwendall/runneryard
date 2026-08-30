@@ -164,6 +164,10 @@ bootstrap, metadata, and lifecycle translation. See the
 - Transient provider failures are retried with backoff and request pacing. The
   controller keeps its GitHub session, reports `degraded`, and retries on the
   next message; `ALERT_WEBHOOK_URL` pushes those transitions to a webhook.
+- Provider quota exhaustion is separate from an outage: the controller keeps
+  completions and replacements below the last proven capacity flowing, then
+  probes above it with bounded backoff. Status and alerts show configured
+  versus effective capacity without copying raw provider payloads.
 - Live capacity and cost limits are operator-owned configuration. A repository
   pull request must never raise them.
 - Ownership metadata prevents one controller from deleting foreign machines.
@@ -193,7 +197,8 @@ between a qualified scale-set label and `ubuntu-latest`. It uses the operator's
 existing `gh` login; no GitHub token is copied into RunnerYard.
 
 `runneryard status [--json]` reads a private, atomic controller snapshot with
-capacity, two distinct latency measures, orphan candidates, and budget. It is
+configured and effective capacity, provider rejections, two distinct latency
+measures, orphan candidates, and budget. It is
 accessed through provider SSH; RunnerYard opens no monitoring port.
 
 ## Development

@@ -16,13 +16,14 @@ func TestWriteFleetStatusHumanAndJSON(t *testing.T) {
 		Controller: controller.ControllerStatus{ID: "acme", Provider: "fly", Version: "1.2.3", CommitSHA: "abcdef"},
 		GitHub:     controller.GitHubStatus{ScaleSet: "acme-linux", AssignedJobs: 5, DesiredWorkers: 4, LastActivityAt: now, LastEvent: "desired_count"},
 		Workers:    controller.WorkerStatus{Actual: 4, Busy: 2, Idle: 1, Unknown: 1, PendingRetirements: 2, Maximum: 4, Saturated: true},
+		Capacity:   controller.CapacityStatus{Configured: 4, Effective: 3, Rejections: 1, Rejection: "fly_machine_limit", RetryAt: now.Add(time.Minute)},
 		Budget:     controller.BudgetStatus{LimitSeconds: 7200, UsedSeconds: 1800, ReservedSeconds: 3600, RemainingSeconds: 1800, WindowSeconds: 86400},
 	}
 	var human bytes.Buffer
 	if err := writeFleetStatus(&human, status, false); err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"RunnerYard degraded", "4 actual", "2 busy", "1 unknown", "2 retirement(s) pending", "30m0s used", "desired_count"} {
+	for _, expected := range []string{"RunnerYard degraded", "4 actual", "2 busy", "1 unknown", "2 retirement(s) pending", "3 effective / 4 configured", "fly_machine_limit", "30m0s used", "desired_count"} {
 		if !strings.Contains(human.String(), expected) {
 			t.Fatalf("human output missing %q:\n%s", expected, human.String())
 		}
@@ -33,5 +34,19 @@ func TestWriteFleetStatusHumanAndJSON(t *testing.T) {
 	}
 	if !strings.Contains(machine.String(), `"schema_version":2`) || !strings.Contains(machine.String(), `"unknown":1`) || !strings.Contains(machine.String(), `"saturated":true`) {
 		t.Fatalf("JSON output = %s", machine.String())
+	}
+}
+
+func TestWriteFleetStatusFallsBackForPreCapacitySchemaV2Files(t *testing.T) {
+	status := controller.FleetStatus{
+		SchemaVersion: 2,
+		Workers:       controller.WorkerStatus{Maximum: 7},
+	}
+	var output bytes.Buffer
+	if err := writeFleetStatus(&output, status, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "7 effective / 7 configured") {
+		t.Fatalf("legacy status output = %q", output.String())
 	}
 }

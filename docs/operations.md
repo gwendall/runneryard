@@ -49,6 +49,17 @@ leaves jobs queued, and a deletion failure keeps the retirement journaled.
 Authorization, validation, and identity failures are not transient and still
 stop the controller.
 
+A provider quota or machine-limit rejection is a third class. It is permanent
+for that create request but not fatal to the controller. RunnerYard records the
+current fleet size as the effective capacity, keeps job completions and
+replacement launches below that ceiling flowing, and suppresses launches
+above it. After one minute it admits one probe; repeated rejections double the
+delay up to fifteen minutes. A successful probe restores configured capacity.
+Status reports `provider_capacity_exhausted` with a stable rejection code,
+configured/effective capacity, rejection count, and `retry_at`. Lower
+`MAX_RUNNERS` to the confirmed provider ceiling or raise the provider quota;
+do not restart the controller or repeatedly resend desired-count events.
+
 ## Worker startup
 
 The worker starts the GitHub runner and the Docker daemon at the same time.
@@ -199,9 +210,11 @@ docker compose -f .runneryard/hetzner.controller.compose.yml \
 Healthy interpretation:
 
 - `ready` with a recent `updated_at` means the controller heartbeat is alive.
-- `actual + starting == maximum` is normal under load but means capacity is
-  saturated; compare assigned jobs and assignment latency before raising the
-  cap.
+- `actual + starting == capacity.effective` is normal under load but means the
+  currently proven capacity is saturated. `capacity.configured` is the
+  operator ceiling; a lower effective value plus `provider_rejection` means
+  the provider rejected a launch. Compare assigned jobs and assignment
+  latency before changing either the provider quota or the configured cap.
 - provider create latency measures infrastructure boot. Assignment latency
   measures the separate interval from worker creation to GitHub job start.
 - `busy + idle + unknown == actual`; these three counters are mutually
@@ -233,12 +246,12 @@ latency aggregates have fixed fields and no user-controlled metric labels.
 ## Alerts
 
 Set `ALERT_WEBHOOK_URL` on the controller to receive a message whenever the
-fleet becomes `degraded` (provider unavailable, budget exhausted, orphan
+fleet becomes `degraded` (provider unavailable or capacity-limited, budget exhausted, orphan
 candidates, a retirement pending for more than fifteen minutes) and when it
 recovers, plus an hourly reminder while the condition lasts. Delivery never blocks the controller: a
 failed POST is logged and the next transition sends again. Pair it with
 `runneryard status` for the detail; the message itself only carries the
-reason, the worker counts, and the budget horizon.
+reason, aggregate capacity and worker counts, and the budget horizon.
 
 ## Hard usage budget
 

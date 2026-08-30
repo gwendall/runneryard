@@ -430,7 +430,14 @@ func responseError(resp *http.Response) error {
 	if readErr != nil {
 		return errors.Join(retry.ClassifyStatus("fly", resp.StatusCode, ""), readErr)
 	}
-	return retry.ClassifyStatus("fly", resp.StatusCode, strings.TrimSpace(string(contents)))
+	message := strings.TrimSpace(string(contents))
+	if resp.StatusCode == http.StatusUnprocessableEntity && strings.Contains(strings.ToLower(message), "machine limit") {
+		return &provider.CapacityError{
+			Reason: "fly_machine_limit",
+			Err:    fmt.Errorf("fly API returned %d: organization machine limit reached", resp.StatusCode),
+		}
+	}
+	return retry.ClassifyStatus("fly", resp.StatusCode, message)
 }
 
 var _ provider.Compute = (*Adapter)(nil)

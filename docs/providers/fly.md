@@ -166,6 +166,13 @@ container. Fly's enlarged OCI root is itself overlay-backed,
 so a version string, Buildx version, or successful base-image pull is not
 sufficient runtime evidence.
 
+Fly returns HTTP 422 with a machine-limit message when the organization cannot
+create another Machine. RunnerYard classifies only that response as
+`fly_machine_limit`: it does not retry the rejected create in the adapter or
+restart the controller. Status shows the effective fleet ceiling and the next
+bounded probe. Lower `MAX_RUNNERS` to that ceiling or raise the Fly organization
+quota; existing jobs and worker cleanup remain live while the condition holds.
+
 The generated `RUNNER_DOCKER_DNS=1.1.1.1,8.8.8.8` is specific to Fly's
 nested-Docker topology. Fly's private IPv6 resolver is available to the
 Machine host but may be unreachable from Docker's inner bridge: base-image

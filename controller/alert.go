@@ -117,6 +117,12 @@ func (a *alerter) message(status FleetStatus, reminder bool) string {
 	switch {
 	case status.Reason == "usage_budget_exhausted":
 		text.WriteString(". New jobs stay queued until the rolling window releases usage; raise RUNNER_USAGE_BUDGET to admit them.")
+	case status.Reason == "provider_capacity_exhausted":
+		fmt.Fprintf(&text, ". Provider capacity is %d of %d configured workers (%s); lower MAX_RUNNERS or raise the provider quota", status.Capacity.Effective, status.Capacity.Configured, status.Capacity.Rejection)
+		if !status.Capacity.RetryAt.IsZero() {
+			fmt.Fprintf(&text, "; the next bounded probe is after %s", status.Capacity.RetryAt.Format(time.RFC3339))
+		}
+		text.WriteString(".")
 	case strings.HasPrefix(status.Reason, "provider_"):
 		text.WriteString(". The provider is unavailable; the controller keeps retrying on every message.")
 	case status.Reason == "orphan_candidates":
