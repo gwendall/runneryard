@@ -4,7 +4,7 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
-## Unreleased
+## 0.4.2 (2026-08-30)
 
 - Reconciliation now requires an unexplained provider-inventory absence to
   remain continuous for 30 seconds before forgetting a worker. Reappearance
