@@ -149,6 +149,39 @@ func TestReappearanceClearsInventoryAbsenceGrace(t *testing.T) {
 	}
 }
 
+func TestInventoryAbsenceGraceDoesNotExtendLifecycleDeadlines(t *testing.T) {
+	for name, configure := range map[string]func(*scaler){
+		"maximum lifetime": func(scaler *scaler) {
+			scaler.maxLifetime = 30 * time.Minute
+		},
+		"dangling timeout": func(scaler *scaler) {
+			scaler.maxLifetime = 2 * time.Hour
+			scaler.danglingTimeout = 30 * time.Minute
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			worker := provider.Worker{
+				ID:               "worker-one",
+				LeaseID:          "lease-one",
+				RunnerName:       "runner-00000001",
+				RunnerScaleSetID: 1,
+				CreatedAt:        time.Now().Add(-time.Hour),
+			}
+			state := newWorkerState()
+			state.add(worker, false)
+			scaler, _ := capturingScaler(t, state, &fakeCompute{})
+			configure(scaler)
+
+			if err := scaler.reconcile(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := state.get(worker.RunnerName); ok {
+				t.Fatal("an expired worker was retained by the inventory absence grace")
+			}
+		})
+	}
+}
+
 func TestAdoptedWorkerDepartureIsInformational(t *testing.T) {
 	worker := provider.Worker{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-00000001", RunnerScaleSetID: 1, CreatedAt: time.Now().Add(-time.Minute)}
 	state := newWorkerState()

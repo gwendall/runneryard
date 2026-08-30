@@ -222,15 +222,23 @@ func (s *scaler) reconcile(ctx context.Context) error {
 		if _, ok := present[record.Worker.ID]; ok {
 			continue
 		}
-		if record.MissingSince.IsZero() {
-			if !s.state.markMissing(name, now) {
+		age := time.Duration(0)
+		if !record.Worker.CreatedAt.IsZero() {
+			age = now.Sub(record.Worker.CreatedAt)
+		}
+		maxLifetimeExpired := s.maxLifetime > 0 && age > s.maxLifetime
+		danglingExpired := s.danglingTimeout > 0 && record.Observed && !record.Busy && age > s.danglingTimeout
+		if !maxLifetimeExpired && !danglingExpired {
+			if record.MissingSince.IsZero() {
+				if !s.state.markMissing(name, now) {
+					continue
+				}
+				s.logger.Info("worker absent from provider inventory; waiting for confirmation", "runner", record.Worker.RunnerName, "worker_id", record.Worker.ID, "grace", inventoryAbsenceGrace)
 				continue
 			}
-			s.logger.Info("worker absent from provider inventory; waiting for confirmation", "runner", record.Worker.RunnerName, "worker_id", record.Worker.ID, "grace", inventoryAbsenceGrace)
-			continue
-		}
-		if now.Sub(record.MissingSince) < inventoryAbsenceGrace {
-			continue
+			if now.Sub(record.MissingSince) < inventoryAbsenceGrace {
+				continue
+			}
 		}
 		if err := s.retireWorker(ctx, record.Worker, false, settleActualUsage, time.Time{}); err != nil {
 			return fmt.Errorf("retire disappeared worker %s: %w", name, err)
