@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"slices"
 	"sync"
+	"time"
 )
 
 const maximumRetirementQueueSize = 1 << 20
@@ -30,6 +31,10 @@ type retirementEntry struct {
 	RunnerScaleSetID  int               `json:"runner_scale_set_id"`
 	LeaseID           string            `json:"lease_id"`
 	BudgetDisposition budgetDisposition `json:"budget_disposition"`
+	// StoppedAt is when the worker actually stopped running, when known, so
+	// the ledger charges the worker's lifetime rather than the delay until
+	// GitHub's completion message arrived.
+	StoppedAt time.Time `json:"stopped_at,omitempty"`
 }
 
 type retirementQueue struct {
@@ -159,6 +164,9 @@ func (q *retirementQueue) put(entry retirementEntry) error {
 		}
 		if entry.RunnerID == 0 {
 			entry.RunnerID = previous.RunnerID
+		}
+		if entry.StoppedAt.IsZero() {
+			entry.StoppedAt = previous.StoppedAt
 		}
 	}
 	q.entries[entry.RunnerName] = entry
