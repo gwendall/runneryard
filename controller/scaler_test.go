@@ -22,6 +22,7 @@ type fakeCompute struct {
 	removeBeforeDestroy bool
 	destroyed           []string
 	events              *[]string
+	launchCalls         int
 }
 
 type fakeRunnerScaleSetClient struct {
@@ -78,6 +79,7 @@ func (f *fakeRunnerScaleSetClient) RemoveRunner(_ context.Context, id int64) err
 }
 
 func (f *fakeCompute) Launch(_ context.Context, lease provider.Lease) (provider.Worker, error) {
+	f.launchCalls++
 	worker := f.launchWorker
 	if worker.LeaseID == "" {
 		worker.LeaseID = lease.ID

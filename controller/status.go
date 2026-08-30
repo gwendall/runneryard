@@ -29,6 +29,7 @@ type FleetStatus struct {
 	Controller    ControllerStatus `json:"controller"`
 	GitHub        GitHubStatus     `json:"github"`
 	Workers       WorkerStatus     `json:"workers"`
+	Capacity      CapacityStatus   `json:"capacity"`
 	Latency       LatencyStatus    `json:"latency"`
 	Budget        BudgetStatus     `json:"budget"`
 }
@@ -64,6 +65,17 @@ type WorkerStatus struct {
 	OverdueRetirements int  `json:"overdue_retirements"`
 	Maximum            int  `json:"maximum"`
 	Saturated          bool `json:"saturated"`
+}
+
+// CapacityStatus distinguishes the operator-configured ceiling from the
+// capacity a provider has most recently proven available to this fleet.
+// Rejection is a stable adapter-supplied code, never a raw provider payload.
+type CapacityStatus struct {
+	Configured int       `json:"configured"`
+	Effective  int       `json:"effective"`
+	Rejections uint64    `json:"rejections"`
+	Rejection  string    `json:"provider_rejection,omitempty"`
+	RetryAt    time.Time `json:"retry_at,omitempty"`
 }
 
 type LatencyStatus struct {
@@ -125,9 +137,10 @@ func newStatusReporter(cfg Config, budget BudgetStatus) (*statusReporter, error)
 			Controller: ControllerStatus{
 				ID: cfg.ControllerID, Provider: cfg.Provider, Version: cfg.Version, CommitSHA: cfg.CommitSHA,
 			},
-			GitHub:  GitHubStatus{ConfigURL: cfg.GitHubURL, ScaleSet: cfg.ScaleSetName},
-			Workers: WorkerStatus{Maximum: cfg.MaxWorkers},
-			Budget:  budget,
+			GitHub:   GitHubStatus{ConfigURL: cfg.GitHubURL, ScaleSet: cfg.ScaleSetName},
+			Workers:  WorkerStatus{Maximum: cfg.MaxWorkers},
+			Capacity: CapacityStatus{Configured: cfg.MaxWorkers, Effective: cfg.MaxWorkers},
+			Budget:   budget,
 		},
 	}
 	alerts, err := newAlerter(cfg)
@@ -164,10 +177,16 @@ func (reporter *statusReporter) update(change func(*FleetStatus)) {
 
 func (reporter *statusReporter) derive() {
 	status := &reporter.status
-	status.Workers.Saturated = status.Workers.Actual+status.Workers.Starting >= status.Workers.Maximum
+	effective := status.Capacity.Effective
+	if status.Capacity.Configured == 0 {
+		effective = status.Workers.Maximum
+	}
+	status.Workers.Saturated = status.Workers.Actual+status.Workers.Starting >= effective
 	switch {
 	case reporter.failure != "":
 		status.Health, status.Reason = "degraded", reporter.failure
+	case status.Capacity.Rejection != "":
+		status.Health, status.Reason = "degraded", "provider_capacity_exhausted"
 	case status.Workers.OverdueRetirements > 0:
 		status.Health, status.Reason = "degraded", "runner_retirements_pending"
 	case status.Workers.OrphanCandidates > 0:
@@ -234,6 +253,25 @@ func (reporter *statusReporter) latency(providerCreate bool, elapsed time.Durati
 			stats = &status.Latency.ProviderCreate
 		}
 		addLatency(stats, elapsed, failed)
+	})
+}
+
+func (reporter *statusReporter) capacityRejected(effective int, reason string, retryAt time.Time) {
+	reporter.update(func(status *FleetStatus) {
+		status.Capacity.Effective = min(max(0, effective), status.Capacity.Configured)
+		if status.Capacity.Rejections < math.MaxUint64 {
+			status.Capacity.Rejections++
+		}
+		status.Capacity.Rejection = reason
+		status.Capacity.RetryAt = retryAt.UTC()
+	})
+}
+
+func (reporter *statusReporter) capacityRecovered() {
+	reporter.update(func(status *FleetStatus) {
+		status.Capacity.Effective = status.Capacity.Configured
+		status.Capacity.Rejection = ""
+		status.Capacity.RetryAt = time.Time{}
 	})
 }
 
@@ -450,6 +488,13 @@ func (status FleetStatus) validate() error {
 		if value < 0 {
 			return errors.New("fleet status contains a negative worker count")
 		}
+	}
+	if status.Capacity.Configured < 0 || status.Capacity.Effective < 0 ||
+		(status.Capacity.Configured > 0 && status.Capacity.Effective > status.Capacity.Configured) {
+		return errors.New("fleet status contains invalid capacity metrics")
+	}
+	if status.Capacity.Rejection != "" && (status.Capacity.Rejections == 0 || status.Capacity.RetryAt.IsZero()) {
+		return errors.New("fleet status contains an incomplete provider capacity rejection")
 	}
 	if status.Workers.Busy+status.Workers.Idle+status.Workers.Unknown != status.Workers.Actual {
 		return errors.New("fleet status worker counts are inconsistent")

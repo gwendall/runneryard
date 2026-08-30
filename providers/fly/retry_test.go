@@ -20,6 +20,7 @@ type flyStub struct {
 	gets     int
 	deletes  int
 	postPlan []int // status per POST attempt; 0 means create succeeds
+	postBody string
 	getPlan  []int // status per GET attempt; 0 means success
 	delPlan  []int // status per DELETE attempt; 0 means success
 	machines []machine
@@ -35,7 +36,11 @@ func (s *flyStub) handler(t *testing.T) http.Handler {
 		case r.Method == http.MethodPost:
 			s.posts++
 			if status := planned(s.postPlan, s.posts); status != 0 {
-				http.Error(w, `{"error":"try later"}`, status)
+				body := s.postBody
+				if body == "" {
+					body = `{"error":"try later"}`
+				}
+				http.Error(w, body, status)
 				return
 			}
 			var request createMachineRequest
@@ -208,6 +213,22 @@ func TestLaunchDoesNotRetryPermanentCreateFailure(t *testing.T) {
 	}
 	if stub.posts != 1 || stub.gets != 0 {
 		t.Fatalf("permanent create failures must not be retried or inventoried, got posts=%d gets=%d", stub.posts, stub.gets)
+	}
+}
+
+func TestLaunchMachineLimitDoesNotEscapeAsPermanent(t *testing.T) {
+	stub := &flyStub{
+		postPlan: []int{422},
+		postBody: `{"error":"Your organization has reached its machine limit"}`,
+	}
+	server := httptest.NewServer(stub.handler(t))
+	defer server.Close()
+	_, err := retryAdapter(t, server, 3).Launch(context.Background(), testLease())
+	if !provider.IsCapacity(err) || provider.IsTransient(err) {
+		t.Fatalf("a provider machine limit needs its bounded-capacity classification: %v", err)
+	}
+	if stub.posts != 1 || stub.gets != 0 {
+		t.Fatalf("a permanent quota must not be retried in the adapter, got posts=%d gets=%d", stub.posts, stub.gets)
 	}
 }
 

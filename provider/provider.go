@@ -75,3 +75,48 @@ func IsTransient(err error) bool {
 	var transient *TransientError
 	return errors.As(err, &transient)
 }
+
+// CapacityError reports a provider-enforced compute ceiling. It is permanent
+// for an individual launch attempt, so adapters must not retry it, but it is
+// not a controller-fatal identity or validation failure. The core keeps the
+// GitHub session alive and probes again with bounded backoff.
+type CapacityError struct {
+	// Reason is a stable, non-secret provider rejection code suitable for
+	// aggregate status and alerts (for example, "fly_machine_limit").
+	Reason string
+	Err    error
+}
+
+func (e *CapacityError) Error() string {
+	return fmt.Sprintf("provider capacity exhausted (%s): %v", e.Reason, e.Err)
+}
+
+func (e *CapacityError) Unwrap() error { return e.Err }
+
+// IsCapacity reports whether err, or any error it wraps or joins, is a
+// CapacityError.
+func IsCapacity(err error) bool {
+	var capacity *CapacityError
+	return errors.As(err, &capacity)
+}
+
+// CapacityReason returns the stable reason carried by a CapacityError.
+func CapacityReason(err error) string {
+	var capacity *CapacityError
+	if errors.As(err, &capacity) && validCapacityReason(capacity.Reason) {
+		return capacity.Reason
+	}
+	return "provider_capacity_limit"
+}
+
+func validCapacityReason(reason string) bool {
+	if len(reason) < 1 || len(reason) > 64 || reason[0] < 'a' || reason[0] > 'z' {
+		return false
+	}
+	for _, character := range reason[1:] {
+		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '_' {
+			return false
+		}
+	}
+	return true
+}

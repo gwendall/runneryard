@@ -35,6 +35,13 @@ the listener alive. A create may only be repeated after the adapter has
 confirmed through inventory that the lease has no worker. Authorization,
 validation, and identity failures must never be reported as transient.
 
+A provider-enforced account, project, region, or machine ceiling is different
+from both classes. Return `provider.CapacityError` with a stable, non-secret
+reason code. The adapter must not retry that rejected create: the controller
+records the effective fleet capacity, keeps existing lifecycles serviceable,
+and performs one probe after its controller-level backoff. Never put a raw API
+body, tenant identifier, or credential in the reason code.
+
 ## Required capabilities
 
 An adapter is accepted only if it can prove:

@@ -121,6 +121,38 @@ func TestAlertsRemindHourlyWhileDegraded(t *testing.T) {
 	}
 }
 
+func TestCapacityAlertIsActionableAndSurvivesUnrelatedRecovery(t *testing.T) {
+	stub := &webhookStub{}
+	server := httptest.NewServer(stub.handler(t))
+	defer server.Close()
+	reporter := alertingReporter(t, server.URL)
+	reporter.start(t.Context(), nil)
+	defer reporter.close()
+
+	reporter.githubActivity("session_created")
+	retryAt := time.Now().UTC().Add(time.Minute)
+	reporter.capacityRejected(3, "fly_machine_limit", retryAt)
+	messages := stub.wait(t, 1)
+	for _, expected := range []string{"provider_capacity_exhausted", "3 of 4", "fly_machine_limit", "lower MAX_RUNNERS", "raise the provider quota", retryAt.Format(time.RFC3339)} {
+		if !strings.Contains(messages[0], expected) {
+			t.Fatalf("capacity alert missing %q: %q", expected, messages[0])
+		}
+	}
+	reporter.recovered()
+	time.Sleep(50 * time.Millisecond)
+	stub.mu.Lock()
+	queued := append([]string(nil), stub.messages...)
+	stub.mu.Unlock()
+	if len(queued) != 1 {
+		t.Fatalf("an unrelated recovery must not clear the capacity alert: %v", queued)
+	}
+	reporter.capacityRecovered()
+	messages = stub.wait(t, 2)
+	if !strings.Contains(messages[1], "ready") || !strings.Contains(messages[1], "Recovered") {
+		t.Fatalf("expected a real capacity recovery alert, got %q", messages[1])
+	}
+}
+
 func TestReporterWithoutWebhookNeverAlerts(t *testing.T) {
 	reporter := alertingReporter(t, "")
 	if reporter.alerter != nil {

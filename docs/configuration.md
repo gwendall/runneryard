@@ -66,6 +66,14 @@ authorization, and validation failures still fail closed. Raise the rate
 limits only when the provider quota is confirmed; lower them if the provider
 returns `429`.
 
+Provider quota and machine-limit responses are not governed by
+`PROVIDER_RETRY_ATTEMPTS`: retrying the same permanent rejection inside an
+adapter only wastes API budget. RunnerYard instead lowers its observed
+effective capacity and makes one controller-level probe after an exponential
+one-to-fifteen-minute backoff. Use `runneryard status` to compare desired,
+current, effective, and configured capacity. Lower `MAX_RUNNERS` or raise the
+provider quota when the effective ceiling persists.
+
 Lower the maximum lifetime to the longest legitimate job plus cleanup margin.
 Lowering it on a running fleet is safe: reservations made under the previous,
 larger value stay charged at that value until their workers finish, and the
