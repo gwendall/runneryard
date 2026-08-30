@@ -24,9 +24,12 @@ type slowCompute struct {
 	failWith  error
 	workers   []provider.Worker
 	lastLease provider.Lease
+	releaseAt int
+	release   chan struct{}
+	releaseMu sync.Once
 }
 
-func (c *slowCompute) Launch(_ context.Context, lease provider.Lease) (provider.Worker, error) {
+func (c *slowCompute) Launch(ctx context.Context, lease provider.Lease) (provider.Worker, error) {
 	c.mu.Lock()
 	c.launched++
 	c.lastLease = lease
@@ -35,11 +38,36 @@ func (c *slowCompute) Launch(_ context.Context, lease provider.Lease) (provider.
 	if c.inFlight > c.peak {
 		c.peak = c.inFlight
 	}
+	release := c.release
+	shouldRelease := release != nil && c.inFlight >= c.releaseAt
 	c.mu.Unlock()
-	time.Sleep(c.delay)
+	if shouldRelease {
+		c.releaseMu.Do(func() { close(release) })
+	}
+	var waitErr error
+	if release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			waitErr = ctx.Err()
+		}
+	} else if c.delay > 0 {
+		timer := time.NewTimer(c.delay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			waitErr = ctx.Err()
+		}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.inFlight--
+	if waitErr != nil {
+		return provider.Worker{}, waitErr
+	}
 	if c.failAfter > 0 && n > c.failAfter {
 		return provider.Worker{}, c.failWith
 	}
@@ -79,20 +107,22 @@ func concurrentScaler(t *testing.T, compute provider.Compute, concurrency, maxWo
 }
 
 func TestLaunchesOverlapUpToTheConfiguredBound(t *testing.T) {
-	compute := &slowCompute{delay: 40 * time.Millisecond}
+	compute := &slowCompute{releaseAt: 3, release: make(chan struct{})}
 	scaler := concurrentScaler(t, compute, 3, 12)
-	count, err := scaler.HandleDesiredRunnerCount(context.Background(), 6)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	count, err := scaler.HandleDesiredRunnerCount(ctx, 6)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if count != 6 {
 		t.Fatalf("expected 6 workers, got %d", count)
 	}
-	// Journal and ledger writes stay serialized (they fsync), so wall-clock
-	// time is not a reliable signal; the observed peak proves both the overlap
-	// and the bound.
-	if compute.peak < 2 || compute.peak > 3 {
-		t.Fatalf("expected launches to overlap within the bound of 3, observed peak %d", compute.peak)
+	// The first wave is held until all three slots reach the provider. This
+	// proves exact overlap without depending on scheduler or filesystem timing;
+	// the context fails promptly if launches ever become serial again.
+	if compute.peak != 3 {
+		t.Fatalf("expected launches to reach the bound of 3, observed peak %d", compute.peak)
 	}
 }
 
