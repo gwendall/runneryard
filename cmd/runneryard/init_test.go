@@ -75,7 +75,7 @@ func TestRunInitCreatesSafeScaffold(t *testing.T) {
 		`RUNNERYARD_MIN_ROOTFS_GIB: "25"`,
 		`runs-on: "acme-linux"`,
 		`set -euo pipefail`,
-		`actions/setup-node@820762786026740c76f36085b0efc47a31fe5020`,
+		`actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0`,
 		`actual_version="$(runneryard version)"`,
 		`expected_version="runneryard ${RUNNERYARD_EXPECTED_VERSION} (${RUNNERYARD_EXPECTED_COMMIT})"`,
 		`test "$RUNNER_ENVIRONMENT" = self-hosted`,

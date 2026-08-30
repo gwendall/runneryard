@@ -2,6 +2,7 @@ package controller
 
 import (
 	"sync"
+	"time"
 
 	"github.com/gwendall/runneryard/provider"
 )
@@ -12,13 +13,47 @@ type workerRecord struct {
 	Observed bool
 }
 
+// departure remembers a worker that left provider inventory before GitHub
+// reported its job finished, so the completion message that follows can be
+// matched to it instead of being reported as an unknown runner.
+type departure struct {
+	Worker provider.Worker
+	Busy   bool
+	At     time.Time
+}
+
 type workerState struct {
-	mu      sync.Mutex
-	workers map[string]workerRecord
+	mu       sync.Mutex
+	workers  map[string]workerRecord
+	departed map[string]departure
 }
 
 func newWorkerState() *workerState {
-	return &workerState{workers: make(map[string]workerRecord)}
+	return &workerState{workers: make(map[string]workerRecord), departed: make(map[string]departure)}
+}
+
+func (s *workerState) markDeparted(record workerRecord, at time.Time) {
+	s.mu.Lock()
+	s.departed[record.Worker.RunnerName] = departure{Worker: record.Worker, Busy: record.Busy, At: at}
+	s.mu.Unlock()
+}
+
+func (s *workerState) takeDeparted(name string) (departure, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.departed[name]
+	delete(s.departed, name)
+	return record, ok
+}
+
+func (s *workerState) pruneDeparted(before time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name, record := range s.departed {
+		if record.At.Before(before) {
+			delete(s.departed, name)
+		}
+	}
 }
 
 func (s *workerState) add(worker provider.Worker, busy bool) {
