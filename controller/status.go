@@ -50,13 +50,18 @@ type GitHubStatus struct {
 }
 
 type WorkerStatus struct {
-	Actual             int  `json:"actual"`
-	Starting           int  `json:"starting"`
-	Busy               int  `json:"busy"`
-	Idle               int  `json:"idle"`
-	Unknown            int  `json:"unknown"`
-	OrphanCandidates   int  `json:"orphan_candidates"`
-	PendingRetirements int  `json:"pending_retirements"`
+	Actual             int `json:"actual"`
+	Starting           int `json:"starting"`
+	Busy               int `json:"busy"`
+	Idle               int `json:"idle"`
+	Unknown            int `json:"unknown"`
+	OrphanCandidates   int `json:"orphan_candidates"`
+	PendingRetirements int `json:"pending_retirements"`
+	// OverdueRetirements counts pending retirements older than the
+	// retirement grace. GitHub can keep a runner registered for minutes after
+	// its job completed, so a fresh deferral is routine and only an overdue
+	// one degrades the fleet.
+	OverdueRetirements int  `json:"overdue_retirements"`
 	Maximum            int  `json:"maximum"`
 	Saturated          bool `json:"saturated"`
 }
@@ -163,7 +168,7 @@ func (reporter *statusReporter) derive() {
 	switch {
 	case reporter.failure != "":
 		status.Health, status.Reason = "degraded", reporter.failure
-	case status.Workers.PendingRetirements > 0:
+	case status.Workers.OverdueRetirements > 0:
 		status.Health, status.Reason = "degraded", "runner_retirements_pending"
 	case status.Workers.OrphanCandidates > 0:
 		status.Health, status.Reason = "degraded", "orphan_candidates"
@@ -211,8 +216,11 @@ func (reporter *statusReporter) orphans(count int) {
 	reporter.update(func(status *FleetStatus) { status.Workers.OrphanCandidates = max(0, count) })
 }
 
-func (reporter *statusReporter) retirements(count int) {
-	reporter.update(func(status *FleetStatus) { status.Workers.PendingRetirements = max(0, count) })
+func (reporter *statusReporter) retirements(count, overdue int) {
+	reporter.update(func(status *FleetStatus) {
+		status.Workers.PendingRetirements = max(0, count)
+		status.Workers.OverdueRetirements = min(max(0, overdue), max(0, count))
+	})
 }
 
 func (reporter *statusReporter) budget(snapshot BudgetStatus) {

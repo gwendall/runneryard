@@ -28,6 +28,12 @@ operator-facing schema or a trust boundary is called out here first.
   runner the controller never knew still warn.
 - The generated canary keeps a reviewable version comment next to the pinned
   `actions/setup-node` commit.
+- A pending runner retirement degrades the fleet only once it has stayed
+  pending for longer than fifteen minutes. GitHub keeps a runner registered,
+  and refuses its removal as "job still running", for minutes after the job
+  completed, so a fresh deferral is now reported as pending without an alert.
+  The retirement journal records `requested_at` and the status snapshot adds
+  `overdue_retirements`; both are additive.
 
 ## 0.4.0 (2026-08-30)
 

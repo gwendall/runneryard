@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestRetirementQueuePersistsIdempotently(t *testing.T) {
@@ -116,5 +117,44 @@ func TestRetirementQueueMigratesEmptyLegacyLedgerAndRejectsNonEmptyOne(t *testin
 	}
 	if _, err := newRetirementQueue(nonEmpty); err == nil {
 		t.Fatal("expected non-empty legacy ledger to fail closed")
+	}
+}
+
+func TestRetirementQueueCountsOverdueEntries(t *testing.T) {
+	queue, err := newRetirementQueue(filepath.Join(t.TempDir(), "retirements.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	entries := []retirementEntry{
+		{RunnerName: "runner-0000aaaa", RunnerScaleSetID: 1, LeaseID: "lease-a", BudgetDisposition: settleActualUsage, RequestedAt: now},
+		{RunnerName: "runner-0000bbbb", RunnerScaleSetID: 1, LeaseID: "lease-b", BudgetDisposition: settleActualUsage, RequestedAt: now.Add(-20 * time.Minute)},
+		{RunnerName: "runner-0000cccc", RunnerScaleSetID: 1, LeaseID: "lease-c", BudgetDisposition: settleActualUsage},
+	}
+	for _, entry := range entries {
+		if err := queue.put(entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := queue.overdue(now, 15*time.Minute); got != 2 {
+		t.Fatalf("overdue = %d, want the aged entry and the legacy entry without a request time", got)
+	}
+	rebound := entries[1]
+	rebound.RunnerID = 42
+	rebound.RequestedAt = time.Time{}
+	if err := queue.put(rebound); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range queue.all() {
+		if entry.RunnerName == "runner-0000bbbb" && !entry.RequestedAt.Equal(entries[1].RequestedAt) {
+			t.Fatalf("binding the registration id must keep the original request time, got %v", entry.RequestedAt)
+		}
+	}
+	reloaded, err := newRetirementQueue(queue.file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.overdue(now, 15*time.Minute); got != 2 {
+		t.Fatalf("overdue after reload = %d, want 2", got)
 	}
 }

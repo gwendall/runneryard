@@ -248,6 +248,18 @@ func (s *scaler) HandleJobStarted(_ context.Context, job *scaleset.JobStarted) e
 	return nil
 }
 
+// retirementGrace is how long a journaled retirement may stay pending before
+// the fleet reports degraded. GitHub keeps a runner registered, and refuses
+// its removal as "job still running", for several minutes after the job
+// completed and the worker exited; that deferral is routine, not a fault.
+const retirementGrace = 15 * time.Minute
+
+// reportRetirements publishes the journal size and how many entries have
+// outlived the grace.
+func (s *scaler) reportRetirements() {
+	s.reporter.retirements(s.retirements.count(), s.retirements.overdue(time.Now(), retirementGrace))
+}
+
 // departureMemory bounds how long a departed worker is remembered for the
 // completion message that GitHub sends after the job finished. Completion
 // follows departure within minutes; anything older is a genuinely unknown
@@ -325,13 +337,14 @@ func (s *scaler) startWorker(ctx context.Context) (bool, error) {
 	}
 	retirement := retirementEntry{
 		RunnerName: name, RunnerScaleSetID: s.scaleSetID, LeaseID: leaseID, BudgetDisposition: forfeitReservation,
+		RequestedAt: time.Now().UTC(),
 	}
 	if err := s.retirements.put(retirement); err != nil {
 		s.reporter.degraded("runner_retirement_state_failed")
 		budgetErr := s.budget.forfeit(leaseID, time.Now())
 		return false, errors.Join(fmt.Errorf("journal runner registration intent: %w", err), budgetErr)
 	}
-	s.reporter.retirements(s.retirements.count())
+	s.reportRetirements()
 	jit, err := s.scaleSetClient.GenerateJitRunnerConfig(ctx, &scaleset.RunnerScaleSetJitRunnerSetting{
 		Name:       name,
 		WorkFolder: "_work",
@@ -395,7 +408,7 @@ func (s *scaler) startWorker(ctx context.Context) (bool, error) {
 		s.reporter.degraded("runner_retirement_state_failed")
 		return false, fmt.Errorf("commit launched runner state: %w", err)
 	}
-	s.reporter.retirements(s.retirements.count())
+	s.reportRetirements()
 	s.reportState()
 	s.reporter.budget(s.budget.snapshot(time.Now()))
 	s.reporter.recovered()
@@ -412,7 +425,7 @@ func (s *scaler) cleanupJITGenerationFailure(ctx context.Context, retirement ret
 		if err := s.retirements.remove(retirement.RunnerName); err != nil {
 			return errors.Join(generationErr, err)
 		}
-		s.reporter.retirements(s.retirements.count())
+		s.reportRetirements()
 		if err := s.budget.release(retirement.LeaseID); err != nil {
 			return errors.Join(generationErr, err)
 		}
@@ -541,6 +554,7 @@ func (s *scaler) retireWorker(ctx context.Context, worker provider.Worker, provi
 	retirement := retirementEntry{
 		RunnerName: worker.RunnerName, RunnerID: worker.RunnerID, RunnerScaleSetID: worker.RunnerScaleSetID,
 		LeaseID: worker.LeaseID, BudgetDisposition: disposition, StoppedAt: stoppedAt.UTC(),
+		RequestedAt: time.Now().UTC(),
 	}
 	if stoppedAt.IsZero() {
 		retirement.StoppedAt = time.Time{}
@@ -552,7 +566,7 @@ func (s *scaler) retireWorker(ctx context.Context, worker provider.Worker, provi
 		s.reporter.degraded("runner_retirement_state_failed")
 		return err
 	}
-	s.reporter.retirements(s.retirements.count())
+	s.reportRetirements()
 	err := s.finishRetirement(ctx, worker, providerPresent, retirement)
 	if errors.Is(err, errRetirementDeferred) {
 		return nil
@@ -616,7 +630,7 @@ func (s *scaler) finishRetirement(ctx context.Context, worker provider.Worker, p
 		s.reporter.degraded("runner_retirement_state_failed")
 		return err
 	}
-	s.reporter.retirements(s.retirements.count())
+	s.reportRetirements()
 	return nil
 }
 
