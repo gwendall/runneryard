@@ -63,7 +63,7 @@ fly secrets set --app acme-ci-controller \\
             <h2>05 · Budget and deploy</h2>
             <div className="provider-content">
               <p>Initialize the fail-closed budget ledger exactly once, then run doctor before the controller starts. The generated worker uses two sustained performance CPUs and 8 GB of RAM; shared CPUs remain an explicit option for short, bursty jobs.</p>
-              <CodeBlock>{`fly machine run ghcr.io/gwendall/runneryard:0.4.2 \\
+              <CodeBlock>{`fly machine run ghcr.io/gwendall/runneryard:0.4.3 \\
   --entrypoint "/usr/local/bin/controller-entrypoint" \\
   --env RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json \\
   --app acme-ci-controller --region cdg \\

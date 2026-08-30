@@ -4,7 +4,7 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
-## Unreleased
+## 0.4.3 (2026-08-31)
 
 - Provider quota exhaustion is a bounded capacity condition instead of a
   fatal controller error. Fly machine-limit responses keep the GitHub session
