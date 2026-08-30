@@ -6,9 +6,9 @@ the closed issues, the open items in
 private pilot. Identifiers are stable; open an issue with the identifier when
 you start an item.
 
-Delivery status: R1 is in pull request #62; R2, R3, R4, R5, R6, R7, I8, C2, C8,
-C10, H3, and O7 are in pull request #63, stacked on #62. I1 shipped in 0.3.11
-and 0.3.12.
+Delivery status: R1, R2, R3, R4, R5, R6, R7, I8, C2, C8, C10, H3, and O7
+shipped in 0.4.0; I1 shipped in 0.3.11 and 0.3.12. Next in line: C1, R10,
+R13, C4, P1, P3, S3, O1, O3, O4, W1, W4, W6, H5.
 
 How to read it:
 
@@ -17,20 +17,18 @@ How to read it:
 - Effort: `S` under a day, `M` up to a week, `L` two to four weeks, `XL` more.
 - Every item names the files it touches so it can become an issue as is.
 
-## Next twelve, in order
+## Next ten, in order
 
-1. R4 idle-worker timeout (P0, S)
-2. R1 retry, backoff, rate limiting (P0, M)
-3. R3 bounded concurrent launches (P0, S)
-4. R2 explicit Fly restart policy (P0, S)
-5. R7 diagnostics before worker exit (P0, S)
-6. I8 start the runner without waiting for Docker (P0, S)
-7. C8 exact usage settlement and budget horizon (P0, S)
-8. C1 cost receipt in every job log (P1, S)
-9. R6 unique `CONTROLLER_ID` default (P1, S)
-10. R5 retire stopped workers immediately (P1, S)
-11. G1 start the production pilot (P1, S)
-12. C2 push alerts on degraded status (P1, S)
+1. G1 run the production pilot on 0.4.0 and record the receipts (P1, S)
+2. C1 cost receipt in every job log (P1, S)
+3. R13 load test before raising the ceiling further (P1, S)
+4. R10 nightly integration workflow against a real provider (P1, M)
+5. C4 region fallback with a circuit breaker (P1, S)
+6. P1 multi-architecture image or narrower documentation (P1, S)
+7. O1 troubleshooting guide (P1, S)
+8. O4 version, shape, and region visible in the job (P1, S)
+9. W1 and W6 status and configuration reference updates (P1, S)
+10. H5 release checklist leftovers (P1, M)
 
 ## 0. Milestones
 
