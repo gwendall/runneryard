@@ -32,6 +32,9 @@ alongside App credentials. The GitHub App flow is the production default.
 | `RUNNER_BUDGET_WINDOW` | Rolling usage window. | `720h` (30 days) |
 | `RUNNER_BUDGET_FILE` | Fail-closed ledger on durable storage. | `/var/lib/runneryard/budget.json` |
 | `RUNNER_STATUS_FILE` | Private atomic health receipt; must differ from the ledger. | `/var/lib/runneryard/status.json` |
+| `PROVIDER_RETRY_ATTEMPTS` | Attempts per provider call before a transient failure is reported. | `5` |
+| `PROVIDER_RATE_LIMIT` | Sustained provider API requests per second; the burst is twice this value. | `5` |
+| `GITHUB_API_RATE_LIMIT` | Controller GitHub API requests per second; `0` disables pacing. | `10` |
 
 Start with the generated ceiling. Raise `MAX_RUNNERS` only from observed peak
 job concurrency and provider quota, never from pull-request count. The operator
@@ -43,6 +46,15 @@ admits at most `floor(remaining budget / maximum lifetime)` new workers, even
 when `MAX_RUNNERS` is higher. Set the rolling budget from an explicit monthly
 worker-time allowance, and keep a separate provider spending alert for the
 controller, storage, images, network, taxes, and price changes.
+
+Provider throttling, provider-side errors, and transport failures are retried
+with exponential backoff up to `PROVIDER_RETRY_ATTEMPTS`. A create request is
+only repeated after inventory proves the previous attempt produced no worker
+for the lease. When retries are exhausted, the controller keeps its GitHub
+session, reports `degraded`, and tries again on the next message; identity,
+authorization, and validation failures still fail closed. Raise the rate
+limits only when the provider quota is confirmed; lower them if the provider
+returns `429`.
 
 Lower the maximum lifetime to the longest legitimate job plus cleanup margin.
 Do not use it to mask a slow test: move advisory or periodic work out of the PR

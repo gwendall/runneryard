@@ -108,7 +108,7 @@ var flyPolicyEnvironment = map[string]struct{}{
 	"RUNNER_FLY_APP": {}, "RUNNER_FLY_REGION": {}, "RUNNER_GROUP": {},
 	"RUNNER_IMAGE": {}, "RUNNER_MAX_LIFETIME": {}, "RUNNER_MEMORY_MB": {},
 	"RUNNER_ROOTFS_GB": {}, "RUNNER_DOCKER_DNS": {}, "RUNNER_STATUS_FILE": {}, "RUNNER_USAGE_BUDGET": {},
-	"SCALE_SET_NAME": {},
+	"SCALE_SET_NAME": {}, "PROVIDER_RETRY_ATTEMPTS": {}, "PROVIDER_RATE_LIMIT": {}, "GITHUB_API_RATE_LIMIT": {},
 }
 
 func controllerSecretChecks(controllerApp string, run commandRunner) []doctorCheck {

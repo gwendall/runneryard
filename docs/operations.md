@@ -31,6 +31,18 @@ status remains degraded with a pending retirement, and reconciliation retries
 the same immutable registration ID. Identity or provider ambiguity remains a
 hard error.
 
+Provider failures are classified. Throttling (`429`), provider-side errors
+(`5xx`), and transport failures are transient: the adapter retries them with
+backoff and paces every request. A create is repeated only after inventory
+proves the lease has no worker, so a lost response can never produce two
+workers for one JIT configuration. If the retries are exhausted, the
+controller logs a warning, reports `degraded` with the matching
+`provider_*_failed` reason, keeps the GitHub session, and retries on the next
+message: an inventory failure skips one reconciliation, a launch failure
+leaves jobs queued, and a deletion failure keeps the retirement journaled.
+Authorization, validation, and identity failures are not transient and still
+stop the controller.
+
 ## Safe upgrades
 
 Pin the runtime image to a release version. Stop the old controller cleanly and
