@@ -147,6 +147,12 @@ bootstrap, metadata, and lifecycle translation. See the
 - `RUNNER_MAX_LIFETIME` forces cleanup of hung or disconnected workers.
 - `RUNNER_USAGE_BUDGET` is a durable rolling compute-time ceiling. New jobs
   queue when it is exhausted.
+- A worker that receives no job releases itself after `RUNNER_IDLE_TIMEOUT`;
+  the controller retires its own dangling workers after
+  `RUNNER_DANGLING_TIMEOUT` and stopped workers immediately.
+- Transient provider failures are retried with backoff and request pacing. The
+  controller keeps its GitHub session, reports `degraded`, and retries on the
+  next message; `ALERT_WEBHOOK_URL` pushes those transitions to a webhook.
 - Live capacity and cost limits are operator-owned configuration. A repository
   pull request must never raise them.
 - Ownership metadata prevents one controller from deleting foreign machines.
@@ -186,11 +192,17 @@ Requirements: Go 1.25+, Node 24+, pnpm 10, and Docker for image tests.
 ```sh
 go test -race ./...
 go vet ./...
+staticcheck ./...
+gosec -quiet ./...
+govulncheck ./...
 corepack enable
 pnpm install --frozen-lockfile
 pnpm check
 pnpm build
 ```
+
+The pinned versions of the analysis tools are listed in
+[CONTRIBUTING.md](CONTRIBUTING.md); CI runs the same set.
 
 The website lives in `apps/web` and runs with `pnpm dev`. See
 [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a

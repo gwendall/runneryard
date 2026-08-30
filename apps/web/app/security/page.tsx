@@ -20,7 +20,7 @@ export default function SecurityPage() {
         <section className="boundary shell" aria-label="Credential boundary">
           <div><span>Trusted</span><strong>Controller</strong><p>GitHub App key<br />Provider credential<br />Durable budget</p></div>
           <b aria-hidden="true">one-job JIT →</b>
-          <div><span>Untrusted</span><strong>Worker</strong><p>No permanent secret<br />No inbound access<br />Hard deadline</p></div>
+          <div><span>Untrusted</span><strong>Worker</strong><p>No permanent secret<br />No inbound access<br />Hard deadline, idle release</p></div>
           <b aria-hidden="true">→</b>
           <div><span>Final state</span><strong>Deleted</strong><p>Normal completion<br />Timeout<br />Reconciliation</p></div>
         </section>
@@ -52,14 +52,14 @@ npx runneryard auth github import \\
             <div><p className="eyebrow">Not offered</p><h2>A shared hosted RunnerYard App</h2></div>
             <div className="prose">
               <p>One central App is safe only when a hosted broker retains its private key, authenticates every controller, authorizes each installation, and mints short-lived tokens. Shipping the central private key to customer controllers would let any one of them sign as the App.</p>
-              <p>RunnerYard does not operate that broker today. The default stays fully self-hosted and operator-owned. A hosted control plane can be added later as a separate, explicit trust model—not hidden inside the CLI.</p>
+              <p>RunnerYard does not operate that broker today. The default stays fully self-hosted and operator-owned. A hosted control plane can be added later as a separate, explicit trust model, not hidden inside the CLI.</p>
             </div>
           </section>
 
           <section className="security-section">
             <div><p className="eyebrow">Worker isolation</p><h2>No credential inheritance</h2></div>
             <div className="prose">
-              <p>Controller and workers must live in separate secret scopes. Every worker receives only a one-job JIT configuration, runs with no restart policy, and has a maximum lifetime. Do not expose self-hosted runners to untrusted public fork pull requests.</p>
+              <p>Controller and workers must live in separate secret scopes. Every worker receives only a one-job JIT configuration, runs with no restart policy, has a maximum lifetime, and releases itself when no job arrives. Do not expose self-hosted runners to untrusted public fork pull requests.</p>
               <p>Provider credentials should be limited to a dedicated worker app or project. The worker network must have no route to production, controller internals, or cloud metadata services.</p>
             </div>
           </section>

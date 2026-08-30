@@ -15,7 +15,10 @@ type Compute interface {
 ```
 
 - `Launch` creates exactly one worker for a one-job lease. The only credential
-  in a lease is GitHub's short-lived JIT configuration.
+  in a lease is GitHub's short-lived JIT configuration. The lease also carries a
+  non-secret deadline and idle timeout that the adapter must deliver to the
+  worker as `RUNNERYARD_DEADLINE` (RFC 3339) and `RUNNERYARD_IDLE_TIMEOUT`
+  (seconds, `0` disables); `RUNNERYARD_DIAG_HOLD` (seconds) is optional.
 - `Inventory` returns every live worker owned by this controller and no foreign
   worker. Ownership must round-trip through provider metadata or tags.
 - `Destroy` force-deletes a worker and succeeds when it is already absent.

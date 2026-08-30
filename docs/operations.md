@@ -213,8 +213,10 @@ Healthy interpretation:
 - budget used is settled compute, reserved is worst-case time held by active
   workers, and remaining is admission headroom. `usage_budget_exhausted` means
   new jobs intentionally stay queued.
-- burn is the settled usage of the trailing day extrapolated to a daily rate,
-  and horizon is how long the remaining budget lasts at that rate. Raise the
+- burn (`burn_seconds_per_day`) is the settled usage of the trailing day
+  extrapolated to a daily rate, and horizon (`horizon_seconds`) is how long the
+  remaining budget lasts at that rate; both are additive fields of status
+  schema version 2. Raise the
   budget before the horizon reaches zero; queued jobs otherwise wait until
   the oldest charges leave the rolling window.
 

@@ -182,7 +182,8 @@ The adapter creates each server with:
 - optional attachment to one dedicated private network;
 - controller, lease, and runner ownership labels;
 - public IPv4 and IPv6 for outbound CI traffic;
-- cloud-init containing only a base64-encoded JIT lease and deadline.
+- cloud-init containing only a base64-encoded JIT lease, deadline, and idle
+  timeout.
 
 The VM is created powered off. RunnerYard waits for every create and attachment
 action, confirms that the required firewall is applied, and only then powers on
