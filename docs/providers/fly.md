@@ -118,8 +118,8 @@ The adapter creates one Machine with:
 - 2 performance CPUs, 8 GB RAM, and 30 GB ephemeral rootfs by default
 - controller, lease, runner, and deadline metadata
 - `ACTIONS_RUNNER_INPUT_JITCONFIG` as its only injected credential
-- process-level `ignore_app_secrets=true`, plus a non-secret lease deadline and
-  validated Docker DNS policy
+- process-level `ignore_app_secrets=true`, plus a non-secret lease deadline,
+  idle timeout, and validated Docker DNS policy
 
 Configure shape and cost through `RUNNER_CPUS`, `RUNNER_MEMORY_MB`,
 `RUNNER_ROOTFS_GB`, `MIN_RUNNERS`, `MAX_RUNNERS`, and

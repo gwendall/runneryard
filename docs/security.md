@@ -129,6 +129,21 @@ When the rolling budget is exhausted, new GitHub jobs queue instead of
 starting compute. The ledger must live on durable controller storage and fails
 closed if it cannot be read or written. `MIN_RUNNERS` defaults to zero.
 
+A worker that never receives a job releases itself after `RUNNER_IDLE_TIMEOUT`
+through the runner's job-started hook, which carries no credential. The
+controller keeps two backstops: it retires its own workers that never started
+a job after `RUNNER_DANGLING_TIMEOUT`, and workers the provider reports as
+stopped as soon as it sees them. Neither path widens deletion authority: both
+go through the same journaled retirement that requires the lease and
+registration proof, and workers adopted after a controller restart are never
+released by the dangling backstop.
+
+Provider retries never repeat a create blindly. A create is repeated only
+after inventory proves the lease has no worker, so a lost response cannot
+produce two workers sharing one JIT configuration. Exhausted retries keep the
+GitHub session open and report `degraded`; authorization, validation, and
+identity failures are never treated as transient.
+
 Retirement is also journaled before destructive work. The controller deletes a
 GitHub runner registration only after provider absence is authoritative, only
 for a controller-generated `runner-*` identity, and only when its immutable

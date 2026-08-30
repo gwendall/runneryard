@@ -34,7 +34,7 @@ func writeFleetStatus(output io.Writer, status controller.FleetStatus, asJSON bo
 	if asJSON {
 		return json.NewEncoder(output).Encode(status)
 	}
-	fmt.Fprintf(output, "RunnerYard %s — %s", status.Health, status.Controller.Provider)
+	fmt.Fprintf(output, "RunnerYard %s - %s", status.Health, status.Controller.Provider)
 	if status.Reason != "" {
 		fmt.Fprintf(output, " (%s)", status.Reason)
 	}
