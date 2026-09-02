@@ -7,8 +7,16 @@ private pilot. Identifiers are stable; open an issue with the identifier when
 you start an item.
 
 Delivery status: R1, R2, R3, R4, R5, R6, R7, I8, C2, C8, C10, H3, and O7
-shipped in 0.4.0; I1 shipped in 0.3.11 and 0.3.12. Next in line: C1, R10,
-R13, C4, P1, P3, S3, O1, O3, O4, W1, W4, W6, H5.
+shipped in 0.4.0; I1 shipped in 0.3.11 and 0.3.12. The 0.4.1 to 0.4.3
+releases shipped W4 and, beyond existing identifiers: `init` can describe an
+existing fleet and pins the release in the generated TOML, `doctor` compares
+the committed configuration with the live controller, the generated canary
+binds the exact release commit and root filesystem, worker departures and
+their completions log at `INFO`, pending retirements degrade only after a
+grace period, GitHub App secrets are staged on Fly, an unexplained inventory
+absence must persist before a replacement is launched, and provider capacity
+ceilings are a bounded condition instead of a fatal error. Next in line: C1,
+R10, R13, C4, P1, P3, S3, O1, O3, O4, W1, W6, H5.
 
 How to read it:
 
@@ -19,7 +27,7 @@ How to read it:
 
 ## Next ten, in order
 
-1. G1 run the production pilot on 0.4.0 and record the receipts (P1, S)
+1. G1 run the production pilot on the 0.4.x line and record the receipts (P1, S)
 2. C1 cost receipt in every job log (P1, S)
 3. R13 load test before raising the ceiling further (P1, S)
 4. R10 nightly integration workflow against a real provider (P1, M)
