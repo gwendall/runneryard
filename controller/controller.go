@@ -244,11 +244,16 @@ func superviseSessions(ctx context.Context, open sessionOpener, scaler *scaler, 
 				backoff = 0
 			}
 		}
-		if ctx.Err() != nil || err == nil {
+		if ctx.Err() != nil {
 			return nil
 		}
 		if isHandlerFailure(err) {
 			return err
+		}
+		if err == nil {
+			// The listener only returns on an error or cancellation; a silent
+			// return would otherwise end the fleet without a word.
+			err = errors.New("scale set listener returned without an error")
 		}
 		backoff = nextSessionBackoff(backoff, initialBackoff, maximumBackoff)
 		scaler.reporter.degraded("github_session_restarting")
