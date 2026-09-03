@@ -63,6 +63,16 @@ func writeFleetStatus(output io.Writer, status controller.FleetStatus, asJSON bo
 		fmt.Fprintf(output, "  retry after %s", status.Capacity.RetryAt.Format(time.RFC3339))
 	}
 	fmt.Fprintln(output)
+	if status.Launch.Rejections > 0 || status.Launch.Rejection != "" {
+		fmt.Fprintf(output, "Launch      %d provider rejection(s)", status.Launch.Rejections)
+		if status.Launch.Rejection != "" {
+			fmt.Fprintf(output, "  %s", status.Launch.Rejection)
+		}
+		if !status.Launch.RetryAt.IsZero() {
+			fmt.Fprintf(output, "  retry after %s", status.Launch.RetryAt.Format(time.RFC3339))
+		}
+		fmt.Fprintln(output)
+	}
 	writeLatency(output, "Create", status.Latency.ProviderCreate, true)
 	writeLatency(output, "Assignment", status.Latency.Assignment, false)
 	fmt.Fprintf(output, "Budget      %s used  %s reserved  %s remaining / %s per %s\n",

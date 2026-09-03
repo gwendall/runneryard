@@ -15,7 +15,19 @@ import (
 	"github.com/gwendall/runneryard/provider"
 )
 
-const sessionCloseTimeout = 3 * time.Second
+const (
+	sessionCloseTimeout = 3 * time.Second
+	// sessionRestartInitialBackoff and sessionRestartMaximumBackoff bound the
+	// wait before the controller reopens its GitHub scale-set session after
+	// the transport failed. The platform's restart policy used to be the only
+	// recovery: on Fly its exponential backoff reached fifteen minutes on
+	// 2026-09-03, with twenty-three runs queued behind a dead controller.
+	sessionRestartInitialBackoff = 5 * time.Second
+	sessionRestartMaximumBackoff = 2 * time.Minute
+	// sessionStableAfter is how long a session must have lasted for the
+	// restart backoff to start over from the initial delay.
+	sessionStableAfter = 2 * time.Minute
+)
 
 type sessionCloser interface {
 	Close(context.Context) error
@@ -25,6 +37,9 @@ type messageSession interface {
 	listener.Client
 	sessionCloser
 }
+
+// sessionOpener creates one GitHub scale-set message session.
+type sessionOpener func(context.Context) (messageSession, error)
 
 type Config struct {
 	GitHubURL      string
@@ -171,12 +186,13 @@ func (c *Controller) Run(ctx context.Context) error {
 	if err != nil || hostname == "" {
 		hostname = cfg.ControllerID
 	}
-	session, err := c.github.MessageSessionClient(ctx, scaleSet.ID, hostname)
-	if err != nil {
-		reporter.degraded("github_session_failed")
-		return fmt.Errorf("create message session: %w", err)
+	open := func(ctx context.Context) (messageSession, error) {
+		session, err := c.github.MessageSessionClient(ctx, scaleSet.ID, hostname)
+		if err != nil {
+			return nil, err
+		}
+		return session, nil
 	}
-	reporter.githubActivity("session_created")
 
 	scaler := &scaler{
 		state:             newWorkerState(),
@@ -193,14 +209,89 @@ func (c *Controller) Run(ctx context.Context) error {
 		retirements:       retirements,
 		reporter:          reporter,
 		logger:            cfg.Logger.WithGroup("scaler"),
+		startedAt:         time.Now(),
 	}
-	return runControllerSession(ctx, session, scaler, cfg, scaleSet.ID)
+	return superviseSessions(ctx, open, scaler, cfg, scaleSet.ID, sessionRestartInitialBackoff, sessionRestartMaximumBackoff)
 }
 
+// superviseSessions keeps a GitHub scale-set session open for the fleet's
+// lifetime. The listener library returns on the first transport failure - a
+// message poll, an acknowledgement, a job acquisition, the session itself -
+// and the controller used to exit on it, leaving recovery to the platform's
+// restart policy and its growing backoff. Here a transport failure closes the
+// session, waits with bounded backoff, and opens a new one against the same
+// scaler, so worker state, the launch gate, and the budget survive. Only a
+// handler failure (the scaler's fail-closed identity and state errors) or
+// cancellation ends the loop; the first session also recovers existing
+// workers from provider inventory.
+func superviseSessions(ctx context.Context, open sessionOpener, scaler *scaler, cfg Config, scaleSetID int, initialBackoff, maximumBackoff time.Duration) error {
+	defer scaler.shutdown(context.Background())
+	backoff := time.Duration(0)
+	recoverWorkers := true
+	for {
+		var err error
+		session, openErr := open(ctx)
+		if openErr != nil {
+			scaler.reporter.degraded("github_session_failed")
+			err = fmt.Errorf("create message session: %w", openErr)
+		} else {
+			started := time.Now()
+			scaler.reporter.githubActivity("session_created")
+			err = runSession(ctx, session, scaler, cfg, scaleSetID, recoverWorkers)
+			closeSession(session, cfg.Logger)
+			recoverWorkers = false
+			if time.Since(started) >= sessionStableAfter {
+				backoff = 0
+			}
+		}
+		if ctx.Err() != nil || err == nil {
+			return nil
+		}
+		if isHandlerFailure(err) {
+			return err
+		}
+		backoff = nextSessionBackoff(backoff, initialBackoff, maximumBackoff)
+		scaler.reporter.degraded("github_session_restarting")
+		cfg.Logger.Warn("scale set session ended; reopening after backoff", "error", err, "backoff", backoff)
+		if err := waitContext(ctx, backoff); err != nil {
+			return nil
+		}
+	}
+}
+
+func nextSessionBackoff(current, initial, maximum time.Duration) time.Duration {
+	if current <= 0 {
+		return initial
+	}
+	return min(current*2, maximum)
+}
+
+func waitContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// runControllerSession runs one session end to end: recover existing
+// workers, listen, then release the session and preserve the workers.
 func runControllerSession(ctx context.Context, session messageSession, scaler *scaler, cfg Config, scaleSetID int) error {
 	defer shutdownController(session, scaler, cfg.Logger)
-	if err := scaler.recover(ctx); err != nil {
-		return fmt.Errorf("recover workers: %w", err)
+	return runSession(ctx, session, scaler, cfg, scaleSetID, true)
+}
+
+// runSession listens on one open session until it fails or ctx ends. A
+// recovery or listener configuration failure is a fail-closed handler
+// failure; a listener transport failure is returned as is for the supervisor.
+func runSession(ctx context.Context, session messageSession, scaler *scaler, cfg Config, scaleSetID int, recoverWorkers bool) error {
+	if recoverWorkers {
+		if err := scaler.recover(ctx); err != nil {
+			return failClosed(fmt.Errorf("recover workers: %w", err))
+		}
 	}
 	scaler.reporter.recovered()
 
@@ -211,7 +302,7 @@ func runControllerSession(ctx context.Context, session messageSession, scaler *s
 	})
 	if err != nil {
 		scaler.reporter.degraded("github_listener_failed")
-		return fmt.Errorf("create scale set listener: %w", err)
+		return failClosed(fmt.Errorf("create scale set listener: %w", err))
 	}
 	cfg.Logger.Info("controller ready", "github", cfg.GitHubURL, "scale_set", cfg.ScaleSetName, "min_workers", cfg.MinWorkers, "max_workers", cfg.MaxWorkers)
 	if err := queue.Run(ctx, scaler); err != nil && !errors.Is(err, context.Canceled) {
@@ -222,15 +313,19 @@ func runControllerSession(ctx context.Context, session messageSession, scaler *s
 }
 
 func shutdownController(session sessionCloser, scaler *scaler, logger *slog.Logger) {
-	// Release GitHub's single active scale-set session before handing existing
-	// workers to the successor. A stale session would prevent the next
-	// controller process from starting after a deployment.
+	closeSession(session, logger)
+	scaler.shutdown(context.Background())
+}
+
+// closeSession releases GitHub's single active scale-set session before the
+// next one is opened or existing workers are handed to a successor. A stale
+// session would prevent the next session or controller process from starting.
+func closeSession(session sessionCloser, logger *slog.Logger) {
 	closeCtx, cancelClose := context.WithTimeout(context.Background(), sessionCloseTimeout)
+	defer cancelClose()
 	if err := session.Close(closeCtx); err != nil {
 		logger.Error("failed to close message session", "error", err)
 	}
-	cancelClose()
-	scaler.shutdown(context.Background())
 }
 
 func (c *Controller) systemInfo(scaleSetID int) scaleset.SystemInfo {

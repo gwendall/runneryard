@@ -137,15 +137,25 @@ func TestLaunchConcurrencyDefaultsToSerialWhenUnset(t *testing.T) {
 	}
 }
 
-func TestPermanentLaunchFailureStopsFurtherLaunchesAndSurfaces(t *testing.T) {
+func TestPermanentLaunchFailureStopsFurtherLaunchesAndGatesTheNextMessage(t *testing.T) {
+	// Before 0.4.4 the permanent error surfaced and stopped the controller.
+	// It is now a bounded launch rejection: the burst stops, the listener
+	// stays, and the next desired-count message inside the backoff launches
+	// nothing.
 	compute := &slowCompute{delay: 5 * time.Millisecond, failAfter: 2, failWith: errors.New("image rejected")}
 	scaler := concurrentScaler(t, compute, 2, 8)
-	_, err := scaler.HandleDesiredRunnerCount(context.Background(), 8)
-	if err == nil || !errors.Is(err, compute.failWith) {
-		t.Fatalf("expected the permanent launch error to surface, got %v", err)
+	if _, err := scaler.HandleDesiredRunnerCount(context.Background(), 8); err != nil {
+		t.Fatalf("a permanent launch rejection must not stop the listener, got %v", err)
 	}
 	if compute.launched >= 8 {
 		t.Fatalf("launches must stop after a permanent failure, got %d attempts", compute.launched)
+	}
+	launched := compute.launched
+	if _, err := scaler.HandleDesiredRunnerCount(context.Background(), 8); err != nil {
+		t.Fatal(err)
+	}
+	if compute.launched != launched {
+		t.Fatalf("launches inside the rejection backoff must not run: %d then %d attempts", launched, compute.launched)
 	}
 }
 

@@ -46,8 +46,9 @@ controller logs a warning, reports `degraded` with the matching
 `provider_*_failed` reason, keeps the GitHub session, and retries on the next
 message: an inventory failure skips one reconciliation, a launch failure
 leaves jobs queued, and a deletion failure keeps the retirement journaled.
-Authorization, validation, and identity failures are not transient and still
-stop the controller.
+Authorization and identity failures are not transient and still stop the
+controller: a `401` or `403` from the provider, a runner registration that
+does not match its lease, a ledger or journal that cannot be written.
 
 A provider quota or machine-limit rejection is a third class. It is permanent
 for that create request but not fatal to the controller. RunnerYard records the
@@ -58,7 +59,43 @@ delay up to fifteen minutes. A successful probe restores configured capacity.
 Status reports `provider_capacity_exhausted` with a stable rejection code,
 configured/effective capacity, rejection count, and `retry_at`. Lower
 `MAX_RUNNERS` to the confirmed provider ceiling or raise the provider quota;
-do not restart the controller or repeatedly resend desired-count events.
+do not restart the controller or repeatedly resend desired-count events. On
+Fly the codes are `fly_machine_limit` (the organization's Machine count,
+shared by every app in the organization), `fly_insufficient_resources` (the
+region could not reserve the requested memory or CPU), and
+`fly_placement_unavailable` (no host could place the Machine).
+
+A provider's permanent rejection of the launch request itself is a fourth
+class: an unusable image or shape, a region without the requested resources,
+a name conflict. It is handled like a capacity ceiling. The controller proves
+that no worker carries the lease, refunds the reservation, removes the unused
+JIT registration, and admits one probe after the same doubling backoff.
+Status reports `provider_launch_rejected` with `launch.provider_rejection`
+(a stable code such as `fly_status_422`, never the provider's wording),
+`launch.rejections`, and `launch.retry_at`; the alert names the checks to
+make: worker image, shape, region, token permissions.
+
+## Session supervision
+
+The GitHub scale-set session is the controller's only inbound channel, and
+the listener returns on its first transport failure: a message poll, an
+acknowledgement, a job acquisition, or the session request. Before 0.4.4 the
+process exited on that error and recovery belonged to the platform's restart
+policy, whose backoff grows with every crash; on Fly it reached fifteen
+minutes on 2026-09-03, with the whole queue waiting behind a controller that
+had died on one refused Machine. The controller now closes the failed
+session, waits with a backoff of 5 s that doubles to 2 min (and resets
+after a session that lasted two minutes), and opens a new session against
+the same scaler: worker state, the launch gate, and the budget survive, and
+existing workers keep running their jobs. Status reports
+`github_session_restarting` while it waits and `github_session_failed` when
+the session request itself is refused; both clear with the next session.
+
+Only two things end the controller: cancellation (a deploy, a stop) and a
+handler failure, which is the scaler's own fail-closed verdict on identity,
+state, or ledger corruption. A process that exits repeatedly is therefore
+reporting a real fault, not a transport blip; read the last `controller
+stopped` line.
 
 ## Worker startup
 

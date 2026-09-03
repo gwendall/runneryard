@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/actions/scaleset/listener"
 	"github.com/google/uuid"
 	"github.com/gwendall/runneryard/provider"
+	"github.com/gwendall/runneryard/provider/retry"
 )
 
 var errRetirementDeferred = errors.New("runner retirement deferred")
@@ -25,6 +27,87 @@ const (
 	capacityInitialBackoff = time.Minute
 	capacityMaximumBackoff = 15 * time.Minute
 )
+
+// The launch gate has two kinds: a provider capacity ceiling, and the
+// provider's permanent rejection of the launch request itself. Both keep the
+// GitHub session, both back off and probe; they differ only in what the
+// operator is told.
+const (
+	gateCapacity = "capacity"
+	gateLaunch   = "launch"
+)
+
+// launchRejectedError reports a provider's permanent refusal of one launch
+// request after the controller proved that no worker carries the lease. It
+// is neither transient (the adapter did not retry it) nor an identity failure
+// (401 and 403 stay fatal), so the core treats it like a capacity ceiling:
+// degraded status, bounded backoff, one probe at a time, no controller exit.
+// Before 0.4.4 any such response - an unusable image, a region without the
+// requested shape, a 409 on a name - stopped the whole controller.
+type launchRejectedError struct {
+	// Reason is a stable, non-secret code such as "fly_status_422".
+	Reason string
+	Err    error
+}
+
+func (e *launchRejectedError) Error() string {
+	return fmt.Sprintf("provider rejected worker launch (%s): %v", e.Reason, e.Err)
+}
+
+func (e *launchRejectedError) Unwrap() error { return e.Err }
+
+// classifyLaunchFailure sorts a provider launch error into the classes the
+// core handles: transient and capacity errors pass through, an authorization
+// failure stays fatal so a bad credential fails closed, and every other
+// permanent response becomes a bounded launch rejection.
+func classifyLaunchFailure(err error) error {
+	if err == nil || provider.IsTransient(err) || provider.IsCapacity(err) {
+		return err
+	}
+	var status *retry.StatusError
+	if errors.As(err, &status) {
+		if status.Status == http.StatusUnauthorized || status.Status == http.StatusForbidden {
+			return err
+		}
+		return &launchRejectedError{Reason: fmt.Sprintf("%s_status_%d", status.Provider, status.Status), Err: err}
+	}
+	return &launchRejectedError{Reason: "provider_launch_rejected", Err: err}
+}
+
+// handlerFailure marks an error the scaler returned from a listener handler.
+// Those are the fail-closed cases - identity, state, or ledger corruption -
+// and they end the controller. Every other error that reaches the session
+// supervisor comes from the GitHub transport and is retried.
+type handlerFailure struct {
+	Err error
+}
+
+func (e *handlerFailure) Error() string { return e.Err.Error() }
+
+func (e *handlerFailure) Unwrap() error { return e.Err }
+
+func failClosed(err error) error {
+	if err == nil {
+		return nil
+	}
+	var already *handlerFailure
+	if errors.As(err, &already) {
+		return err
+	}
+	return &handlerFailure{Err: err}
+}
+
+// isHandlerFailure reports whether err carries a scaler handler failure.
+func isHandlerFailure(err error) bool {
+	var failure *handlerFailure
+	return errors.As(err, &failure)
+}
+
+// predecessorWindow is how long after start-up a message about a runner this
+// process never created is attributed to its predecessor. After a restart
+// GitHub replays the completions of every worker the previous controller
+// launched; forty warnings for routine successes hide the one that matters.
+const predecessorWindow = departureMemory
 
 // workerStoppedAt derives the worker's stop time from GitHub's job finish
 // timestamp; a zero timestamp leaves the ledger to settle at message arrival.
@@ -50,7 +133,11 @@ type scaler struct {
 	retirements       *retirementQueue
 	reporter          *statusReporter
 	logger            *slog.Logger
+	// startedAt dates this controller process; zero disables predecessor
+	// attribution (tests construct the scaler directly).
+	startedAt         time.Time
 	capacityMu        sync.Mutex
+	capacityKind      string
 	capacityEffective int
 	capacityReason    string
 	capacityRetryAt   time.Time
@@ -64,7 +151,16 @@ type runnerScaleSetClient interface {
 	RemoveRunner(context.Context, int64) error
 }
 
+// HandleDesiredRunnerCount, HandleJobStarted, and HandleJobCompleted are the
+// listener's handlers. An error they return is a fail-closed condition -
+// identity, state, or ledger corruption - and is marked as such so the session
+// supervisor ends the controller instead of reopening the session.
 func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, assignedJobs int) (int, error) {
+	count, err := s.handleDesiredRunnerCount(ctx, assignedJobs)
+	return count, failClosed(err)
+}
+
+func (s *scaler) handleDesiredRunnerCount(ctx context.Context, assignedJobs int) (int, error) {
 	target := min(s.maxWorkers, s.minWorkers+assignedJobs)
 	s.reporter.desired(assignedJobs, target)
 	if err := s.reconcile(ctx); err != nil {
@@ -93,7 +189,7 @@ func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, assignedJobs int)
 			return s.state.count(), err
 		}
 		if probing && s.state.count() > current {
-			s.clearCapacityRejection()
+			s.clearLaunchGate()
 		}
 		return s.state.count(), nil
 	}
@@ -112,9 +208,10 @@ func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, assignedJobs int)
 // and GitHub round trips overlap, so a burst of assigned jobs no longer
 // delays JobCompleted handling behind a queue of sequential launches.
 //
-// The first refusal (exhausted budget) or transient provider failure stops
-// further launches; workers already in flight finish normally. A permanent
-// error is returned after every in-flight launch has settled.
+// The first refusal (exhausted budget), transient provider failure, capacity
+// ceiling, or launch rejection stops further launches; workers already in
+// flight finish normally. Only a fail-closed error is returned, after every
+// in-flight launch has settled.
 func (s *scaler) launchWorkers(ctx context.Context, needed int) error {
 	limit := max(1, s.launchConcurrency)
 	slots := make(chan struct{}, limit)
@@ -122,6 +219,7 @@ func (s *scaler) launchWorkers(ctx context.Context, needed int) error {
 	var mu sync.Mutex
 	var fatal error
 	var capacityErr error
+	var rejectedErr error
 	stopped := false
 	for range needed {
 		slots <- struct{}{}
@@ -154,6 +252,13 @@ func (s *scaler) launchWorkers(ctx context.Context, needed int) error {
 					s.logger.Warn("provider unavailable during launch; leaving jobs queued until the next message", "error", err)
 					return
 				}
+				var rejected *launchRejectedError
+				if errors.As(err, &rejected) {
+					if rejectedErr == nil {
+						rejectedErr = err
+					}
+					return
+				}
 				if fatal == nil {
 					fatal = err
 				}
@@ -165,10 +270,23 @@ func (s *scaler) launchWorkers(ctx context.Context, needed int) error {
 		}()
 	}
 	wait.Wait()
-	if capacityErr != nil {
-		s.recordCapacityRejection(capacityErr)
+	switch {
+	case capacityErr != nil:
+		s.recordLaunchGate(gateCapacity, provider.CapacityReason(capacityErr), capacityErr)
+	case rejectedErr != nil:
+		s.recordLaunchGate(gateLaunch, launchRejectionReason(rejectedErr), rejectedErr)
 	}
 	return fatal
+}
+
+// launchRejectionReason returns the stable code carried by a launch
+// rejection, never the provider's wording.
+func launchRejectionReason(err error) string {
+	var rejected *launchRejectedError
+	if errors.As(err, &rejected) && rejected.Reason != "" {
+		return rejected.Reason
+	}
+	return "provider_launch_rejected"
 }
 
 func (s *scaler) now() time.Time {
@@ -197,42 +315,72 @@ func (s *scaler) capacityAllowance(current, target int) (needed int, probing boo
 	return min(1, requested), true
 }
 
-func (s *scaler) recordCapacityRejection(err error) {
+// recordLaunchGate closes the launch gate after a capacity ceiling or a
+// launch rejection: the current fleet size becomes the proven ceiling, and
+// the next probe waits for a backoff that doubles up to fifteen minutes. A
+// gate of the other kind is released first so status never reports both.
+func (s *scaler) recordLaunchGate(kind, reason string, err error) {
 	now := s.now()
 	effective := s.state.count()
-	reason := provider.CapacityReason(err)
 	s.capacityMu.Lock()
 	if s.capacityBackoff == 0 {
 		s.capacityBackoff = capacityInitialBackoff
 	} else {
 		s.capacityBackoff = min(s.capacityBackoff*2, capacityMaximumBackoff)
 	}
+	previousKind := s.capacityKind
+	s.capacityKind = kind
 	s.capacityEffective = effective
 	s.capacityReason = reason
 	s.capacityRetryAt = now.Add(s.capacityBackoff)
 	retryAt := s.capacityRetryAt
 	s.capacityMu.Unlock()
-	s.reporter.capacityRejected(effective, reason, retryAt)
-	s.logger.Warn("provider capacity rejected worker launch; keeping the listener alive",
-		"configured_capacity", s.maxWorkers,
-		"effective_capacity", effective,
-		"provider_rejection", reason,
-		"retry_at", retryAt,
-		"error", err,
-	)
+	if previousKind != "" && previousKind != kind {
+		s.releaseGateStatus(previousKind)
+	}
+	switch kind {
+	case gateLaunch:
+		s.reporter.launchRejected(reason, retryAt)
+		s.logger.Warn("provider rejected worker launch; keeping the listener alive",
+			"provider_rejection", reason,
+			"retry_at", retryAt,
+			"error", err,
+		)
+	default:
+		s.reporter.capacityRejected(effective, reason, retryAt)
+		s.logger.Warn("provider capacity rejected worker launch; keeping the listener alive",
+			"configured_capacity", s.maxWorkers,
+			"effective_capacity", effective,
+			"provider_rejection", reason,
+			"retry_at", retryAt,
+			"error", err,
+		)
+	}
 }
 
-func (s *scaler) clearCapacityRejection() {
+func (s *scaler) releaseGateStatus(kind string) {
+	switch kind {
+	case gateLaunch:
+		s.reporter.launchRecovered()
+		s.logger.Info("provider accepted a worker launch again")
+	default:
+		s.reporter.capacityRecovered()
+		s.logger.Info("provider capacity probe succeeded", "configured_capacity", s.maxWorkers)
+	}
+}
+
+func (s *scaler) clearLaunchGate() {
 	s.capacityMu.Lock()
 	hadRejection := s.capacityReason != ""
+	kind := s.capacityKind
+	s.capacityKind = ""
 	s.capacityEffective = 0
 	s.capacityReason = ""
 	s.capacityRetryAt = time.Time{}
 	s.capacityBackoff = 0
 	s.capacityMu.Unlock()
 	if hadRejection {
-		s.reporter.capacityRecovered()
-		s.logger.Info("provider capacity probe succeeded", "configured_capacity", s.maxWorkers)
+		s.releaseGateStatus(kind)
 	}
 }
 
@@ -345,10 +493,25 @@ func (s *scaler) reconcile(ctx context.Context) error {
 	return nil
 }
 
-func (s *scaler) HandleJobStarted(_ context.Context, job *scaleset.JobStarted) error {
+// unknownRunnerLevel picks the level for a message about a runner this
+// process does not know. Within the predecessor window it is the previous
+// controller's worker finishing its job, which is routine; later it is a
+// genuinely unknown runner and worth a warning.
+func (s *scaler) unknownRunnerLevel() slog.Level {
+	if !s.startedAt.IsZero() && time.Since(s.startedAt) < predecessorWindow {
+		return slog.LevelInfo
+	}
+	return slog.LevelWarn
+}
+
+func (s *scaler) HandleJobStarted(ctx context.Context, job *scaleset.JobStarted) error {
+	return failClosed(s.handleJobStarted(ctx, job))
+}
+
+func (s *scaler) handleJobStarted(ctx context.Context, job *scaleset.JobStarted) error {
 	s.reporter.githubActivity("job_started")
 	if !s.state.markBusy(job.RunnerName) {
-		s.logger.Warn("job started on worker not present in local state", "runner", job.RunnerName, "job_id", job.JobID)
+		s.logger.Log(ctx, s.unknownRunnerLevel(), "job started on worker not present in local state", "runner", job.RunnerName, "job_id", job.JobID)
 		return nil
 	}
 	if record, ok := s.state.get(job.RunnerName); ok && !record.Worker.CreatedAt.IsZero() {
@@ -407,6 +570,10 @@ func (s *scaler) logDeparture(record workerRecord, now time.Time) {
 }
 
 func (s *scaler) HandleJobCompleted(ctx context.Context, job *scaleset.JobCompleted) error {
+	return failClosed(s.handleJobCompleted(ctx, job))
+}
+
+func (s *scaler) handleJobCompleted(ctx context.Context, job *scaleset.JobCompleted) error {
 	s.reporter.githubActivity("job_completed")
 	record, ok := s.state.get(job.RunnerName)
 	if !ok {
@@ -414,7 +581,7 @@ func (s *scaler) HandleJobCompleted(ctx context.Context, job *scaleset.JobComple
 			s.logger.Info("job completed after its worker left inventory", "runner", job.RunnerName, "job_id", job.JobID, "result", job.Result, "worker_id", departed.Worker.ID)
 			return nil
 		}
-		s.logger.Warn("job completed on worker not present in local state", "runner", job.RunnerName, "job_id", job.JobID)
+		s.logger.Log(ctx, s.unknownRunnerLevel(), "job completed on worker not present in local state", "runner", job.RunnerName, "job_id", job.JobID, "result", job.Result)
 		return nil
 	}
 	if err := s.retireWorker(ctx, record.Worker, true, settleActualUsage, workerStoppedAt(job.FinishTime)); err != nil {
@@ -505,13 +672,19 @@ func (s *scaler) startWorker(ctx context.Context) (bool, error) {
 			s.reporter.budget(s.budget.snapshot(time.Now()))
 			return false, err
 		}
-		s.reporter.degraded("provider_launch_failed")
+		classified := classifyLaunchFailure(err)
+		var rejected *launchRejectedError
+		if !errors.As(classified, &rejected) {
+			s.reporter.degraded("provider_launch_failed")
+		}
+		// A permanent rejection is proven only once inventory shows no worker
+		// carrying the lease; the cleanup below checks exactly that.
 		cleanupErr := s.cleanupAmbiguousLaunch(context.WithoutCancel(ctx), retirement, err)
 		if cleanupErr != nil {
 			return false, cleanupErr
 		}
 		s.reporter.budget(s.budget.snapshot(time.Now()))
-		return false, err
+		return false, classified
 	}
 	if worker.RunnerID == 0 {
 		worker.RunnerID = retirement.RunnerID
