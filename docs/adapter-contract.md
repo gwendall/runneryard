@@ -42,6 +42,15 @@ records the effective fleet capacity, keeps existing lifecycles serviceable,
 and performs one probe after its controller-level backoff. Never put a raw API
 body, tenant identifier, or credential in the reason code.
 
+Every other permanent response to a create (a validation error, a conflict,
+a missing image) is handled by the core as a bounded launch rejection: it
+proves through inventory that the lease has no worker, releases the JIT
+registration and the reservation, and probes again on the capacity schedule
+instead of stopping. Return it as a `retry.StatusError` carrying the provider
+name and HTTP status so the reported code (`fly_status_422`) stays stable
+and non-secret. Only `401` and `403` are treated as identity failures that
+stop the controller.
+
 ## Required capabilities
 
 An adapter is accepted only if it can prove:

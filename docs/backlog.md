@@ -15,7 +15,12 @@ binds the exact release commit and root filesystem, worker departures and
 their completions log at `INFO`, pending retirements degrade only after a
 grace period, GitHub App secrets are staged on Fly, an unexplained inventory
 absence must persist before a replacement is launched, and provider capacity
-ceilings are a bounded condition instead of a fatal error. Next in line: C1,
+ceilings are a bounded condition instead of a fatal error. 0.4.4 made the
+controller supervise its own GitHub session (a transport failure reopens the
+session in-process instead of exiting into the platform's restart backoff),
+turned a provider's permanent launch rejection into the same bounded
+condition as a capacity ceiling, and taught the Fly adapter every documented
+shortage. Next in line: C1,
 R10, R13, C4, P1, P3, S3, O1, O3, O4, W1, W6, H5.
 
 How to read it:

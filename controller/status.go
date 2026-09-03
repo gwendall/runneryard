@@ -30,6 +30,7 @@ type FleetStatus struct {
 	GitHub        GitHubStatus     `json:"github"`
 	Workers       WorkerStatus     `json:"workers"`
 	Capacity      CapacityStatus   `json:"capacity"`
+	Launch        LaunchStatus     `json:"launch"`
 	Latency       LatencyStatus    `json:"latency"`
 	Budget        BudgetStatus     `json:"budget"`
 }
@@ -73,6 +74,17 @@ type WorkerStatus struct {
 type CapacityStatus struct {
 	Configured int       `json:"configured"`
 	Effective  int       `json:"effective"`
+	Rejections uint64    `json:"rejections"`
+	Rejection  string    `json:"provider_rejection,omitempty"`
+	RetryAt    time.Time `json:"retry_at,omitempty"`
+}
+
+// LaunchStatus records a provider's permanent rejection of the launch request
+// itself - an unusable image, shape, or region, a conflicting name - as
+// opposed to a capacity ceiling. The controller keeps its GitHub session,
+// backs off, and probes again exactly as it does for capacity. Rejection is a
+// stable code such as "fly_status_422", never a raw provider payload.
+type LaunchStatus struct {
 	Rejections uint64    `json:"rejections"`
 	Rejection  string    `json:"provider_rejection,omitempty"`
 	RetryAt    time.Time `json:"retry_at,omitempty"`
@@ -187,6 +199,8 @@ func (reporter *statusReporter) derive() {
 		status.Health, status.Reason = "degraded", reporter.failure
 	case status.Capacity.Rejection != "":
 		status.Health, status.Reason = "degraded", "provider_capacity_exhausted"
+	case status.Launch.Rejection != "":
+		status.Health, status.Reason = "degraded", "provider_launch_rejected"
 	case status.Workers.OverdueRetirements > 0:
 		status.Health, status.Reason = "degraded", "runner_retirements_pending"
 	case status.Workers.OrphanCandidates > 0:
@@ -272,6 +286,23 @@ func (reporter *statusReporter) capacityRecovered() {
 		status.Capacity.Effective = status.Capacity.Configured
 		status.Capacity.Rejection = ""
 		status.Capacity.RetryAt = time.Time{}
+	})
+}
+
+func (reporter *statusReporter) launchRejected(reason string, retryAt time.Time) {
+	reporter.update(func(status *FleetStatus) {
+		if status.Launch.Rejections < math.MaxUint64 {
+			status.Launch.Rejections++
+		}
+		status.Launch.Rejection = reason
+		status.Launch.RetryAt = retryAt.UTC()
+	})
+}
+
+func (reporter *statusReporter) launchRecovered() {
+	reporter.update(func(status *FleetStatus) {
+		status.Launch.Rejection = ""
+		status.Launch.RetryAt = time.Time{}
 	})
 }
 
@@ -495,6 +526,9 @@ func (status FleetStatus) validate() error {
 	}
 	if status.Capacity.Rejection != "" && (status.Capacity.Rejections == 0 || status.Capacity.RetryAt.IsZero()) {
 		return errors.New("fleet status contains an incomplete provider capacity rejection")
+	}
+	if status.Launch.Rejection != "" && (status.Launch.Rejections == 0 || status.Launch.RetryAt.IsZero()) {
+		return errors.New("fleet status contains an incomplete provider launch rejection")
 	}
 	if status.Workers.Busy+status.Workers.Idle+status.Workers.Unknown != status.Workers.Actual {
 		return errors.New("fleet status worker counts are inconsistent")

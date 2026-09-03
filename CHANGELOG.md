@@ -4,6 +4,37 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
+## 0.4.4 (2026-09-04)
+
+- The controller supervises its own GitHub scale-set session. A transport
+  failure - a message poll, an acknowledgement, a job acquisition, or the
+  session request itself - used to end the process and leave recovery to the
+  platform's restart policy; on Fly that backoff reached fifteen minutes on
+  2026-09-03 with twenty-three runs queued behind a dead 0.4.2 controller.
+  The session is now closed and reopened in-process with a backoff of 5 s
+  doubling to 2 min, against the same scaler, so worker state, the launch
+  gate, and the budget survive. Status reports `github_session_restarting`
+  between sessions. Only the scaler's fail-closed handler errors (identity,
+  state, ledger) or cancellation still end the controller.
+- A provider's permanent rejection of a launch request - an unusable image
+  or shape, a region without the resources, a name conflict - is a bounded
+  condition like a capacity ceiling instead of a fatal error. The controller
+  proves that no worker carries the lease, refunds the reservation, removes
+  the JIT registration, and probes again after the same doubling backoff.
+  Status carries `launch.provider_rejection` (`fly_status_422` and the like,
+  never a raw payload), `launch.rejections`, and `launch.retry_at`; health
+  reports `provider_launch_rejected` with an actionable alert. A `401` or
+  `403` from the provider still fails closed.
+- The Fly adapter classifies every documented shortage as capacity, not only
+  the organization machine limit: `fly_insufficient_resources` (a region that
+  could not reserve memory or CPU, a volume without room) and
+  `fly_placement_unavailable` (no host could place the Machine) join
+  `fly_machine_limit`. Validation errors stay permanent.
+- After a restart, job messages about runners the new process never created
+  are logged at `INFO` for the first hour instead of `WARN`: they are the
+  predecessor's workers finishing their jobs, and forty warnings for routine
+  successes hid the one that mattered.
+
 ## 0.4.3 (2026-08-31)
 
 - Provider quota exhaustion is a bounded capacity condition instead of a

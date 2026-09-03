@@ -74,6 +74,14 @@ one-to-fifteen-minute backoff. Use `runneryard status` to compare desired,
 current, effective, and configured capacity. Lower `MAX_RUNNERS` or raise the
 provider quota when the effective ceiling persists.
 
+A provider's permanent rejection of the launch request itself (an unusable
+image or shape, a region without the resources, a name conflict) follows the
+same probe schedule and is reported under `launch` in status with the reason
+`provider_launch_rejected`; a `401` or `403` still fails closed. A GitHub
+session transport failure never stops the controller: the session is reopened
+in-process after a 5 s backoff that doubles to 2 min. Neither has a setting.
+See [operations.md](operations.md).
+
 Lower the maximum lifetime to the longest legitimate job plus cleanup margin.
 Lowering it on a running fleet is safe: reservations made under the previous,
 larger value stay charged at that value until their workers finish, and the

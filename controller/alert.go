@@ -123,6 +123,14 @@ func (a *alerter) message(status FleetStatus, reminder bool) string {
 			fmt.Fprintf(&text, "; the next bounded probe is after %s", status.Capacity.RetryAt.Format(time.RFC3339))
 		}
 		text.WriteString(".")
+	case status.Reason == "provider_launch_rejected":
+		fmt.Fprintf(&text, ". The provider rejected worker launches (%s); check the worker image, shape, region, and token permissions", status.Launch.Rejection)
+		if !status.Launch.RetryAt.IsZero() {
+			fmt.Fprintf(&text, "; the next bounded probe is after %s", status.Launch.RetryAt.Format(time.RFC3339))
+		}
+		text.WriteString(".")
+	case status.Reason == "github_session_restarting":
+		text.WriteString(". The GitHub scale-set session ended on a transport failure; the controller reopens it with bounded backoff and existing workers keep running.")
 	case strings.HasPrefix(status.Reason, "provider_"):
 		text.WriteString(". The provider is unavailable; the controller keeps retrying on every message.")
 	case status.Reason == "orphan_candidates":

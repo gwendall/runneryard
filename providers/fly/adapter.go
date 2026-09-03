@@ -424,20 +424,61 @@ func (a *Adapter) setHeaders(req *http.Request) {
 }
 
 // responseError classifies a non-2xx response. Throttling and provider-side
-// errors are transient; every other status is a permanent failure.
+// errors are transient; a shortage of Machines, hosts, or resources is a
+// bounded capacity ceiling; every other status is a permanent failure.
 func responseError(resp *http.Response) error {
 	contents, readErr := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if readErr != nil {
 		return errors.Join(retry.ClassifyStatus("fly", resp.StatusCode, ""), readErr)
 	}
 	message := strings.TrimSpace(string(contents))
-	if resp.StatusCode == http.StatusUnprocessableEntity && strings.Contains(strings.ToLower(message), "machine limit") {
+	if reason := capacityReason(resp.StatusCode, message); reason != "" {
 		return &provider.CapacityError{
-			Reason: "fly_machine_limit",
-			Err:    fmt.Errorf("fly API returned %d: organization machine limit reached", resp.StatusCode),
+			Reason: reason,
+			Err:    fmt.Errorf("fly API returned %d: %s", resp.StatusCode, capacityDescriptions[reason]),
 		}
 	}
 	return retry.ClassifyStatus("fly", resp.StatusCode, message)
+}
+
+// capacityDescriptions keeps the raw provider payload out of the error that
+// reaches logs, status, and alerts.
+var capacityDescriptions = map[string]string{
+	"fly_machine_limit":          "organization machine limit reached",
+	"fly_insufficient_resources": "region could not reserve the requested resources",
+	"fly_placement_unavailable":  "no host could place the machine",
+}
+
+// capacityReason maps the Fly Machines API's shortage responses to stable,
+// non-secret rejection codes. Fly reports every one of them with a client
+// error status, so without this mapping they would be permanent failures that
+// stopped the controller. On 2026-09-03 the organization machine limit did
+// exactly that, with the whole queue behind it. Only well-known phrases match;
+// a validation error that merely mentions resources stays permanent.
+func capacityReason(status int, message string) string {
+	if status < 400 || status >= 500 || status == http.StatusTooManyRequests {
+		return ""
+	}
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "machine limit"):
+		return "fly_machine_limit"
+	case strings.Contains(lower, "could not reserve resource"),
+		strings.Contains(lower, "insufficient memory"),
+		strings.Contains(lower, "insufficient cpu"),
+		strings.Contains(lower, "insufficient resources"),
+		strings.Contains(lower, "not enough capacity"),
+		strings.Contains(lower, "no capacity"),
+		strings.Contains(lower, "capacity available"):
+		return "fly_insufficient_resources"
+	case strings.Contains(lower, "no host"),
+		strings.Contains(lower, "find a host"),
+		strings.Contains(lower, "unable to place"),
+		strings.Contains(lower, "failed to place"),
+		strings.Contains(lower, "could not place"):
+		return "fly_placement_unavailable"
+	}
+	return ""
 }
 
 var _ provider.Compute = (*Adapter)(nil)
