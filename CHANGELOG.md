@@ -4,6 +4,20 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
+## Unreleased
+
+- Derived worker images. A fleet can run its workers from an image built
+  `FROM` the release the controller runs - the release plus whatever its
+  workflows install on every job (a package manager and its warm store, a
+  second runtime, browsers, `ffmpeg`) - by naming that image in
+  `RUNNER_IMAGE` and declaring the release in the new `RUNNER_IMAGE_BASE`.
+  `doctor` keeps the pin discipline: it passes when the declared base equals
+  `[build] image`, fails when the base is another release, and still fails
+  when `RUNNER_IMAGE` differs from the controller image with no base
+  declared. The controller ignores the key. Guide: `docs/derived-images.md`.
+  Motivation, measured on a pnpm monorepo on 2026-09-05: four to five
+  minutes of setup per job around three minutes of tests.
+
 ## 0.4.4 (2026-09-04)
 
 - The controller supervises its own GitHub scale-set session. A transport

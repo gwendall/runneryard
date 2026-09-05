@@ -133,7 +133,9 @@ during an upgrade.
 
 Treat a tag as a candidate until its release checksums and image digest are
 published. On Fly, set `[build] image` and `RUNNER_IMAGE` in
-`.runneryard/fly.controller.toml` to the same release. On Hetzner, update both
+`.runneryard/fly.controller.toml` to the same release (with a derived worker
+image: rebuild it from the release, then move `[build] image` and
+`RUNNER_IMAGE_BASE` together). On Hetzner, update both
 independent pins to the same release: `RUNNER_IMAGE` in `controller.env` for
 workers and `image` in Compose for the controller. In the same commit, set the
 generated canary's `RUNNERYARD_EXPECTED_VERSION` and
