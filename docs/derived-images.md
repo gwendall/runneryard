@@ -54,9 +54,21 @@ the derived image from the new release and moving `[build] image` and
 - Keep the image on a registry the workers can pull without a credential:
   on Fly, the worker app's own repository `registry.fly.io/<worker-app>` is
   private to the organization and needs nothing on the Machine.
-- Rebuild on a schedule and when the lockfile changes, from a workflow that
-  runs on the fleet itself; a warm store that ages still helps, because the
-  job only fetches the delta.
+- Rebuild on a schedule and when the lockfile changes, but build the image
+  on a remote builder, not on a fleet worker: `docker build` on a worker's
+  layered filesystem ran past a 60-minute budget on 2026-09-05, while the
+  same Dockerfile took about 12 minutes on Fly's remote builder
+  (`flyctl deploy --build-only --push --remote-only --dockerfile <file>
+  --image-label <tag>` from the manifests-only context, run by the workflow
+  on the fleet). A warm store that ages still helps, because the job only
+  fetches the delta.
+- The image follows the default branch. The workflow rebuilds it from the
+  Dockerfile on `main` whenever that file changes, so a fix pushed by hand
+  from an unmerged branch is overwritten by the next build: on 2026-09-05 a
+  hand-pushed image with `/home/runner` owned by `runner` was replaced by a
+  build from `main` that still left `~/.npm` root-owned, and every job that
+  installs a package manager failed for forty minutes. Merge the Dockerfile
+  fix first; a hand push only bridges the time until the merge.
 - Drop the workflow steps the image made redundant (`cache:` on
   `setup-node`, `apt-get install`, browser installs) or guard them with a
   presence check, and read the timing of the next run: an image that is not
