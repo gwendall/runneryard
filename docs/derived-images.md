@@ -44,6 +44,16 @@ the derived image from the new release and moving `[build] image` and
   Node, or the entrypoints; the canary checks those against the release.
 - Install as `root`, then end with `USER runner`. The base sets `HOME`,
   `RUNNER_TOOL_CACHE`, and the entrypoint; keep them.
+- Give the home back before `USER runner`. The base sets `HOME=/home/runner`
+  for every stage, so each `npm`, `npx`, `pnpm`, or `pip` call of the root
+  phase writes its cache there as root (`~/.npm`, `~/.cache`, `~/.config`,
+  `~/.local`), and a job's `npm install` then refuses to start: "Your cache
+  folder contains root-owned files" (EACCES). Measured 2026-09-05 on the first
+  derived image of a fleet: three pull requests red within the same hour, none
+  at fault. Drop those caches and `chown -R runner /home/runner` as the last
+  root step. The worker entrypoint restores ownership as a net and leaves
+  `/run/runneryard/home-ownership-restored`; the generated canary fails on
+  that marker, so the defect is reported once instead of paid by every job.
 - Put a runtime the setup actions look for in the tool cache
   (`/opt/hostedtoolcache/<tool>/<version>/<arch>` plus the `.complete` marker)
   so `actions/setup-*` finds it instead of downloading it.
@@ -103,7 +113,11 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 ARG PLAYWRIGHT_VERSION=1.61.1
 RUN npx --yes "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium
 
-RUN chown -R runner:docker /opt/pnpm-store /opt/ms-playwright /opt/hostedtoolcache/bun
+# Everything above ran as root with HOME=/home/runner: drop its caches and give
+# the home back, or a job's npm dies on "cache folder contains root-owned files".
+RUN rm -rf /home/runner/.npm /home/runner/.cache /home/runner/.config /home/runner/.local /root/.npm /root/.cache \
+  && chown -R runner:docker /opt/pnpm-store /opt/ms-playwright /opt/hostedtoolcache/bun \
+  && chown -R runner /home/runner
 USER runner
 ```
 

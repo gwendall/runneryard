@@ -405,6 +405,12 @@ jobs:
           test -n "$RUNNER_NAME"
           test "$RUNNER_ENVIRONMENT" = self-hosted
           test "$(node --version)" = "v$RUNNERYARD_EXPECTED_NODE"
+          test ! -e /run/runneryard/home-ownership-restored || {
+            echo "worker image left paths not owned by runner under /home/runner; the entrypoint restored them, first: $(cat /run/runneryard/home-ownership-restored)" >&2
+            echo "give the home back before USER runner in the derived image (docs/derived-images.md, build rules)" >&2
+            exit 1
+          }
+          test -z "$(find "$HOME" -xdev ! -user "$(id -un)" -print -quit)"
           rootfs_bytes="$(df --output=size --block-size=1 / | tail -n 1 | tr -d '[:space:]')"
           case "$rootfs_bytes" in
             ''|*[!0-9]*) echo "invalid root filesystem size: $rootfs_bytes" >&2; exit 1 ;;
