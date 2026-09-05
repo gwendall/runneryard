@@ -4,7 +4,7 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
-## Unreleased
+## 0.4.5 (2026-09-05)
 
 - Derived worker images. A fleet can run its workers from an image built
   `FROM` the release the controller runs - the release plus whatever its

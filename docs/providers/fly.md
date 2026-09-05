@@ -26,7 +26,7 @@ Initialize the empty ledger exactly once, before starting the controller. The
 command refuses to overwrite an existing ledger:
 
 ```sh
-fly machine run ghcr.io/gwendall/runneryard:0.4.4 \
+fly machine run ghcr.io/gwendall/runneryard:0.4.5 \
   --entrypoint "/usr/local/bin/controller-entrypoint" \
   --env RUNNER_BUDGET_FILE=/var/lib/runneryard/budget.json \
   --app acme-ci-controller \
