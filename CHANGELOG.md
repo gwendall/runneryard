@@ -4,7 +4,7 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
-## Unreleased
+## 0.4.6 (2026-09-06)
 
 - The worker entrypoint gives `/home/runner` back to `runner` when a derived
   image left root-owned paths there, and records the first such path in
