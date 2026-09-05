@@ -114,7 +114,10 @@ fly deploy \
 The generated TOML pins the release in `[build] image` and again in
 `RUNNER_IMAGE`; keep both on the same tag and change them in one reviewed
 commit together with the canary pins. `latest` is suitable only for a
-disposable canary. Run `runneryard doctor` from the repository after every
+disposable canary. A fleet whose workflows pay minutes of setup per job can
+run workers from a [derived image](../derived-images.md) built from the
+release: `RUNNER_IMAGE` then names that image and `RUNNER_IMAGE_BASE` the
+release, which `doctor` checks against `[build] image`. Run `runneryard doctor` from the repository after every
 deploy and after any incident: it compares the committed file with the live
 controller Machine and fails on any environment, image, restart, or mount
 difference, so a limit raised by hand during an incident cannot linger

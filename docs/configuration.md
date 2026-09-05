@@ -96,7 +96,8 @@ for warm workers.
 | --- | --- | --- |
 | `RUNNER_FLY_APP` | Dedicated secret-free worker app. | Generated from the GitHub owner, or `--worker-app` |
 | `RUNNER_FLY_REGION` | Worker region. | `cdg`, or `--region` |
-| `RUNNER_IMAGE` | Immutable RunnerYard controller and worker image. | Current CLI release tag. |
+| `RUNNER_IMAGE` | Worker image: the release image, or a derived image built from it (see [Derived worker images](derived-images.md)). | Current CLI release tag. |
+| `RUNNER_IMAGE_BASE` | The release a derived `RUNNER_IMAGE` is built from; `doctor` requires it to equal `[build] image`. Unset when workers run the release image. | Unset |
 | `RUNNER_CPU_KIND` | Fly CPU class. | `performance` |
 | `RUNNER_CPUS` | CPUs per worker. | `2` |
 | `RUNNER_MEMORY_MB` | Memory per worker. | `8192` |
@@ -156,7 +157,8 @@ from production.
 1. Disable routing or choose a maintenance window; do not start two controllers
    for one scale set.
 2. Change one reviewed policy at a time. On Fly, set `[build] image` and
-   `RUNNER_IMAGE` in `.runneryard/fly.controller.toml` to the same release. On
+   `RUNNER_IMAGE` in `.runneryard/fly.controller.toml` to the same release, or,
+   with a derived worker image, `[build] image` and `RUNNER_IMAGE_BASE`. On
    Hetzner, set the same release tag in both `RUNNER_IMAGE` inside
    `controller.env` (workers) and `image` inside Compose (controller).
 3. Set `RUNNERYARD_EXPECTED_VERSION` and `RUNNERYARD_EXPECTED_COMMIT` in the

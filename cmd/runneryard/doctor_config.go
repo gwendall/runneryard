@@ -108,10 +108,22 @@ func imagePinCheck(file flyConfigFile) doctorCheck {
 	if file.Build.Image == "" {
 		return doctorCheck{Name: "controller image pin", Status: "warn", Details: "[build] image is not set; the file does not record the deployed release"}
 	}
-	if runnerImage, ok := file.Env["RUNNER_IMAGE"]; ok && runnerImage != file.Build.Image {
-		return doctorCheck{Name: "controller image pin", Status: "fail", Details: fmt.Sprintf("[build] image %s and RUNNER_IMAGE %s differ", file.Build.Image, runnerImage)}
+	runnerImage, ok := file.Env["RUNNER_IMAGE"]
+	if !ok || runnerImage == file.Build.Image {
+		return doctorCheck{Name: "controller image pin", Status: "pass", Details: file.Build.Image}
 	}
-	return doctorCheck{Name: "controller image pin", Status: "pass", Details: file.Build.Image}
+	// A derived worker image (docs/derived-images.md) is built FROM the
+	// release the controller runs and declares that release through
+	// RUNNER_IMAGE_BASE, so the pin discipline survives: the base must be the
+	// controller's own release, and a worker image without a declared base is
+	// still the divergence this check exists to catch.
+	if declaredBase, ok := file.Env["RUNNER_IMAGE_BASE"]; ok {
+		if declaredBase == file.Build.Image {
+			return doctorCheck{Name: "controller image pin", Status: "pass", Details: fmt.Sprintf("%s; workers run %s, declared as derived from it", file.Build.Image, runnerImage)}
+		}
+		return doctorCheck{Name: "controller image pin", Status: "fail", Details: fmt.Sprintf("RUNNER_IMAGE_BASE %s is not the controller release %s that RUNNER_IMAGE %s must be built from", declaredBase, file.Build.Image, runnerImage)}
+	}
+	return doctorCheck{Name: "controller image pin", Status: "fail", Details: fmt.Sprintf("[build] image %s and RUNNER_IMAGE %s differ; a derived worker image declares its base with RUNNER_IMAGE_BASE (docs/derived-images.md)", file.Build.Image, runnerImage)}
 }
 
 // flyInjectedEnvironment reports the variables Fly adds to every Machine that

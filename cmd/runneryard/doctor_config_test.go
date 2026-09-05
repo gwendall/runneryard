@@ -155,6 +155,53 @@ func TestDoctorRejectsDivergentImagePins(t *testing.T) {
 	}
 }
 
+// A derived worker image (docs/derived-images.md): RUNNER_IMAGE names an
+// image built FROM the controller release, and RUNNER_IMAGE_BASE declares
+// that release. The file and the live Machine carry both, so drift stays
+// comparable.
+func derivedWorkerImageConfig(declaredBase string) (string, string) {
+	file := strings.Replace(committedControllerConfig,
+		`"RUNNER_IMAGE": "ghcr.io/gwendall/runneryard:1.2.3",`,
+		`"RUNNER_IMAGE": "registry.fly.io/workers:current", "RUNNER_IMAGE_BASE": "`+declaredBase+`",`, 1)
+	machines := strings.Replace(matchingControllerMachines,
+		`"RUNNER_IMAGE": "ghcr.io/gwendall/runneryard:1.2.3",`,
+		`"RUNNER_IMAGE": "registry.fly.io/workers:current", "RUNNER_IMAGE_BASE": "`+declaredBase+`",`, 1)
+	return file, machines
+}
+
+func TestDoctorAcceptsDerivedWorkerImageDeclaringItsBase(t *testing.T) {
+	file, machines := derivedWorkerImageConfig("ghcr.io/gwendall/runneryard:1.2.3")
+	checks := doctor("fly", "control", "workers", "", "fleet.toml", flyDoctorRunner(file, machines))
+	if !hasDoctorStatus(checks, "controller image pin", "pass") {
+		t.Fatalf("checks = %#v", checks)
+	}
+	if details := doctorDetails(checks, "controller image pin"); !strings.Contains(details, "registry.fly.io/workers:current") || !strings.Contains(details, "derived") {
+		t.Fatalf("the pass must name the worker image and say it is derived: %q", details)
+	}
+	if !hasDoctorStatus(checks, "controller drift", "pass") {
+		t.Fatalf("a declared base is policy like any other key and must compare clean: %#v", checks)
+	}
+}
+
+func TestDoctorRejectsDerivedWorkerImageWithForeignBase(t *testing.T) {
+	file, machines := derivedWorkerImageConfig("ghcr.io/gwendall/runneryard:1.2.4")
+	checks := doctor("fly", "control", "workers", "", "fleet.toml", flyDoctorRunner(file, machines))
+	if !hasDoctorStatus(checks, "controller image pin", "fail") {
+		t.Fatalf("a base that is not the controller release must fail: %#v", checks)
+	}
+}
+
+func TestDoctorRejectsWorkerImageWithoutDeclaredBase(t *testing.T) {
+	file := strings.Replace(committedControllerConfig, `"RUNNER_IMAGE": "ghcr.io/gwendall/runneryard:1.2.3"`, `"RUNNER_IMAGE": "registry.fly.io/workers:current"`, 1)
+	checks := doctor("fly", "control", "workers", "", "fleet.toml", flyDoctorRunner(file, matchingControllerMachines))
+	if !hasDoctorStatus(checks, "controller image pin", "fail") {
+		t.Fatalf("checks = %#v", checks)
+	}
+	if details := doctorDetails(checks, "controller image pin"); !strings.Contains(details, "RUNNER_IMAGE_BASE") {
+		t.Fatalf("the failure must name the knob that declares a derived image: %q", details)
+	}
+}
+
 func TestDoctorWarnsWhenImagePinIsAbsent(t *testing.T) {
 	unpinned := strings.Replace(committedControllerConfig, `"build": {"image": "ghcr.io/gwendall/runneryard:1.2.3"},`, "", 1)
 	checks := doctor("fly", "control", "workers", "", "fleet.toml", flyDoctorRunner(unpinned, matchingControllerMachines))
