@@ -4,6 +4,19 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
+## Unreleased
+
+- The worker entrypoint gives `/home/runner` back to `runner` when a derived
+  image left root-owned paths there, and records the first such path in
+  `/run/runneryard/home-ownership-restored`; the generated canary fails on that
+  marker and probes the home itself. Why: the first derived image of a fleet,
+  built as the guide said ("install as root, end as runner"), ran `npm`, `pnpm`
+  and Playwright with `HOME=/home/runner` and left `~/.npm` and `~/.cache`
+  owned by root; on 2026-09-05 every job that ran `npm install` on it died with
+  "cache folder contains root-owned files" (EACCES) - three pull requests red
+  within the same hour, none at fault. The guide now carries the rule and its
+  example drops the caches and chowns the home before `USER runner`.
+
 ## 0.4.5 (2026-09-05)
 
 - Derived worker images. A fleet can run its workers from an image built

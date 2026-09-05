@@ -138,6 +138,22 @@ trap cleanup EXIT INT TERM
 # inside the job's unprivileged process tree.
 install -d -o runner -g runner -m 0755 "$marker_dir"
 rm -f "$marker_dir/job-started" "$marker_dir/idle-timeout"
+rm -f "$marker_dir/home-ownership-restored"
+
+# A derived image that installed as root under HOME=/home/runner leaves root-owned
+# caches behind (~/.npm, ~/.cache, ~/.config): a job's npm then refuses to start
+# ("cache folder contains root-owned files", EACCES) before installing anything.
+# Measured 2026-09-05 on a fleet whose first derived image did exactly that: three
+# pull requests red the same hour, none at fault. The image is the fix; this is the
+# net. Give the home back to runner, and leave a marker so the canary fails on the
+# image defect instead of every job paying for it silently.
+foreign_path="$(find /home/runner -xdev ! -user runner -print -quit 2>/dev/null || true)"
+if [[ -n "$foreign_path" ]]; then
+  echo "worker image left paths not owned by runner under /home/runner (first: $foreign_path); restoring ownership" >&2
+  chown -R runner /home/runner
+  printf '%s\n' "$foreign_path" > "$marker_dir/home-ownership-restored"
+  chown runner:runner "$marker_dir/home-ownership-restored"
+fi
 
 # The runner registers with GitHub while dockerd is still starting. The
 # registration, the queue wait, and the first job steps (checkout, tool

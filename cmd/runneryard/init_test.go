@@ -84,6 +84,8 @@ func TestRunInitCreatesSafeScaffold(t *testing.T) {
 		`docker buildx version`,
 		`docker compose version`,
 		`test "$storage_driver" != vfs`,
+		`test ! -e /run/runneryard/home-ownership-restored || {`,
+		`test -z "$(find "$HOME" -xdev ! -user "$(id -un)" -print -quit)"`,
 		`test "$storage_driver" = fuse-overlayfs`,
 		`docker buildx build --load`,
 		`docker compose -f /tmp/runneryard-compose-canary.yml run --rm canary`,

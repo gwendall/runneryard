@@ -124,3 +124,26 @@ func TestRunnerEntrypointReleasesIdleWorkersThroughTheJobStartedHook(t *testing.
 		t.Fatal("runtime image must ship the job-started hook")
 	}
 }
+
+func TestRunnerEntrypointRestoresRunnerHomeOwnershipBeforeStartingRunner(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "runner-entrypoint"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(contents)
+	for _, expected := range []string{
+		`find /home/runner -xdev ! -user runner -print -quit`,
+		`chown -R runner /home/runner`,
+		`"$marker_dir/home-ownership-restored"`,
+	} {
+		if !strings.Contains(source, expected) {
+			t.Fatalf("runner entrypoint is missing the home ownership net %q", expected)
+		}
+	}
+	if strings.Index(source, "chown -R runner /home/runner") > strings.Index(source, "setpriv --reuid=runner") {
+		t.Fatal("a derived image's root-owned home must be given back to runner before the runner starts")
+	}
+	if strings.Index(source, `rm -f "$marker_dir/home-ownership-restored"`) > strings.Index(source, "find /home/runner -xdev") {
+		t.Fatal("a stale ownership marker must be cleared before the probe writes a fresh one")
+	}
+}
