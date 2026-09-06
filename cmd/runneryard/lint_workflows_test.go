@@ -150,6 +150,27 @@ func TestLintWorkflowsReportsAnUnparseableFileInsteadOfStopping(t *testing.T) {
 	}
 }
 
+func TestLintWorkflowsAcceptsAPullRequestTriggerThatNeverFiresOnCode(t *testing.T) {
+	dir := t.TempDir()
+	// A gate that only means something on a label: it never runs on the push every PR makes.
+	writeWorkflow(t, dir, "release-gates.yml", "name: gates\non:\n  pull_request:\n    types: [labeled]\njobs:\n  gate:\n    runs-on: x\n    timeout-minutes: 60\n    steps:\n      - uses: actions/checkout@v4\n      - run: pnpm gate\n      - run: pnpm evidence\n")
+	// The same list WITH a code event is still every pull request.
+	writeWorkflow(t, dir, "ci.yml", "name: ci\non:\n  pull_request:\n    types: [opened, synchronize, labeled]\njobs:\n  test:\n    runs-on: x\n    timeout-minutes: 60\n    steps:\n      - uses: actions/checkout@v4\n      - run: pnpm test\n      - run: pnpm lint\n")
+	report, err := lintWorkflows(lintOptions{dir: dir, planner: "workspace-impact.yml", tinySteps: 2, tinyTimeout: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unfiltered []string
+	for _, f := range report.Findings {
+		if f.Kind == "unfiltered-pull-request" {
+			unfiltered = append(unfiltered, f.Workflow)
+		}
+	}
+	if len(unfiltered) != 1 || unfiltered[0] != "ci.yml" {
+		t.Fatalf("only the workflow that fires on a code event runs on every pull request, got %v", unfiltered)
+	}
+}
+
 func TestLintWorkflowsAcceptsAWorkflowThatPlansFromTheMergeBase(t *testing.T) {
 	dir := t.TempDir()
 	writeWorkflow(t, dir, "ci.yml", "name: ci\non:\n  pull_request:\njobs:\n  guards:\n    runs-on: x\n    timeout-minutes: 10\n    steps:\n      - uses: actions/checkout@v4\n      - run: from=\"$(git merge-base \"$BASE\" \"$HEAD\")\"\n      - run: node guards.mjs\n")

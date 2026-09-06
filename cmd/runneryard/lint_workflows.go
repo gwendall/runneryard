@@ -138,8 +138,8 @@ func lintWorkflows(opts lintOptions) (lintReport, error) {
 			report.Summary.UnfilteredPRTriggr++
 			report.Findings = append(report.Findings, lintFinding{
 				Kind: "unfiltered-pull-request", Workflow: name,
-				Detail: "pull_request trigger without paths or paths-ignore: this workflow runs on every pull request",
-				Remedy: "add `paths:` naming what the workflow proves, or route it through the planner",
+				Detail: "pull_request trigger without paths, paths-ignore or a label-only `types` list: this workflow runs on every pull request",
+				Remedy: "add `paths:` naming what the workflow proves, restrict `types:` to the events it judges (a gate that only means something on a label: `types: [labeled]`), or route it through the planner",
 			})
 		}
 		jobs := mappingValue(root, "jobs")
@@ -272,7 +272,9 @@ func timeoutLabel(timeout int, has bool) string {
 }
 
 // pullRequestTrigger reports whether the workflow runs on pull_request and, if so,
-// whether that trigger carries a paths or paths-ignore filter.
+// whether that trigger is filtered: by paths or paths-ignore, or by EVENT - a `types`
+// list that names neither `opened` nor `synchronize` never fires on a code change (a
+// `labeled`-only or `closed`-only workflow costs nothing on an ordinary pull request).
 func pullRequestTrigger(on *yaml.Node) (present bool, filtered bool) {
 	if on == nil {
 		return false, false
@@ -297,7 +299,25 @@ func pullRequestTrigger(on *yaml.Node) (present bool, filtered bool) {
 			}
 			return false, false
 		}
-		return true, mappingValue(pr, "paths") != nil || mappingValue(pr, "paths-ignore") != nil
+		if mappingValue(pr, "paths") != nil || mappingValue(pr, "paths-ignore") != nil {
+			return true, true
+		}
+		return true, eventFiltered(mappingValue(pr, "types"))
 	}
 	return false, false
+}
+
+// eventFiltered is true when a pull_request `types` list excludes both code events
+// (`opened`, `synchronize`): such a workflow only ever fires on a label, a close, a
+// review request... and never on the push that every pull request makes.
+func eventFiltered(types *yaml.Node) bool {
+	if types == nil || types.Kind != yaml.SequenceNode || len(types.Content) == 0 {
+		return false
+	}
+	for _, item := range types.Content {
+		if item.Value == "opened" || item.Value == "synchronize" {
+			return false
+		}
+	}
+	return true
 }

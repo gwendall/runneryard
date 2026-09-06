@@ -340,7 +340,8 @@ Offline, YAML only. Findings, each with the file, the job and the remedy:
 - `tiny-job`: a job of one or two steps (or a budget of five minutes or less) with no
   matrix: seconds of work on a machine of a minute. Make it a step of a neighbour, or
   group the small guards into one job. Thresholds: `--tiny-steps`, `--tiny-timeout`.
-- `unfiltered-pull-request`: a `pull_request` trigger with no `paths`/`paths-ignore`
+- `unfiltered-pull-request`: a `pull_request` trigger with no `paths`/`paths-ignore` and
+  no label-only `types` list (one that names neither `opened` nor `synchronize`)
   runs on every pull request; not reported when the workflow plans from the merge-base
   itself (the `merge-base` token), because the plan answers per lane.
 - `unbounded-job`: no `timeout-minutes`; GitHub's default is six hours of machine.

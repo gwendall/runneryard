@@ -4,6 +4,14 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
+## Unreleased
+
+- `lint-workflows`: a `pull_request` trigger whose `types` list names neither `opened`
+  nor `synchronize` (a `labeled`-only release gate, a `closed`-only cleanup) never fires
+  on the push every pull request makes; it is no longer reported as
+  `unfiltered-pull-request`. The remedy now names that shape: restrict `types:` to the
+  events the workflow judges.
+
 ## 0.4.8 (2026-09-06)
 
 - `runneryard init --with-workflows` writes the shape that costs least on a fleet:
