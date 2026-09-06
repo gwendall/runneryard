@@ -210,3 +210,29 @@ func hasDoctorStatus(checks []doctorCheck, name, status string) bool {
 	}
 	return false
 }
+
+func TestDoctorRequiresAlertWebhook(t *testing.T) {
+	for name, tc := range map[string]struct {
+		secrets  string
+		expected string
+	}{
+		"no webhook":   {`[{"name":"GITHUB_TOKEN"}]`, "fail"},
+		"with webhook": {`[{"name":"GITHUB_TOKEN"},{"name":"ALERT_WEBHOOK_URL"}]`, "pass"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			run := func(command string, args ...string) ([]byte, error) {
+				if command == "fly" && len(args) > 3 && args[0] == "secrets" {
+					if args[3] == "control" {
+						return []byte(tc.secrets), nil
+					}
+					return []byte(`[]`), nil
+				}
+				return []byte("ready"), nil
+			}
+			checks := doctor("fly", "control", "workers", "", "", run)
+			if !hasDoctorStatus(checks, "controller alerting", tc.expected) {
+				t.Fatalf("checks = %#v", checks)
+			}
+		})
+	}
+}

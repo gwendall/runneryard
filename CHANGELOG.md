@@ -4,6 +4,14 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
+## Unreleased
+
+- `doctor` fails when the controller has no `ALERT_WEBHOOK_URL` (check "controller
+  alerting"). Every degraded state - usage budget exhausted, provider capacity ceiling,
+  a retirement stuck - leaves jobs queued behind a healthy-looking controller, and the
+  webhook is the only channel that says so; on 2026-09-05 a fleet ran with no webhook
+  while its budget stood 8.7 days from exhaustion, and doctor was green.
+
 ## 0.4.6 (2026-09-06)
 
 - The worker entrypoint gives `/home/runner` back to `runner` when a derived

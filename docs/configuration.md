@@ -21,7 +21,9 @@ from code review.
 `GITHUB_TOKEN` exists only as a private-canary compatibility path. Do not set it
 alongside App credentials. The GitHub App flow is the production default.
 
-`ALERT_WEBHOOK_URL` is an optional Slack-compatible incoming webhook. Store it
+`ALERT_WEBHOOK_URL` is a Slack-compatible incoming webhook; `doctor` fails without it
+(a fleet whose budget is exhausted or whose provider refuses capacity queues every job
+behind a healthy-looking controller, and this is the only channel that says so). Store it
 as a controller secret, not in the TOML: the URL usually embeds a token. The
 controller posts `{"text": ...}` on every health transition (`degraded` with
 its reason, then `ready` on recovery) and one reminder per hour while a
