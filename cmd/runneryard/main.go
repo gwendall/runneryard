@@ -45,6 +45,8 @@ func run(args []string) error {
 		return runStatus(args)
 	case "budget":
 		return runBudget(args)
+	case "lint-workflows":
+		return runLintWorkflows(args)
 	case "version", "--version", "-v":
 		fmt.Printf("runneryard %s (%s)\n", version, commitSHA)
 		return nil
@@ -96,6 +98,7 @@ Usage:
   runneryard route            Inspect or switch Linux runner routing
   runneryard status           Read the controller fleet snapshot
   runneryard budget init      Initialize the durable usage ledger once
+  runneryard lint-workflows   Say what a repository's workflows will cost on a fleet
   runneryard serve            Run the fleet controller (default)
   runneryard version          Print version information
 
