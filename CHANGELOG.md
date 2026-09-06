@@ -4,7 +4,7 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
-## Unreleased
+## 0.4.8 (2026-09-06)
 
 - `runneryard init --with-workflows` writes the shape that costs least on a fleet:
   `.github/workflows/ci.yml` (one job plans from the merge-base and runs the guards as
