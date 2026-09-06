@@ -128,6 +128,7 @@ func controllerSecretChecks(controllerApp string, run commandRunner) []doctorChe
 		return []doctorCheck{
 			{Name: "controller policy source", Status: "fail", Details: details},
 			{Name: "controller GitHub auth", Status: "fail", Details: details},
+			{Name: "controller alerting", Status: "fail", Details: details},
 		}
 	}
 	secrets, err := parseFlySecretNames(output)
@@ -135,6 +136,7 @@ func controllerSecretChecks(controllerApp string, run commandRunner) []doctorChe
 		return []doctorCheck{
 			{Name: "controller policy source", Status: "fail", Details: err.Error()},
 			{Name: "controller GitHub auth", Status: "fail", Details: err.Error()},
+			{Name: "controller alerting", Status: "fail", Details: err.Error()},
 		}
 	}
 	shadows := make([]string, 0)
@@ -147,12 +149,27 @@ func controllerSecretChecks(controllerApp string, run commandRunner) []doctorChe
 		return []doctorCheck{{
 			Name: "controller policy source", Status: "fail",
 			Details: "app secrets override non-secret policy: " + strings.Join(shadows, ", "),
-		}, githubAuthSecretCheck(secrets)}
+		}, githubAuthSecretCheck(secrets), alertingSecretCheck(secrets)}
 	}
 	return []doctorCheck{
 		{Name: "controller policy source", Status: "pass", Details: "no policy values shadowed by secrets"},
 		githubAuthSecretCheck(secrets),
+		alertingSecretCheck(secrets),
 	}
+}
+
+// alertingSecretCheck refuses a fleet nobody will hear. Every degraded state -
+// usage budget exhausted, provider capacity ceiling, a retirement stuck - leaves
+// jobs queued behind a healthy-looking controller; ALERT_WEBHOOK_URL is the only
+// channel that says so. On 2026-09-05 a fleet ran with no webhook while its budget
+// stood 8.7 days from exhaustion, and doctor was green.
+func alertingSecretCheck(secrets []string) doctorCheck {
+	for _, name := range secrets {
+		if name == "ALERT_WEBHOOK_URL" {
+			return doctorCheck{Name: "controller alerting", Status: "pass", Details: "ALERT_WEBHOOK_URL is set; degraded states reach a human"}
+		}
+	}
+	return doctorCheck{Name: "controller alerting", Status: "fail", Details: "ALERT_WEBHOOK_URL is not set: a budget exhausted or a capacity ceiling would queue every job in silence; fly secrets set ALERT_WEBHOOK_URL=https://... --app <controller>"}
 }
 
 func githubAuthSecretCheck(secrets []string) doctorCheck {
