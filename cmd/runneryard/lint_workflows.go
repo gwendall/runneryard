@@ -5,8 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -109,8 +109,11 @@ func lintWorkflows(opts lintOptions) (lintReport, error) {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	// The directory is the operator's argument; every file read stays inside it
+	// (fs.ReadFile on a rooted fs refuses "..", absolute paths and symlink escapes).
+	workflowsFS := os.DirFS(opts.dir)
 	for _, name := range names {
-		raw, err := os.ReadFile(filepath.Join(opts.dir, name))
+		raw, err := fs.ReadFile(workflowsFS, name)
 		if err != nil {
 			return lintReport{}, err
 		}
