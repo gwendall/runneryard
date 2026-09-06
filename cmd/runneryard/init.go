@@ -28,6 +28,7 @@ type initOptions struct {
 	rootfsGB      int
 	usageBudget   string
 	force         bool
+	withWorkflows bool
 }
 
 const (
@@ -67,6 +68,7 @@ func runInit(args []string) error {
 	flags.IntVar(&options.rootfsGB, "rootfs-gb", defaultRootfsGB, "Fly worker ephemeral root filesystem in GB")
 	flags.StringVar(&options.usageBudget, "usage-budget", defaultUsageBudget, "rolling worker-time budget, as a Go duration")
 	flags.BoolVar(&options.force, "force", false, "overwrite generated files")
+	flags.BoolVar(&options.withWorkflows, "with-workflows", false, "also generate .github/workflows/ci.yml and .github/ci-scopes.json: the shape that costs least on a fleet (plan from the merge-base, guards as steps, one gate)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -142,6 +144,12 @@ func runInit(args []string) error {
 	files := []generatedFile{{
 		path: filepath.Join(projectDir, ".github", "workflows", "runneryard-canary.yml"), contents: renderCanary(options), mode: 0o644,
 	}}
+	if options.withWorkflows {
+		files = append(files,
+			generatedFile{path: filepath.Join(projectDir, ".github", "workflows", "ci.yml"), contents: renderCIRecipe(options), mode: 0o644},
+			generatedFile{path: filepath.Join(projectDir, ".github", "ci-scopes.json"), contents: renderCIScopes(), mode: 0o644},
+		)
+	}
 	if options.provider == "fly" {
 		files = append(files,
 			generatedFile{path: filepath.Join(projectDir, ".runneryard", "controller.env.example"), contents: renderFlyEnv(controllerApp), mode: 0o600},

@@ -277,3 +277,38 @@ func TestRunInitCreatesHetznerScaffold(t *testing.T) {
 		t.Fatalf("unexpected secret ignore file %q", ignore)
 	}
 }
+
+// The recipe starts a repository with the shape that costs least on a fleet, and the
+// lint agrees: its only finding is the gate, the one small job branch protection needs.
+func TestRunInitWithWorkflowsGeneratesAShapeTheLintAccepts(t *testing.T) {
+	directory := t.TempDir()
+	if err := runInit([]string{"--directory", directory, "--github", "https://github.com/acme/widgets", "--name", "acme-linux", "--with-workflows"}); err != nil {
+		t.Fatal(err)
+	}
+	ci, err := os.ReadFile(filepath.Join(directory, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`git merge-base "$BASE" "$HEAD"`,
+		"cancel-in-progress: ${{ github.event_name != 'push' }}",
+		"Guards (add yours as steps, never as jobs)",
+		"if: always()",
+		`runs-on: "acme-linux"`,
+		".github/ci-scopes.json",
+	} {
+		if !strings.Contains(string(ci), expected) {
+			t.Fatalf("recipe missing %q:\n%s", expected, ci)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(directory, ".github", "ci-scopes.json")); err != nil {
+		t.Fatal(err)
+	}
+	report, err := lintWorkflows(lintOptions{dir: filepath.Join(directory, ".github", "workflows"), planner: "workspace-impact.yml", tinySteps: 2, tinyTimeout: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Findings) != 1 || report.Findings[0].Kind != "tiny-job" || report.Findings[0].Job != "gate" {
+		t.Fatalf("the recipe's only finding must be the gate: %#v", report.Findings)
+	}
+}

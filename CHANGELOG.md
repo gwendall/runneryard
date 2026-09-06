@@ -6,6 +6,11 @@ operator-facing schema or a trust boundary is called out here first.
 
 ## Unreleased
 
+- `runneryard init --with-workflows` writes the shape that costs least on a fleet:
+  `.github/workflows/ci.yml` (one job plans from the merge-base and runs the guards as
+  steps, a lane job per scope, one `gate` job to require) and `.github/ci-scopes.json`.
+  `lint-workflows` no longer reports a workflow that plans from the merge-base as
+  unfiltered; on the recipe its only finding is the gate.
 - `doctor` reads the fleet as it runs: `budget horizon` (fails under 14 days of remaining
   budget at the trailing burn rate, or on a degraded fleet; read over `fly ssh console`)
   and `fleet capacity margin` (`--fly-machine-limit <n>`: MAX_RUNNERS against the room the
