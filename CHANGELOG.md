@@ -4,6 +4,15 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
+## Unreleased
+
+- `doctor` reads the fleet as it runs: `budget horizon` (fails under 14 days of remaining
+  budget at the trailing burn rate, or on a degraded fleet; read over `fly ssh console`)
+  and `fleet capacity margin` (`--fly-machine-limit <n>`: MAX_RUNNERS against the room the
+  organization's Machine limit leaves once every other app's Machines, stopped ones
+  included, are counted). Both were missing on 2026-09-05, when doctor was green 8.7 days
+  before the budget ran out and two days after MAX_RUNNERS had crossed the limit.
+
 ## 0.4.7 (2026-09-06)
 
 - `runneryard lint-workflows`: an offline lint of `.github/workflows` that says what a

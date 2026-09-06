@@ -292,6 +292,20 @@ failed POST is logged and the next transition sends again. Pair it with
 `runneryard status` for the detail; the message itself only carries the
 reason, aggregate capacity and worker counts, and the budget horizon.
 
+## Doctor reads the fleet as it runs
+
+Two `doctor` checks read the live fleet, not only its configuration, because both were
+missing on 2026-09-05: doctor was green while the usage budget stood 8.7 days from
+exhaustion, and MAX_RUNNERS had exceeded the organization's Machine limit two days earlier.
+
+- `budget horizon`: reads the controller's status file over `fly ssh console` and fails when
+  the remaining budget lasts under 14 days at the trailing day's burn rate, or when the
+  fleet reports itself degraded. Warns (does not fail) when the controller is unreachable.
+- `fleet capacity margin`: with `--fly-machine-limit <n>` (Fly does not expose the
+  organization's limit; the operator passes it), counts every app's Machines, stopped
+  ones included, and fails when MAX_RUNNERS exceeds the room left. Without the flag it
+  is a hint.
+
 ## Lint the workflows before they cost you
 
 Every job is a machine: created, booted, registered (about a minute), used, destroyed.

@@ -27,6 +27,7 @@ func runDoctor(args []string) error {
 	firewallID := flags.String("firewall-id", strings.TrimSpace(os.Getenv("RUNNER_HETZNER_FIREWALL_ID")), "Hetzner worker firewall ID")
 	configPath := flags.String("config", "", "committed Fly controller configuration to compare with the live Machine (default: "+defaultFlyConfigPath+" when present)")
 	jsonOutput := flags.Bool("json", false, "print machine-readable JSON")
+	flags.IntVar(&doctorFlyMachineLimit, "fly-machine-limit", 0, "the Fly organization's Machine limit (shared by every app); enables the fleet capacity margin check")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -93,6 +94,10 @@ func doctorFly(controllerApp, workerApp, configPath string, run commandRunner) [
 	if controllerApp != "" {
 		checks = append(checks, controllerSecretChecks(controllerApp, run)...)
 		checks = append(checks, controllerConfigChecks(controllerApp, configPath, run)...)
+		if file, ok := committedFlyConfig(configPath, run); ok {
+			checks = append(checks, budgetHorizonCheck(controllerApp, file, run))
+			checks = append(checks, fleetMarginCheck(workerApp, file, run))
+		}
 	}
 	output, err := run("fly", "secrets", "list", "--app", workerApp, "--json")
 	if err != nil {

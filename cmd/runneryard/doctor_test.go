@@ -236,3 +236,85 @@ func TestDoctorRequiresAlertWebhook(t *testing.T) {
 		})
 	}
 }
+
+func fleetRunner(statusJSON string, machinesByApp map[string]int) commandRunner {
+	return func(command string, args ...string) ([]byte, error) {
+		if command != "fly" {
+			return []byte("ready"), nil
+		}
+		switch {
+		case len(args) > 0 && args[0] == "secrets":
+			if len(args) > 3 && args[3] == "control" {
+				return []byte(`[{"name":"GITHUB_TOKEN"},{"name":"ALERT_WEBHOOK_URL"}]`), nil
+			}
+			return []byte(`[]`), nil
+		case len(args) > 1 && args[0] == "config" && args[1] == "show":
+			return []byte(`{"app":"control","build":{"image":"ghcr.io/gwendall/runneryard:0.4.7"},"env":{"RUNNER_IMAGE":"ghcr.io/gwendall/runneryard:0.4.7","MAX_RUNNERS":"40","RUNNER_STATUS_FILE":"/var/lib/runner-fleet/status.json"}}`), nil
+		case len(args) > 1 && args[0] == "machine" && args[1] == "list":
+			return []byte(`[]`), nil
+		case len(args) > 1 && args[0] == "ssh" && args[1] == "console":
+			return []byte(statusJSON), nil
+		case len(args) > 1 && args[0] == "apps" && args[1] == "list":
+			out := "["
+			first := true
+			for name := range machinesByApp {
+				if !first {
+					out += ","
+				}
+				first = false
+				out += `{"Name":"` + name + `"}`
+			}
+			return []byte(out + "]"), nil
+		case len(args) > 1 && args[0] == "machines" && args[1] == "list":
+			n := machinesByApp[args[3]]
+			out := "["
+			for i := 0; i < n; i++ {
+				if i > 0 {
+					out += ","
+				}
+				out += `{"id":"m"}`
+			}
+			return []byte(out + "]"), nil
+		}
+		return []byte("ready"), nil
+	}
+}
+
+func TestDoctorReadsTheBudgetHorizonFromTheLiveStatus(t *testing.T) {
+	short := `{"health":"ready","budget":{"limit_seconds":36000000,"used_seconds":12000000,"burn_seconds_per_day":1051223,"horizon_seconds":750033}}`
+	checks := doctor("fly", "control", "workers", "", ".runneryard/fly.controller.toml", fleetRunner(short, map[string]int{"workers": 0}))
+	if !hasDoctorStatus(checks, "budget horizon", "fail") {
+		t.Fatalf("8.7 days must fail: %#v", checks)
+	}
+	long := `{"health":"ready","budget":{"limit_seconds":36000000,"used_seconds":12000000,"burn_seconds_per_day":1051223,"horizon_seconds":2030000}}`
+	checks = doctor("fly", "control", "workers", "", ".runneryard/fly.controller.toml", fleetRunner(long, map[string]int{"workers": 0}))
+	if !hasDoctorStatus(checks, "budget horizon", "pass") {
+		t.Fatalf("23 days must pass: %#v", checks)
+	}
+	degraded := `{"health":"degraded","reason":"usage_budget_exhausted","budget":{"horizon_seconds":0}}`
+	checks = doctor("fly", "control", "workers", "", ".runneryard/fly.controller.toml", fleetRunner(degraded, map[string]int{"workers": 0}))
+	if !hasDoctorStatus(checks, "budget horizon", "fail") {
+		t.Fatalf("a degraded fleet must fail: %#v", checks)
+	}
+}
+
+func TestDoctorComparesMaxRunnersWithTheOrganizationMargin(t *testing.T) {
+	status := `{"health":"ready","budget":{"horizon_seconds":2030000}}`
+	doctorFlyMachineLimit = 0
+	checks := doctor("fly", "control", "workers", "", ".runneryard/fly.controller.toml", fleetRunner(status, map[string]int{"workers": 4, "other-a": 30, "other-b": 26}))
+	if !hasDoctorStatus(checks, "fleet capacity margin", "warn") {
+		t.Fatalf("without a limit the check is a hint: %#v", checks)
+	}
+	doctorFlyMachineLimit = 100
+	defer func() { doctorFlyMachineLimit = 0 }()
+	// 56 Machines belong to other apps: room for 44, MAX_RUNNERS 40 fits.
+	checks = doctor("fly", "control", "workers", "", ".runneryard/fly.controller.toml", fleetRunner(status, map[string]int{"workers": 4, "other-a": 30, "other-b": 26}))
+	if !hasDoctorStatus(checks, "fleet capacity margin", "pass") {
+		t.Fatalf("40 under a margin of 44 must pass: %#v", checks)
+	}
+	// 62 elsewhere: room for 38, MAX_RUNNERS 40 does not fit (the 2026-09-03 shape).
+	checks = doctor("fly", "control", "workers", "", ".runneryard/fly.controller.toml", fleetRunner(status, map[string]int{"workers": 4, "other-a": 36, "other-b": 26}))
+	if !hasDoctorStatus(checks, "fleet capacity margin", "fail") {
+		t.Fatalf("40 over a margin of 38 must fail: %#v", checks)
+	}
+}

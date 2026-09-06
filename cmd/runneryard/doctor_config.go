@@ -221,3 +221,20 @@ func parseFlyMachines(output []byte) ([]flyMachine, error) {
 	}
 	return machines, nil
 }
+
+// committedFlyConfig re-reads the committed controller file for the checks that need
+// its environment (status file path, MAX_RUNNERS); false when there is none to read.
+func committedFlyConfig(configPath string, run commandRunner) (flyConfigFile, bool) {
+	if configPath == "" {
+		return flyConfigFile{}, false
+	}
+	output, err := run("fly", "config", "show", "--local", "--config", configPath)
+	if err != nil {
+		return flyConfigFile{}, false
+	}
+	file, err := parseFlyConfigFile(output)
+	if err != nil {
+		return flyConfigFile{}, false
+	}
+	return file, true
+}
