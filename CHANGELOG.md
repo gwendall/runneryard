@@ -12,7 +12,9 @@ operator-facing schema or a trust boundary is called out here first.
   triggers without a path filter, jobs without a budget, unparseable files. Advisory by
   default, `--strict` for CI, `--json` for tooling. Motivation, measured 2026-09-05 on a
   monorepo: 3 753 fleet jobs in a day at a median of six seconds, 90 hours of job time for
-  292 machine-hours billed, 66 jobs for a one-file pull request.
+  292 machine-hours billed, 29 machines for a one-file pull request (20 of them under
+  thirty seconds of work; the figure of 66 in earlier drafts counted check-runs, 37 of
+  which were skipped).
 - `doctor` fails when the controller has no `ALERT_WEBHOOK_URL` (check "controller
   alerting"). Every degraded state - usage budget exhausted, provider capacity ceiling,
   a retirement stuck - leaves jobs queued behind a healthy-looking controller, and the

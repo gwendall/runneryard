@@ -20,8 +20,9 @@ import (
 // destroyed. The shape of the workflows decides how many machines a pull request
 // starts and how many of those do real work. Measured on one monorepo on
 // 2026-09-05: 3 753 fleet jobs in a day with a MEDIAN duration of six seconds,
-// 90 hours of job time for 292 machine-hours billed, 66 jobs for a one-file pull
-// request, the same planner job copied into fourteen workflows. None of that was a
+// 90 hours of job time for 292 machine-hours billed, 29 machines for a one-file pull
+// request of which 20 did under thirty seconds of work, the same planner job copied
+// into fourteen workflows. None of that was a
 // runner defect; all of it was visible in the YAML. This command makes it visible
 // on day one of a new repository, and measurable on a repository that drifted.
 //

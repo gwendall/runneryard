@@ -298,8 +298,8 @@ Every job is a machine: created, booted, registered (about a minute), used, dest
 The shape of `.github/workflows` decides how many machines a pull request starts and
 how many of them do real work. Measured on one monorepo on 2026-09-05: 3 753 fleet jobs
 in a day with a median duration of six seconds, 90 hours of job time for 292
-machine-hours billed, 66 jobs for a one-file pull request, the same planner job copied
-into fourteen workflows. None of it was a runner defect; all of it was visible in the
+machine-hours billed, 29 machines for a one-file pull request (20 of them under thirty
+seconds of work), the same planner job copied into fourteen workflows. None of it was a runner defect; all of it was visible in the
 YAML.
 
 ```sh
