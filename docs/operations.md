@@ -306,6 +306,17 @@ exhaustion, and MAX_RUNNERS had exceeded the organization's Machine limit two da
   ones included, and fails when MAX_RUNNERS exceeds the room left. Without the flag it
   is a hint.
 
+## Start a repository with the right shape
+
+`runneryard init --with-workflows` also writes `.github/workflows/ci.yml` and
+`.github/ci-scopes.json`: one job plans from the MERGE-BASE and runs the guards as steps,
+one job per lane runs only when the plan selected it, one `gate` job (`if: always()`) is the
+single check to require in branch protection. Every job carries a `timeout-minutes` to set
+from a measured p95. The lint agrees with the recipe: its only finding is the gate, the one
+small job protection needs, and a workflow that plans from the merge-base is not reported as
+unfiltered (its paths filter would be redundant with the plan). Edit `ci-scopes.json` to
+name your lanes; add guards as steps, never as jobs.
+
 ## Lint the workflows before they cost you
 
 Every job is a machine: created, booted, registered (about a minute), used, destroyed.
@@ -330,7 +341,8 @@ Offline, YAML only. Findings, each with the file, the job and the remedy:
   matrix: seconds of work on a machine of a minute. Make it a step of a neighbour, or
   group the small guards into one job. Thresholds: `--tiny-steps`, `--tiny-timeout`.
 - `unfiltered-pull-request`: a `pull_request` trigger with no `paths`/`paths-ignore`
-  runs on every pull request.
+  runs on every pull request; not reported when the workflow plans from the merge-base
+  itself (the `merge-base` token), because the plan answers per lane.
 - `unbounded-job`: no `timeout-minutes`; GitHub's default is six hours of machine.
 - `unparseable`: a file GitHub will not run either.
 

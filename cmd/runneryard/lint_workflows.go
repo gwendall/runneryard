@@ -130,7 +130,11 @@ func lintWorkflows(opts lintOptions) (lintReport, error) {
 		report.Summary.Workflows++
 		triggers := mappingValue(root, "on")
 		onPullRequest, prFiltered := pullRequestTrigger(triggers)
-		if onPullRequest && !prFiltered {
+		// A workflow that plans from the merge-base answers per lane inside its jobs;
+		// a paths filter on the trigger would be redundant with that plan (and would
+		// hide a required gate). The token is the plan's own git call.
+		plansItself := strings.Contains(string(raw), "merge-base")
+		if onPullRequest && !prFiltered && !plansItself {
 			report.Summary.UnfilteredPRTriggr++
 			report.Findings = append(report.Findings, lintFinding{
 				Kind: "unfiltered-pull-request", Workflow: name,

@@ -149,3 +149,15 @@ func TestLintWorkflowsReportsAnUnparseableFileInsteadOfStopping(t *testing.T) {
 		t.Fatalf("report = %#v", report)
 	}
 }
+
+func TestLintWorkflowsAcceptsAWorkflowThatPlansFromTheMergeBase(t *testing.T) {
+	dir := t.TempDir()
+	writeWorkflow(t, dir, "ci.yml", "name: ci\non:\n  pull_request:\njobs:\n  guards:\n    runs-on: x\n    timeout-minutes: 10\n    steps:\n      - uses: actions/checkout@v4\n      - run: from=\"$(git merge-base \"$BASE\" \"$HEAD\")\"\n      - run: node guards.mjs\n")
+	report, err := lintWorkflows(lintOptions{dir: dir, planner: "workspace-impact.yml", tinySteps: 2, tinyTimeout: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findingKinds(report)["unfiltered-pull-request"] != 0 {
+		t.Fatalf("a workflow that plans from the merge-base answers per lane; paths would be redundant: %#v", report.Findings)
+	}
+}
