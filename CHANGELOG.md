@@ -4,7 +4,7 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
-## Unreleased
+## 0.4.9 (2026-09-06)
 
 - `lint-workflows`: a `pull_request` trigger whose `types` list names neither `opened`
   nor `synchronize` (a `labeled`-only release gate, a `closed`-only cleanup) never fires
