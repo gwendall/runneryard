@@ -292,6 +292,39 @@ failed POST is logged and the next transition sends again. Pair it with
 `runneryard status` for the detail; the message itself only carries the
 reason, aggregate capacity and worker counts, and the budget horizon.
 
+## Lint the workflows before they cost you
+
+Every job is a machine: created, booted, registered (about a minute), used, destroyed.
+The shape of `.github/workflows` decides how many machines a pull request starts and
+how many of them do real work. Measured on one monorepo on 2026-09-05: 3 753 fleet jobs
+in a day with a median duration of six seconds, 90 hours of job time for 292
+machine-hours billed, 66 jobs for a one-file pull request, the same planner job copied
+into fourteen workflows. None of it was a runner defect; all of it was visible in the
+YAML.
+
+```sh
+runneryard lint-workflows --dir .github/workflows            # advisory report
+runneryard lint-workflows --json                              # for a dashboard or a CI step
+runneryard lint-workflows --strict                            # exit 1 on any finding
+```
+
+Offline, YAML only. Findings, each with the file, the job and the remedy:
+
+- `planner-duplicated`: several jobs call the same reusable planner; each caller is a
+  machine that recomputes the same answer. Compute the impact once per event.
+- `tiny-job`: a job of one or two steps (or a budget of five minutes or less) with no
+  matrix: seconds of work on a machine of a minute. Make it a step of a neighbour, or
+  group the small guards into one job. Thresholds: `--tiny-steps`, `--tiny-timeout`.
+- `unfiltered-pull-request`: a `pull_request` trigger with no `paths`/`paths-ignore`
+  runs on every pull request.
+- `unbounded-job`: no `timeout-minutes`; GitHub's default is six hours of machine.
+- `unparseable`: a file GitHub will not run either.
+
+Run it on day one of a repository that adopts the fleet, and in the repository's own CI
+with `--strict` once the findings are at zero, so the shape cannot drift back. It does not
+read the API: pairing a job's `timeout-minutes` with its measured p95 is the operator's
+reading of `runneryard status` and the provider's job history.
+
 ## Hard usage budget
 
 `RUNNER_USAGE_BUDGET` is the maximum worker runtime inside the rolling

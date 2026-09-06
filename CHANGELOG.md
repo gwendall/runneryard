@@ -6,6 +6,13 @@ operator-facing schema or a trust boundary is called out here first.
 
 ## Unreleased
 
+- `runneryard lint-workflows`: an offline lint of `.github/workflows` that says what a
+  repository's shape will cost on an ephemeral fleet, with the remedy per finding:
+  duplicated planner callers, tiny jobs (a machine for seconds of work), pull_request
+  triggers without a path filter, jobs without a budget, unparseable files. Advisory by
+  default, `--strict` for CI, `--json` for tooling. Motivation, measured 2026-09-05 on a
+  monorepo: 3 753 fleet jobs in a day at a median of six seconds, 90 hours of job time for
+  292 machine-hours billed, 66 jobs for a one-file pull request.
 - `doctor` fails when the controller has no `ALERT_WEBHOOK_URL` (check "controller
   alerting"). Every degraded state - usage budget exhausted, provider capacity ceiling,
   a retirement stuck - leaves jobs queued behind a healthy-looking controller, and the
