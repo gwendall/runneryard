@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -31,6 +32,11 @@ func budgetHorizonCheck(controllerApp string, file flyConfigFile, run commandRun
 	output, err := run("fly", "ssh", "console", "--app", controllerApp, "-C", "cat "+statusFile)
 	if err != nil {
 		return doctorCheck{Name: "budget horizon", Status: "warn", Details: "status unreadable over ssh (" + compactError(output, err) + "); run again once the controller is up"}
+	}
+	// `fly ssh console` prints a "Connecting to <address>..." banner before the command's
+	// output; the document starts at the first brace.
+	if i := bytes.IndexByte(output, '{'); i > 0 {
+		output = output[i:]
 	}
 	var status controller.FleetStatus
 	if err := json.Unmarshal(output, &status); err != nil {

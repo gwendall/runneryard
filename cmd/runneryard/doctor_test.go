@@ -286,7 +286,8 @@ func TestDoctorReadsTheBudgetHorizonFromTheLiveStatus(t *testing.T) {
 	if !hasDoctorStatus(checks, "budget horizon", "fail") {
 		t.Fatalf("8.7 days must fail: %#v", checks)
 	}
-	long := `{"health":"ready","budget":{"limit_seconds":36000000,"used_seconds":12000000,"burn_seconds_per_day":1051223,"horizon_seconds":2030000}}`
+	// The ssh banner precedes the document in real output.
+	long := "Connecting to fdaa:0:1:a7b:1::2... complete\n" + `{"health":"ready","budget":{"limit_seconds":36000000,"used_seconds":12000000,"burn_seconds_per_day":1051223,"horizon_seconds":2030000}}`
 	checks = doctor("fly", "control", "workers", "", ".runneryard/fly.controller.toml", fleetRunner(long, map[string]int{"workers": 0}))
 	if !hasDoctorStatus(checks, "budget horizon", "pass") {
 		t.Fatalf("23 days must pass: %#v", checks)
