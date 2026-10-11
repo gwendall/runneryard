@@ -4,7 +4,7 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
-## Unreleased
+## 0.4.10 (2026-10-11)
 
 - `runneryard budget estimate` sizes `RUNNER_USAGE_BUDGET` and the Fly compute bill from
   a workload, offline: jobs a day, minutes per job, and the worker shape. Each job is
