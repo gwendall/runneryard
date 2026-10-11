@@ -1,0 +1,22 @@
+# Example .github/merge-queue.yml for the RunnerYard merge queue (preview).
+# The queue reads this file from the default branch on every tick; a pull
+# request cannot change the rules it is judged by until it lands.
+
+# The branch the queue fast-forwards.
+target: main
+# The label that queues a pull request. It must be added by someone with
+# write access to the repository.
+label: queue
+# How many pull requests one stack holds (1 to 10).
+batch_size: 3
+# How long a required check may stay pending, or absent, before the stack
+# counts as failed.
+check_timeout: 45m
+# Checks that must pass on the top of a stack before it lands: the check run
+# names the CI workflow reports.
+required_checks:
+  - name: test
+  - name: docs
+    paths:
+      - "docs/**"
+      - "*.md"

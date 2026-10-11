@@ -47,6 +47,8 @@ func run(args []string) error {
 		return runBudget(args)
 	case "lint-workflows":
 		return runLintWorkflows(args)
+	case "merge-queue":
+		return runMergeQueue(args)
 	case "version", "--version", "-v":
 		fmt.Printf("runneryard %s (%s)\n", version, commitSHA)
 		return nil
@@ -100,6 +102,7 @@ Usage:
   runneryard budget init      Initialize the durable usage ledger once
   runneryard budget estimate  Size RUNNER_USAGE_BUDGET and the Fly or Hetzner bill from a workload
   runneryard lint-workflows   Say what a repository's workflows will cost on a fleet
+  runneryard merge-queue tick Run one merge queue tick in a workflow (preview)
   runneryard serve            Run the fleet controller (default)
   runneryard version          Print version information
 

@@ -1,0 +1,121 @@
+# Example workflow for the RunnerYard merge queue (preview). Copy it to
+# .github/workflows/merge-queue.yml in the repository the queue serves, next
+# to a .github/merge-queue.yml configuration (see merge-queue-config.yml), and
+# read docs/merge-queue.md before enabling it.
+#
+# Each run is one tick: it reads the queue from GitHub, decides, acts, and
+# exits. Without the App (vars.MERGE_QUEUE_APP_CLIENT_ID and
+# secrets.MERGE_QUEUE_APP_PRIVATE_KEY) the tick runs with the read-only
+# GITHUB_TOKEN and only prints its plan.
+name: Merge queue
+
+on:
+  # pull_request_target runs this file from the default branch, never from
+  # the pull request, and no job checks out pull request code. Do not change
+  # it to pull_request: a pull request could then edit the workflow that
+  # holds the App key.
+  pull_request_target:
+    types: [labeled, unlabeled]
+  # A stack's own CI finishing is the usual reason to tick. "CI" must be the
+  # name of the workflow that reports the required checks.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  # Safety net for missed events and for check timeouts.
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: merge-queue
+  cancel-in-progress: false
+
+env:
+  # Keep in sync with "label" in .github/merge-queue.yml and with the gate's
+  # if: below, which cannot read env.
+  QUEUE_LABEL: queue
+  # An exact release of the runneryard npm package that ships merge-queue.
+  RUNNERYARD_VERSION: "x.y.z"
+
+jobs:
+  # Most events are not about the queue: any label change, any CI run on a
+  # push to the target. A job whose if: is false starts no runner, and an
+  # empty queue costs one gh call without a checkout.
+  gate:
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.label.name == 'queue') &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      pull-requests: read
+    outputs:
+      work: ${{ steps.check.outputs.work }}
+    steps:
+      - name: Anything queued?
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          queued=$(gh pr list --repo "$GITHUB_REPOSITORY" --label "$QUEUE_LABEL" --state open --json number --jq length)
+          if [ "$queued" -gt 0 ]; then
+            echo "work=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "work=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  tick:
+    needs: gate
+    if: needs.gate.outputs.work == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Read access for a dry run with GITHUB_TOKEN. With the App, every
+    # write goes through the App's installation token instead.
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Is the queue App configured?
+        id: app
+        env:
+          CLIENT_ID: ${{ vars.MERGE_QUEUE_APP_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.MERGE_QUEUE_APP_PRIVATE_KEY }}
+        run: |
+          if [ -n "$CLIENT_ID" ] && [ -n "$PRIVATE_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A push made with GITHUB_TOKEN starts no workflow, so a stack pushed
+      # with it would never get CI. The App's token does start it.
+      - name: Mint a token for this repository only
+        id: token
+        if: steps.app.outputs.configured == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MERGE_QUEUE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MERGE_QUEUE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-actions: write
+          permission-checks: read
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          # Add when queued pull requests may change .github/workflows; the
+          # App must hold the same permission.
+          # permission-workflows: write
+
+      - name: Tick
+        env:
+          MERGE_QUEUE_TOKEN: ${{ steps.token.outputs.token }}
+          MERGE_QUEUE_BOT_LOGIN: ${{ steps.token.outputs.app-slug && format('{0}[bot]', steps.token.outputs.app-slug) || '' }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: npx --yes "runneryard@$RUNNERYARD_VERSION" merge-queue tick
