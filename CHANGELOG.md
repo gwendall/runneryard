@@ -6,6 +6,16 @@ operator-facing schema or a trust boundary is called out here first.
 
 ## Unreleased
 
+- `runneryard budget estimate` sizes `RUNNER_USAGE_BUDGET` and the Fly compute bill from
+  a workload, offline: jobs a day, minutes per job, and the worker shape. Each job is
+  charged its duration plus the machine's boot, registration and teardown (`--overhead`,
+  75 s by default), and the suggestion adds one `RUNNER_MAX_LIFETIME` per `MAX_RUNNERS`,
+  since every launch holds that reservation until it settles; a budget sized to usage
+  alone stops admitting workers before the usage is reached. The suggestion is printed
+  as a duration the controller accepts. Prices are Fly's iad/ewr rates of 2026-10-11;
+  `--price-multiplier` applies another region's markup (cdg: 1.1346). Why: one fleet ran
+  8.7 days from exhaustion on 2026-09-05, and a workload measured on 2026-10-08 needed
+  34 times the scaffold's 166h40m.
 - The Go toolchain and the release image move to Go 1.26.9: govulncheck reports ten
   standard library vulnerabilities in 1.25.14 (`net/http`, `net/textproto`,
   `crypto/tls`, `os`), and Go 1.25 no longer receives security fixes. The worker image

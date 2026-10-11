@@ -10,8 +10,11 @@ import (
 )
 
 func runBudget(args []string) error {
+	if len(args) > 0 && args[0] == "estimate" {
+		return runBudgetEstimate(args[1:])
+	}
 	if len(args) == 0 || args[0] != "init" {
-		return fmt.Errorf("usage: runneryard budget init --file PATH")
+		return fmt.Errorf("usage: runneryard budget init --file PATH | runneryard budget estimate [flags]")
 	}
 	flags := flag.NewFlagSet("budget init", flag.ContinueOnError)
 	flags.SetOutput(os.Stdout)

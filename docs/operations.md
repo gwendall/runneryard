@@ -379,6 +379,22 @@ Queued jobs are the intended failure mode. Raise the budget from observed
 qualified workload, and account separately for the small always-on controller,
 storage, and network costs.
 
+Size the first budget before routing anything:
+
+```sh
+npx runneryard budget estimate --jobs-per-day 300 --minutes-per-job 4 \
+  --max-runners 24 --price-multiplier 1.1346
+```
+
+It charges every job its duration plus about a minute of boot and registration
+and the 15 s teardown grace (`--overhead`), adds the margin, then adds one
+`RUNNER_MAX_LIFETIME` per `MAX_RUNNERS` because every running worker holds that
+reservation until it settles. It prints `RUNNER_USAGE_BUDGET` as a duration the
+controller accepts, and a Fly compute estimate from the iad/ewr rates times
+`--price-multiplier` (cdg is 1.1346; the pricing page lists the others). Count
+jobs, not workflow runs: every job is one worker. After a week of traffic, read
+`burn` and `horizon` in `runneryard status` instead of the estimate.
+
 ## Incident response
 
 If workers leak, stop new routing first:

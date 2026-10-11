@@ -56,7 +56,8 @@ limit.
 Each launch first reserves one full `RUNNER_MAX_LIFETIME`. A budget therefore
 admits at most `floor(remaining budget / maximum lifetime)` new workers, even
 when `MAX_RUNNERS` is higher. Set the rolling budget from an explicit monthly
-worker-time allowance, and keep a separate provider spending alert for the
+worker-time allowance (`runneryard budget estimate` computes one from jobs a day
+and minutes per job), and keep a separate provider spending alert for the
 controller, storage, images, network, taxes, and price changes.
 
 Provider throttling, provider-side errors, and transport failures are retried
