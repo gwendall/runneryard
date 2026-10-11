@@ -119,6 +119,9 @@ type server struct {
 	CreatedAt time.Time         `json:"created"`
 	Labels    map[string]string `json:"labels"`
 	PublicNet struct {
+		IPv4 struct {
+			IP string `json:"ip"`
+		} `json:"ipv4"`
 		Firewalls []serverFirewall `json:"firewalls"`
 	} `json:"public_net"`
 }
@@ -328,11 +331,26 @@ func (a *Adapter) Inventory(ctx context.Context) ([]provider.Worker, error) {
 
 func (a *Adapter) listServers(ctx context.Context, labelSelector string) ([]provider.Worker, error) {
 	workers := make([]provider.Worker, 0)
+	err := a.eachServer(ctx, labelSelector, func(item server) {
+		// A pool host is never a worker, whatever labels it gained.
+		if item.Labels[managedByKey] != "true" || item.Labels[controllerIDKey] != a.controllerID || item.Labels[poolHostKey] != "" {
+			return
+		}
+		workers = append(workers, toWorker(item))
+	})
+	if err != nil {
+		return nil, err
+	}
+	return workers, nil
+}
+
+// eachServer pages through the servers matching the selector.
+func (a *Adapter) eachServer(ctx context.Context, labelSelector string, visit func(server)) error {
 	page := 1
 	for {
 		requestURL, err := url.Parse(a.baseURL + "/servers")
 		if err != nil {
-			return nil, fmt.Errorf("build Hetzner inventory URL: %w", err)
+			return fmt.Errorf("build Hetzner inventory URL: %w", err)
 		}
 		query := requestURL.Query()
 		query.Set("label_selector", labelSelector)
@@ -346,20 +364,16 @@ func (a *Adapter) listServers(ctx context.Context, labelSelector string) ([]prov
 			return a.doJSON(ctx, http.MethodGet, requestURL.String(), nil, &response)
 		})
 		if err != nil {
-			return nil, fmt.Errorf("list Hetzner servers: %w", err)
+			return fmt.Errorf("list Hetzner servers: %w", err)
 		}
 		for _, item := range response.Servers {
-			if item.Labels[managedByKey] != "true" || item.Labels[controllerIDKey] != a.controllerID {
-				continue
-			}
-			workers = append(workers, toWorker(item))
+			visit(item)
 		}
 		if response.Meta.Pagination.NextPage == nil {
-			break
+			return nil
 		}
 		page = *response.Meta.Pagination.NextPage
 	}
-	return workers, nil
 }
 
 func (a *Adapter) Destroy(ctx context.Context, workerID string) error {

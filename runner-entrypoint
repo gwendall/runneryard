@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 if [[ "$(id -u)" -ne 0 ]]; then
-  exec sudo --preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE,RUNNERYARD_DOCKER_DNS,RUNNERYARD_DIAG_HOLD,RUNNERYARD_IDLE_TIMEOUT /usr/local/bin/runner-entrypoint "$@"
+  exec sudo --preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE,RUNNERYARD_DOCKER_DNS,RUNNERYARD_DIAG_HOLD,RUNNERYARD_IDLE_TIMEOUT,RUNNERYARD_REUSED_SLOT /usr/local/bin/runner-entrypoint "$@"
 fi
 
 if [[ -z "${ACTIONS_RUNNER_INPUT_JITCONFIG:-}" ]]; then
@@ -140,6 +140,19 @@ install -d -o runner -g runner -m 0755 "$marker_dir"
 rm -f "$marker_dir/job-started" "$marker_dir/idle-timeout"
 rm -f "$marker_dir/home-ownership-restored"
 
+# A pool slot keeps its workspace, caches, and Docker data in volumes between
+# jobs, and a new volume's root is owned by root. Give the runner its mount
+# points before the ownership scan below, which would otherwise blame the image.
+reused_slot=0
+if [[ "${RUNNERYARD_REUSED_SLOT:-}" == 1 ]]; then
+  reused_slot=1
+  while IFS= read -r mount_point; do
+    case "$mount_point" in
+      /home/runner/*|/opt/*) chown runner "$mount_point" ;;
+    esac
+  done < <(findmnt --noheadings --list --output TARGET)
+fi
+
 # A derived image that installed as root under HOME=/home/runner leaves root-owned
 # caches behind (~/.npm, ~/.cache, ~/.config): a job's npm then refuses to start
 # ("cache folder contains root-owned files", EACCES) before installing anything.
@@ -155,10 +168,68 @@ if [[ -n "$foreign_path" ]]; then
   chown runner:runner "$marker_dir/home-ownership-restored"
 fi
 
+# Docker readiness is still enforced: a worker whose daemon cannot start or
+# selects an unsafe storage driver is released instead of running jobs in a
+# degraded state.
+docker_ready() {
+  local storage_driver
+  for _attempt in $(seq 1 60); do
+    if docker info >/dev/null 2>&1; then
+      chown runner:docker /var/run/docker.sock
+      storage_driver="$(docker info --format '{{.Driver}}')"
+      if [[ "$storage_driver" == vfs ]]; then
+        echo "refusing Docker storage driver vfs" >&2
+        return 78
+      fi
+      if [[ "$docker_root_filesystem" == overlay || "$docker_root_filesystem" == overlayfs ]] && [[ "$storage_driver" != fuse-overlayfs ]]; then
+        echo "Docker data root uses $docker_root_filesystem but daemon selected $storage_driver instead of fuse-overlayfs" >&2
+        return 78
+      fi
+      return 0
+    fi
+    if ! kill -0 "$docker_pid" 2>/dev/null; then
+      echo "dockerd exited before becoming ready" >&2
+      return 1
+    fi
+    sleep 1
+  done
+  echo "dockerd did not become ready within 60s" >&2
+  return 1
+}
+
+# A reused slot's Docker data still holds what the previous job left behind:
+# containers (some with restart policies), networks, and volumes. Remove them
+# before the runner can take a job, and keep the images and build cache, which
+# are what make the next build fast.
+reset_docker_state() {
+  local containers
+  containers="$(docker ps --all --quiet)" || return 1
+  if [[ -n "$containers" ]]; then
+    # shellcheck disable=SC2086
+    docker rm --force --volumes $containers >/dev/null || return 1
+  fi
+  docker network prune --force >/dev/null || return 1
+  docker volume prune --all --force >/dev/null || return 1
+}
+
+if (( reused_slot )); then
+  set +e
+  docker_ready
+  docker_status=$?
+  set -e
+  if (( docker_status != 0 )); then
+    fail "$docker_status" "Docker daemon did not become ready; releasing the worker"
+  fi
+  if ! reset_docker_state; then
+    fail 1 "could not clear the previous job's Docker state; releasing the worker"
+  fi
+fi
+
 # The runner registers with GitHub while dockerd is still starting. The
 # registration, the queue wait, and the first job steps (checkout, tool
 # setup) rarely need Docker, so the two startups overlap instead of adding
-# the daemon's warm-up to every job's assignment latency.
+# the daemon's warm-up to every job's assignment latency. A reused slot has
+# already waited above, on warm Docker data that starts in about a second.
 set +e
 timeout --signal=TERM --kill-after=30s "${remaining_seconds}s" \
   setpriv --reuid=runner --regid=runner --init-groups \
@@ -194,35 +265,6 @@ if (( idle_timeout_seconds > 0 )); then
   idle_watchdog &
   watchdog_pid=$!
 fi
-
-# Docker readiness is still enforced: a worker whose daemon cannot start or
-# selects an unsafe storage driver is released instead of running jobs in a
-# degraded state.
-docker_ready() {
-  local storage_driver
-  for _attempt in $(seq 1 60); do
-    if docker info >/dev/null 2>&1; then
-      chown runner:docker /var/run/docker.sock
-      storage_driver="$(docker info --format '{{.Driver}}')"
-      if [[ "$storage_driver" == vfs ]]; then
-        echo "refusing Docker storage driver vfs" >&2
-        return 78
-      fi
-      if [[ "$docker_root_filesystem" == overlay || "$docker_root_filesystem" == overlayfs ]] && [[ "$storage_driver" != fuse-overlayfs ]]; then
-        echo "Docker data root uses $docker_root_filesystem but daemon selected $storage_driver instead of fuse-overlayfs" >&2
-        return 78
-      fi
-      return 0
-    fi
-    if ! kill -0 "$docker_pid" 2>/dev/null; then
-      echo "dockerd exited before becoming ready" >&2
-      return 1
-    fi
-    sleep 1
-  done
-  echo "dockerd did not become ready within 60s" >&2
-  return 1
-}
 
 docker_ready &
 docker_ready_pid=$!

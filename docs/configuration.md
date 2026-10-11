@@ -161,6 +161,17 @@ only on the controller. A Hetzner firewall does not filter private-network
 traffic, so leave the network ID empty unless the entire network is isolated
 from production.
 
+## Host pools
+
+| Variable | Purpose | Generated value |
+| --- | --- | --- |
+| `RUNNER_POOLS_FILE` | YAML file declaring persistent host pools and the placement order. | Unset: one worker per job. |
+| `RUNNER_POOL_SSH_KEY_FILE` | Controller ed25519 key toward pool hosts; overrides `ssh_key_file` in the pools file. | Unset |
+| `COMPUTE_PROVIDER=none` | Run pools only, without an ephemeral tier. Requires `RUNNER_POOLS_FILE`. | `fly` |
+
+Pools serve private repositories only. The file format, the Hetzner and
+static sources, and the trust checks are in [Host pools](pools.md).
+
 ## Safe change procedure
 
 1. Disable routing or choose a maintenance window; do not start two controllers

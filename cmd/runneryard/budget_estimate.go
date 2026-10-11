@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	hetznerprovider "github.com/gwendall/runneryard/providers/hetzner"
 )
 
 // budget estimate sizes RUNNER_USAGE_BUDGET and the Fly or Hetzner compute
@@ -35,21 +37,10 @@ const (
 	flyPerformanceIncludedMBPerVCPU = 2048
 )
 
-// Hetzner Cloud hourly list prices in EUR for Germany and Finland, excluding
-// VAT and the primary IPv4, in force for new servers since 2026-06-15
-// (docs.hetzner.com/general/infrastructure-and-availability/price-adjustment,
-// read 2026-10-11). Every RunnerYard worker is a new server. Hetzner rounds
-// each server's usage up to the next hour and bills it until deletion, so a
-// worker is billed whole hours however short its job. Other types and
-// locations need --hourly-price.
-var hetznerHourlyEUR = map[string]float64{
-	"cx33":  0.0136,
-	"cx53":  0.0473,
-	"cpx22": 0.0312,
-	"cpx32": 0.0569,
-	"cpx42": 0.1114,
-	"ccx33": 0.2219,
-}
+// Hetzner list prices live in providers/hetzner. Every RunnerYard worker is a
+// new server; Hetzner rounds each server's usage up to the next hour and bills
+// it until deletion, so a worker is billed whole hours however short its job.
+// Other types and locations need --hourly-price.
 
 // defaultJobOverhead is the worker time charged around each job: about a
 // minute of boot and registration, plus the 15 s teardown grace the ledger
@@ -159,7 +150,7 @@ func estimateHetznerCompute(w budgetWorkload, e budgetEstimate, jobs float64) (b
 	case price < 0 || math.IsNaN(price):
 		return budgetEstimate{}, errors.New("--hourly-price must not be negative")
 	case price == 0:
-		listed, ok := hetznerHourlyEUR[w.ServerType]
+		listed, ok := hetznerprovider.HourlyPriceEUR(w.ServerType)
 		if !ok {
 			return budgetEstimate{}, fmt.Errorf("no built-in price for server type %q; pass --hourly-price from hetzner.com/cloud", w.ServerType)
 		}

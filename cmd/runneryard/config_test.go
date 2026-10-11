@@ -44,7 +44,7 @@ func TestConfigPreservesExplicitSharedFlyShape(t *testing.T) {
 	if cfg.RunnerCPUKind != "shared" || cfg.RunnerCPUs != 4 {
 		t.Fatalf("unexpected explicit Fly worker shape: kind=%s cpus=%d", cfg.RunnerCPUKind, cfg.RunnerCPUs)
 	}
-	if _, err := cfg.compute(); err != nil {
+	if _, err := cfg.compute(nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -99,7 +99,7 @@ func TestConfigWiresDefaultFlyShapeToLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compute, err := cfg.compute()
+	compute, err := cfg.compute(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestConfigLoadsHetznerAdapter(t *testing.T) {
 	if cfg.HetznerFirewallID != 42 || cfg.HetznerNetworkID != 84 {
 		t.Fatalf("unexpected Hetzner resource IDs: %#v", cfg)
 	}
-	if _, err := cfg.compute(); err != nil {
+	if _, err := cfg.compute(nil); err != nil {
 		t.Fatal(err)
 	}
 }
