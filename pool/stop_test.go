@@ -152,8 +152,8 @@ func TestDemandStartsAStoppedHostBeforeCreatingOne(t *testing.T) {
 	}
 	billedWhenStopped := h.pool.Status().BilledHours
 	h.clock.advance(2 * time.Hour)
-	if _, err := h.pool.Launch(context.Background(), lease("l1")); !provider.IsCapacity(err) {
-		t.Fatalf("launch with only a stopped host = %v, want capacity", err)
+	if _, err := h.pool.Launch(context.Background(), lease("l1")); !provider.IsCapacity(err) || provider.CapacityRetryAfter(err) != 10*time.Second {
+		t.Fatalf("launch with only a stopped host = %v, want capacity with a retry after one tick", err)
 	}
 	if billed := h.pool.Status().BilledHours; billed != billedWhenStopped {
 		t.Fatalf("billed hours grew from %f to %f while stopped", billedWhenStopped, billed)

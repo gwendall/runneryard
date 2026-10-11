@@ -42,7 +42,11 @@ last tier makes the controller back off as on any provider capacity refusal,
 so keep `ephemeral` last unless the fleet must never leave its pools.
 
 A full pool also asks for one more host (within `max_hosts`), which serves the
-next jobs once it is ready. Slots are packed: a job goes to the busiest host
+next jobs once it is ready. While that host is on its way, the pool's refusal
+asks the controller to try again after one pool tick (10 s) rather than after
+the capacity backoff of one minute and more, so the queued jobs reach the new
+host as soon as it is ready; a pool full at `max_hosts` gets the usual
+backoff. Slots are packed: a job goes to the busiest host
 that still has room, so the least busy hosts empty first and can be returned.
 
 `MAX_RUNNERS` still caps the whole fleet, pools and ephemeral workers

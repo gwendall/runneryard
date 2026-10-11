@@ -59,6 +59,12 @@ operator-facing schema or a trust boundary is called out here first.
   second, so a stopped host with warm caches costs a few dollars a month, and one
   Machine running four jobs leaves more of the organization's Machine limit to the
   rest of the fleet.
+- A full pool that is adding a host asks the controller to probe again after one pool
+  tick instead of after the capacity backoff: `provider.CapacityError` gains
+  `RetryAfter`, bounded to 5 s at least, and a hinted refusal leaves the backoff as it
+  was. Why: in the first real Fly test the backoff (one minute, then two) outlasted
+  the new host's boot, so queued jobs waited on the busy host while the new one sat
+  empty.
 - `runneryard budget estimate --provider hetzner` prices the Hetzner bill: every job gets
   its own server, and Hetzner rounds each server up to the next hour, so each job is billed
   whole hours whatever its length. The output shows the hours billed per job, the share

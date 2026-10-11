@@ -25,6 +25,9 @@ const workerTeardownGrace = 15 * time.Second
 
 const (
 	capacityInitialBackoff = time.Minute
+	// capacityMinimumRetry bounds a provider's RetryAfter hint, so a hint
+	// cannot turn the probe into a hot loop of runner registrations.
+	capacityMinimumRetry   = 5 * time.Second
 	capacityMaximumBackoff = 15 * time.Minute
 )
 
@@ -318,21 +321,30 @@ func (s *scaler) capacityAllowance(current, target int) (needed int, probing boo
 // recordLaunchGate closes the launch gate after a capacity ceiling or a
 // launch rejection: the current fleet size becomes the proven ceiling, and
 // the next probe waits for a backoff that doubles up to fifteen minutes. A
-// gate of the other kind is released first so status never reports both.
+// capacity error whose provider says room is on its way, such as a pool
+// growing, is probed again after that hint and leaves the backoff as it was.
+// A gate of the other kind is released first so status never reports both.
 func (s *scaler) recordLaunchGate(kind, reason string, err error) {
 	now := s.now()
 	effective := s.state.count()
+	hint := provider.CapacityRetryAfter(err)
 	s.capacityMu.Lock()
-	if s.capacityBackoff == 0 {
+	var wait time.Duration
+	switch {
+	case kind == gateCapacity && hint > 0:
+		wait = min(max(hint, capacityMinimumRetry), capacityMaximumBackoff)
+	case s.capacityBackoff == 0:
 		s.capacityBackoff = capacityInitialBackoff
-	} else {
+		wait = s.capacityBackoff
+	default:
 		s.capacityBackoff = min(s.capacityBackoff*2, capacityMaximumBackoff)
+		wait = s.capacityBackoff
 	}
 	previousKind := s.capacityKind
 	s.capacityKind = kind
 	s.capacityEffective = effective
 	s.capacityReason = reason
-	s.capacityRetryAt = now.Add(s.capacityBackoff)
+	s.capacityRetryAt = now.Add(wait)
 	retryAt := s.capacityRetryAt
 	s.capacityMu.Unlock()
 	if previousKind != "" && previousKind != kind {

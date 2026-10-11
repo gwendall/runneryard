@@ -96,7 +96,11 @@ type CapacityError struct {
 	// Reason is a stable, non-secret provider rejection code suitable for
 	// aggregate status and alerts (for example, "fly_machine_limit").
 	Reason string
-	Err    error
+	// RetryAfter, when positive, says room is on its way, such as a pool host
+	// being created or started: the core probes again after it instead of
+	// after its growing backoff.
+	RetryAfter time.Duration
+	Err        error
 }
 
 func (e *CapacityError) Error() string {
@@ -110,6 +114,16 @@ func (e *CapacityError) Unwrap() error { return e.Err }
 func IsCapacity(err error) bool {
 	var capacity *CapacityError
 	return errors.As(err, &capacity)
+}
+
+// CapacityRetryAfter returns the RetryAfter hint carried by a CapacityError,
+// or zero.
+func CapacityRetryAfter(err error) time.Duration {
+	var capacity *CapacityError
+	if errors.As(err, &capacity) && capacity.RetryAfter > 0 {
+		return capacity.RetryAfter
+	}
+	return 0
 }
 
 // CapacityReason returns the stable reason carried by a CapacityError.

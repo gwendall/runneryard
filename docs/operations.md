@@ -55,7 +55,9 @@ for that create request but not fatal to the controller. RunnerYard records the
 current fleet size as the effective capacity, keeps job completions and
 replacement launches below that ceiling flowing, and suppresses launches
 above it. After one minute it admits one probe; repeated rejections double the
-delay up to fifteen minutes. A successful probe restores configured capacity.
+delay up to fifteen minutes. A provider that says room is on its way, such as
+a pool creating or starting a host, sets an earlier probe (at least 5 s) and
+leaves the backoff as it was. A successful probe restores configured capacity.
 Status reports `provider_capacity_exhausted` with a stable rejection code,
 configured/effective capacity, rejection count, and `retry_at`. Lower
 `MAX_RUNNERS` to the confirmed provider ceiling or raise the provider quota;
