@@ -318,6 +318,22 @@ running all month in `cdg`. A stopped host costs its volume (USD 0.15 per GB
 and month, so USD 7.50 for 50 GB) and its root filesystem. Set `hourly_price`
 for a region without a listed multiplier.
 
+### Start times
+
+Measured in the first real test (`cdg`, `performance` 8 vCPUs, 16 GB, a
+900 MB runner image):
+
+- A new host is ready 60 to 100 s after its creation: Fly pulls the image for
+  the root filesystem (about 30 s), then the host's Docker pulls it again for
+  the slots (about 45 s). A burst shorter than that is over before the new
+  host can take a job.
+- A stopped host is ready 3 to 9 s after its start, with its images, build
+  cache and slot caches as it left them.
+- With `min_hosts: 0`, the first job after a quiet period also waits for the
+  controller's next GitHub message, up to about 50 s: it started 62 s after it
+  was queued in the test. `min_hosts: 1` takes it at once, for the price of a
+  host running all month.
+
 ### Organization Machine limit
 
 A Fly organization has a Machine limit. Ephemeral workers use one Machine per
