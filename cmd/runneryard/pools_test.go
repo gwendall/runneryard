@@ -73,6 +73,8 @@ func poolsAppConfig() appConfig {
 		ComputeProvider: "hetzner", ControllerID: "test-controller", RunnerImage: "ghcr.io/gwendall/runneryard:0.5.0",
 		HetznerAPIToken: "hcloud-token", HetznerAPIBaseURL: "http://127.0.0.1:9", HetznerLocation: "fsn1",
 		HetznerFirewallID: 42, RunnerMaxLifetime: 2 * time.Hour,
+		FlyAPIToken: "fly-token", FlyAPIBaseURL: "http://127.0.0.1:9", FlyWorkerApp: "ci-workers",
+		ControllerFlyApp: "ci-controller", FlyRegion: "cdg",
 	}
 }
 
@@ -86,9 +88,20 @@ const privateTop = "trust: private\nssh_key_file: /keys/pool_ed25519\n"
 // hetznerPool is a valid Hetzner pool entry; an override "key: -" drops the
 // key, any other "key: value" replaces it.
 func hetznerPool(name string, overrides ...string) string {
-	fields := map[string]string{
+	return poolEntry(map[string]string{
 		"name": name, "source": "hetzner", "server_type": "cx33", "firewall_id": "77", "slots": "4", "max_hosts": "3",
-	}
+	}, overrides...)
+}
+
+// flyPool is a valid Fly pool entry, overridden like hetznerPool.
+func flyPool(name string, overrides ...string) string {
+	return poolEntry(map[string]string{
+		"name": name, "source": "fly", "fly_app": "ci-pool", "cpus": "8", "memory_mb": "16384",
+		"slots": "4", "slot_memory_mb": "4096", "min_hosts": "1", "max_hosts": "2",
+	}, overrides...)
+}
+
+func poolEntry(fields map[string]string, overrides ...string) string {
 	for _, override := range overrides {
 		key, value, _ := strings.Cut(override, ": ")
 		if value == "-" {
@@ -209,6 +222,34 @@ func TestPoolsFileValidateRefusals(t *testing.T) {
 		"static no hosts":          {contents: poolsYAML(privateTop, "  - name: lab\n    source: static\n"), want: "lists no hosts"},
 		"placement unknown pool":   {contents: poolsYAML(privateTop+"placement: [fast, slow]\n", hetznerPool("fast")), want: "slow, which is not a declared pool"},
 		"placement listed twice":   {contents: poolsYAML(privateTop+"placement: [fast, fast]\n", hetznerPool("fast")), want: "fast twice"},
+		"fly no token": {
+			contents: poolsYAML(privateTop, flyPool("fly")),
+			mutate:   func(c *appConfig) { c.FlyAPIToken = "" },
+			want:     poolFlyTokenEnv,
+		},
+		"fly no app":                {contents: poolsYAML(privateTop, flyPool("fly", "fly_app: -")), want: "requires fly_app"},
+		"fly worker app reused":     {contents: poolsYAML(privateTop, flyPool("fly", "fly_app: ci-workers")), want: "its own fly_app"},
+		"fly controller app reused": {contents: poolsYAML(privateTop, flyPool("fly", "fly_app: ci-controller")), want: "its own fly_app"},
+		"fly no region anywhere": {
+			contents: poolsYAML(privateTop, flyPool("fly")),
+			mutate:   func(c *appConfig) { c.FlyRegion = "" },
+			want:     "requires region",
+		},
+		"fly no cpus":              {contents: poolsYAML(privateTop, flyPool("fly", "cpus: -")), want: "cpus, and memory_mb"},
+		"fly memory step":          {contents: poolsYAML(privateTop, flyPool("fly", "memory_mb: 16500")), want: "steps of 256 MB"},
+		"fly slots overflow":       {contents: poolsYAML(privateTop, flyPool("fly", "slots: 5")), want: "do not fit in memory_mb"},
+		"fly zero slots":           {contents: poolsYAML(privateTop, flyPool("fly", "slots: -")), want: "slots must be between"},
+		"fly min above max":        {contents: poolsYAML(privateTop, flyPool("fly", "min_hosts: 3")), want: "min_hosts <= max_hosts"},
+		"fly keep above max":       {contents: poolsYAML(privateTop, flyPool("fly", "keep_stopped: 3")), want: "keep_stopped"},
+		"fly short idle stop":      {contents: poolsYAML(privateTop, flyPool("fly", "idle_stop_after: 30s")), want: "at least one minute"},
+		"fly short stopped delete": {contents: poolsYAML(privateTop, flyPool("fly", "delete_stopped_after: 10s")), want: "at least one minute"},
+		"fly cpu kind":             {contents: poolsYAML(privateTop, flyPool("fly", "cpu_kind: gpu")), want: "shared or performance"},
+		"fly small volume":         {contents: poolsYAML(privateTop, flyPool("fly", "volume_gb: 5")), want: "volume_gb"},
+		"fly unpriced region":      {contents: poolsYAML(privateTop, flyPool("fly", "region: syd")), want: "set hourly_price"},
+		"fly with hetzner keys":    {contents: poolsYAML(privateTop, flyPool("fly", "firewall_id: 77")), want: "only apply to Hetzner pools"},
+		"fly with static keys":     {contents: poolsYAML(privateTop, flyPool("fly", "billing: owned")), want: "only apply to static pools"},
+		"hetzner with fly keys":    {contents: poolsYAML(privateTop, hetznerPool("fast", "keep_stopped: 1")), want: "only apply to Fly pools"},
+		"static with fly keys":     {contents: poolsYAML(privateTop, staticPool("lab", hostKey, "fly_app: ci-pool")), want: "only apply to Fly pools"},
 		"placement ephemeral, none": {
 			contents: poolsYAML(privateTop+"placement: [fast, ephemeral]\n", hetznerPool("fast")),
 			mutate:   func(c *appConfig) { c.ComputeProvider = computeProviderNone },
@@ -272,6 +313,61 @@ func TestPoolsFileValidateFillsDefaults(t *testing.T) {
 				t.Fatalf("big settings = %#v", big)
 			}
 		})
+	}
+}
+
+func TestFlyPoolDefaults(t *testing.T) {
+	t.Setenv(poolSSHKeyFileEnv, "")
+	parsed, err := loadPoolsYAML(t, poolsYAML(privateTop,
+		flyPool("fly"),
+		flyPool("solo", "fly_app: ci-solo", "max_hosts: 1", "min_hosts: 0", "region: iad", "cpu_kind: shared", "cpus: 4", "memory_mb: 4096",
+			"slots: 2", "slot_memory_mb: 2048", "volume_gb: 20", "idle_stop_after: 2m", "keep_stopped: 0", "delete_stopped_after: 1h"),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := poolsAppConfig()
+	if err := parsed.validate(cfg); err != nil {
+		t.Fatal(err)
+	}
+	fly, solo := parsed.Pools[0], parsed.Pools[1]
+	if fly.Region != "cdg" || fly.CPUKind != "performance" || fly.VolumeGB != defaultFlyVolumeGB || fly.IdleStopAfter != defaultFlyIdleStop ||
+		fly.KeepStopped == nil || *fly.KeepStopped != 1 || fly.DeleteStoppedAfter != defaultDeleteAfter {
+		t.Fatalf("fly defaults = %#v", fly)
+	}
+	if solo.Region != "iad" || solo.CPUKind != "shared" || solo.VolumeGB != 20 || solo.IdleStopAfter != 2*time.Minute ||
+		*solo.KeepStopped != 0 || solo.DeleteStoppedAfter != time.Hour {
+		t.Fatalf("solo settings = %#v", solo)
+	}
+	if source := fly.flySourceConfig(cfg); source.APIToken != "fly-token" {
+		t.Fatal("the pool did not fall back to FLY_API_TOKEN")
+	}
+	cfg.PoolFlyAPIToken = "pool-token"
+	if source := fly.flySourceConfig(cfg); source.APIToken != "pool-token" || source.App != "ci-pool" {
+		t.Fatalf("the pool token %s did not take precedence", poolFlyTokenEnv)
+	}
+}
+
+func TestWithPoolsBuildsAFlyPool(t *testing.T) {
+	t.Setenv(poolSSHKeyFileEnv, "")
+	keyFile := writePoolKey(t)
+	parsed, err := loadPoolsYAML(t, poolsYAML("trust: private\nssh_key_file: "+keyFile+"\n", flyPool("fly")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := poolsAppConfig()
+	cfg.ComputeProvider = computeProviderNone
+	if err := parsed.validate(cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Pools = parsed
+	compute, err := cfg.withPools(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := placementStatus(t, compute)
+	if !slices.Equal(status.Tiers, []string{"fly"}) || len(status.Pools) != 1 {
+		t.Fatalf("status = %#v", status)
 	}
 }
 

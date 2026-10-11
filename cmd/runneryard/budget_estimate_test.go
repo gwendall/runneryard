@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	flyprovider "github.com/gwendall/runneryard/providers/fly"
 )
 
 func estimateWorkload() budgetWorkload {
@@ -42,7 +44,7 @@ func TestBudgetEstimateChargesOverheadAndReservesLaunchHeadroom(t *testing.T) {
 		t.Fatalf("suggested budget = %s, want 260h", estimate.SuggestedBudget)
 	}
 	// 2 performance vCPUs include 4 GB, so 4 GB are extra.
-	pricePerSecond := 2*flyPerformanceVCPUPerSecond + 4*flyRAMPerGBPerSecond
+	pricePerSecond := 2*flyprovider.PerformanceVCPUPerSecond + 4*flyprovider.RAMPerGBPerSecond
 	if math.Abs(estimate.ComputeUSD-720_000*pricePerSecond) > 0.01 {
 		t.Fatalf("compute = $%.4f, want $%.4f", estimate.ComputeUSD, 720_000*pricePerSecond)
 	}
@@ -71,7 +73,7 @@ func TestBudgetEstimatePricesSharedShapesAndRegions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := 2 * flySharedVCPUPerSecond * 1.134615385 * 60
+	want := 2 * flyprovider.SharedVCPUPerSecond * 1.134615385 * 60
 	if math.Abs(estimate.PricePerMinuteUSD-want) > 1e-12 {
 		t.Fatalf("price per minute = %g, want %g", estimate.PricePerMinuteUSD, want)
 	}

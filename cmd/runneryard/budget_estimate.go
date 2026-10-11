@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	flyprovider "github.com/gwendall/runneryard/providers/fly"
 	hetznerprovider "github.com/gwendall/runneryard/providers/hetzner"
 )
 
@@ -25,17 +26,8 @@ import (
 // from exhaustion on 2026-09-05, and another workload measured on 2026-10-08
 // needed 34 times the scaffold's 166h40m.
 
-// Fly Machines per-second rates for iad and ewr, the lowest-priced regions
-// (docs.fly.io/about/pricing, read 2026-10-11). Other regions apply a
-// multiplier: cdg is 1.134615385. Rates change; re-read the page before
-// trusting an estimate for a live budget.
-const (
-	flySharedVCPUPerSecond          = 0.0000008465
-	flyPerformanceVCPUPerSecond     = 0.000012732
-	flyRAMPerGBPerSecond            = 0.000002316
-	flySharedIncludedMBPerVCPU      = 256
-	flyPerformanceIncludedMBPerVCPU = 2048
-)
+// Fly Machines rates live in providers/fly, with the pool host source that
+// prices its hosts from them.
 
 // Hetzner list prices live in providers/hetzner. Every RunnerYard worker is a
 // new server; Hetzner rounds each server's usage up to the next hour and bills
@@ -126,17 +118,14 @@ func estimateFlyCompute(w budgetWorkload, e budgetEstimate) (budgetEstimate, err
 		return budgetEstimate{}, errors.New("--cpus and --memory-mb must be at least 1")
 	}
 
-	var vcpuPerSecond, includedMBPerVCPU float64
-	switch w.CPUKind {
-	case "performance":
-		vcpuPerSecond, includedMBPerVCPU = flyPerformanceVCPUPerSecond, flyPerformanceIncludedMBPerVCPU
-	case "shared":
-		vcpuPerSecond, includedMBPerVCPU = flySharedVCPUPerSecond, flySharedIncludedMBPerVCPU
-	default:
+	if w.CPUKind != "performance" && w.CPUKind != "shared" {
 		return budgetEstimate{}, fmt.Errorf("--cpu-kind must be performance or shared, got %q", w.CPUKind)
 	}
-	extraGB := math.Max(0, float64(w.MemoryMB)-float64(w.CPUs)*includedMBPerVCPU) / 1024
-	pricePerSecond := (float64(w.CPUs)*vcpuPerSecond + extraGB*flyRAMPerGBPerSecond) * w.PriceMultiplier
+	basePerSecond, err := flyprovider.PricePerSecond(w.CPUKind, w.CPUs, w.MemoryMB)
+	if err != nil {
+		return budgetEstimate{}, err
+	}
+	pricePerSecond := basePerSecond * w.PriceMultiplier
 	e.PricePerMinuteUSD = pricePerSecond * 60
 	e.ComputeUSD = e.Charged.Seconds() * pricePerSecond
 	return e, nil

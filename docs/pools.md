@@ -25,6 +25,9 @@ another tier can start it now.
   runs dozens of such jobs in the hour it is billed.
 - **Start latency matters.** A free slot starts a job in seconds, with the
   previous job's images and caches still in place.
+- **A Fly organization runs out of Machines.** One Fly pool host runs as many
+  jobs as it has slots, so a fleet that hits the organization's Machine limit
+  with one Machine per job fits several times more jobs under it.
 
 Keep the ephemeral tier for everything else: public repositories, untrusted
 pull requests, or a fleet that needs every job on a fresh machine.
@@ -55,6 +58,7 @@ them as usual.
 | Source | A host without jobs is returned |
 | --- | --- |
 | `hetzner` (billed per started hour) | Shortly before its next paid hour starts, with two minutes of margin. |
+| `fly` (billed per second) | Stopped after `idle_stop_after`, not deleted: its volume keeps the caches, and the next demand starts it again before creating a new host. See [Fly pools](#fly-pools). |
 | `static` | Never: a static pool never deletes a machine, whatever its `billing`. |
 
 `min_hosts` hosts (the oldest ready ones) are kept warm whatever their billing.
@@ -90,7 +94,9 @@ serves: a fork's workflow runs the fork author's code.
 What a compromised job can reach on a pool host: the other slots and their
 JIT configurations, the slot caches, the host's own SSH host key, and the
 network the host is attached to. What it cannot reach: the controller's SSH
-key, `HCLOUD_TOKEN`, the GitHub App key, or another host's SSH host key.
+key, `HCLOUD_TOKEN`, the Fly API token, the GitHub App key, or, on Hetzner and
+static hosts, another host's SSH host key. Fly hosts have a wider surface:
+see [Fly pools](#fly-pools) and the security notes it links.
 Nothing on a host lets it log in to the controller; the controller connects to
 the hosts, never the reverse.
 
@@ -111,10 +117,11 @@ host agent, which answers four requests (`info`, `list`, `start N`,
 else, and a slot only accepts the exact runner image the host was installed
 with.
 
-The controller pins every host's SSH host key. For Hetzner hosts it derives a
-distinct key per server from its own key (HMAC-SHA256 over the server name)
-and installs it through cloud-init, so no first-connection trust is needed.
-For static hosts, the operator lists each host's public key.
+The controller pins every host's SSH host key. For Hetzner and Fly hosts it
+derives a distinct key per machine from its own key (HMAC-SHA256 over the
+machine name) and installs it at creation, through cloud-init or a Machine
+file, so no first-connection trust is needed. For static hosts, the operator
+lists each host's public key.
 
 ## Configuration
 
@@ -153,19 +160,26 @@ pools:
 | Key | Applies to | Meaning | Default |
 | --- | --- | --- | --- |
 | `name` | all | Lowercase letters, digits and hyphens; not `ephemeral`. | Required |
-| `source` | all | `hetzner` or `static`. | Required |
+| `source` | all | `fly`, `hetzner` or `static`. | Required |
 | `runner_image` | all | Exact image every slot runs. Pin a digest. | `RUNNER_IMAGE` |
 | `slot_cpus`, `slot_memory_mb` | all | Docker limits per slot; `0` for none. | `0` |
 | `caches` | all | Runner paths kept between a slot's jobs. | `~/.cache`, `~/.npm`, `~/go` |
 | `min_free_disk_gb` | all | Free disk a start requires; below it the slot's caches are dropped first. | `20` |
-| `hourly_price` | all | Host price for reporting. | Hetzner: the list price of known types (required otherwise). Static: `0` |
-| `slots` | hetzner | Slots per host, 1 to 64. | Required |
-| `min_hosts`, `max_hosts` | hetzner | Hosts kept warm, and the ceiling (at most 100). | `0`, required |
+| `hourly_price` | all | Host price for reporting. | Hetzner and Fly: the list price of known types and regions (required otherwise). Static: `0` |
+| `slots` | hetzner, fly | Slots per host, 1 to 64. | Required |
+| `min_hosts`, `max_hosts` | hetzner, fly | Hosts kept running, and the ceiling (at most 100). On Fly, stopped hosts count toward `max_hosts`. | `0`, required |
 | `server_type`, `location`, `server_image` | hetzner | Server shape and image. | `location` from `RUNNER_HETZNER_LOCATION`, image `docker-ce` |
 | `firewall_id` | hetzner | Firewall attached to every pool host. Must differ from `RUNNER_HETZNER_FIREWALL_ID`. | Required |
 | `network_id` | hetzner | Private network to attach. Hetzner firewalls do not filter it. | Unset |
 | `billing`, `currency` | static | `owned`, `per_second` or `per_started_hour`, for reporting only. | `owned` |
 | `hosts` | static | Prepared machines; each sets its slots in its own install. | Required |
+| `fly_app` | fly | The pool's own Fly app. Must differ from `RUNNER_FLY_APP` and the controller's app. | Required |
+| `region` | fly | Region of every host and volume. | `RUNNER_FLY_REGION` |
+| `cpu_kind`, `cpus`, `memory_mb` | fly | Machine shape. `slots` times `slot_memory_mb` must fit in `memory_mb`. | `performance`, required, required |
+| `volume_gb` | fly | Size of each host's Docker volume, 10 to 500. | `50` |
+| `idle_stop_after` | fly | An empty host beyond `min_hosts` is stopped after this. | `5m` |
+| `keep_stopped` | fly | Stopped hosts kept for the next demand, at most `max_hosts`. | `1` |
+| `delete_stopped_after` | fly | Stopped hosts beyond `keep_stopped` are deleted after this. | `6h` |
 
 Every slot also keeps `/home/runner/_work` and its own Docker data root, so
 `actions/checkout` fetches only what changed and `docker build` reuses its
@@ -198,6 +212,120 @@ Estimate before routing: at the list price read on 2026-10-11, one `cpx42`
 host (EUR 0.1114 an hour, excluding VAT and the primary IPv4) kept warm all
 month costs about EUR 81, and runs four jobs at a time. 350 three-minute jobs
 a day on per-job `cpx32` servers cost about EUR 600 a month.
+
+## Fly pools
+
+A Fly pool host is one Fly Machine in the pool's own app, `fly_app`, with one
+volume mounted at `/data` for Docker's data. The Machine boots the runner
+image itself, as root, with `runneryard host boot`:
+
+1. reads the host configuration, its derived host key and the controller's
+   public key, written as Machine files at creation;
+2. starts `dockerd` with its data root on the volume, and removes any slot
+   container a previous run left behind;
+3. serves the host agent over SSH on the Machine's private address, port 22;
+4. pulls the runner image when the volume does not have it yet.
+
+Every step is safe to repeat, because a stopped Machine runs them again on its
+next start: the root filesystem is reset, the volume is not. There is no
+`sshd` and no login: the agent's own SSH server admits only the controller's
+key, as user `runneryard`, and answers only the four agent requests.
+
+Machines carry the metadata `runneryard-pool-host=true`,
+`runneryard-controller` and `runneryard-pool`, plus `runneryard-pool-image`
+for the image they boot. The pool never lists, stops, starts or deletes a
+Machine without all three labels, nor any worker Machine. Volumes are named
+`ry_<8 hex>_<8 hex>`, the first part derived from the controller ID and the
+pool name; an unattached volume with that prefix and older than 30 minutes is
+left over from a failed creation or deletion, and is deleted.
+
+### Setup
+
+The hosts listen on Fly's private network only, so the controller must run as
+a Fly Machine in the same organization. Put the controller and the pool on a
+[custom private network](https://fly.io/docs/networking/custom-private-networks/)
+of their own: a job that escapes its slot then reaches the controller and the
+other pool hosts, not every app of the organization. An app's network is set
+when the app is created.
+
+```sh
+fly apps create ci-controller --org my-org --network ci-pool
+fly apps create ci-pool --org my-org --network ci-pool
+fly tokens create deploy --app ci-pool --expiry 8760h   # RUNNER_POOL_FLY_API_TOKEN
+```
+
+The controller reads the pool app's token from `RUNNER_POOL_FLY_API_TOKEN`,
+or from `FLY_API_TOKEN` when the pool and the ephemeral workers share one
+token. Use a deploy token scoped to the pool app, never an organization
+token. Keep the pool app free of secrets: hosts ignore app secrets, and
+nothing else should run in that app.
+
+```yaml
+trust: private
+ssh_key_file: /data/pool_ed25519
+placement: [burst, ephemeral]
+pools:
+  - name: burst
+    source: fly
+    fly_app: ci-pool
+    region: cdg                 # default: RUNNER_FLY_REGION
+    cpu_kind: performance
+    cpus: 8
+    memory_mb: 16384
+    volume_gb: 50
+    slots: 4
+    slot_cpus: 2
+    slot_memory_mb: 3584
+    min_hosts: 0                # running hosts kept whatever the load
+    max_hosts: 3                # running and stopped hosts together
+    keep_stopped: 1             # stopped hosts kept for the next burst
+    idle_stop_after: 5m
+    delete_stopped_after: 6h
+```
+
+### Stop, start and delete
+
+- **Demand.** A full pool asks for one more host. It starts the most recently
+  stopped host first, whose volume still has the image and the caches, and
+  creates a new host only when no stopped host can be started.
+- **Idle.** An empty host beyond `min_hosts` is stopped after
+  `idle_stop_after`. A stopped Machine bills only for its volume and its root
+  filesystem.
+- **Reserve.** The `keep_stopped` most recently stopped hosts wait for the next
+  burst. The others are deleted with their volume once stopped for
+  `delete_stopped_after`.
+- **Failures.** A host that fails to start twice, or that Fly cannot start for
+  lack of capacity, is deleted, and the next demand creates a new one. A
+  stopped host from another `runner_image` is deleted, never started.
+- **Outside changes.** A host stopped or started by hand (`fly machine stop`)
+  is followed at the next listing.
+
+So `min_hosts: 1` keeps one host running at all times, and `min_hosts: 0` with
+`keep_stopped: 1` keeps one stopped host ready instead: a few dollars a month,
+at the price of a start delay on the first job of a burst.
+
+### Cost
+
+Fly bills a running Machine per second. At the rates read on 2026-10-11, a
+`performance` Machine with 8 vCPUs and 16 GB costs about USD 0.367 an hour in
+`iad` and USD 0.416 an hour in `cdg`, so about USD 300 a month when kept
+running all month in `cdg`. A stopped host costs its volume (USD 0.15 per GB
+and month, so USD 7.50 for 50 GB) and its root filesystem. Set `hourly_price`
+for a region without a listed multiplier.
+
+### Organization Machine limit
+
+A Fly organization has a Machine limit. Ephemeral workers use one Machine per
+job; a pool host uses one Machine for `slots` jobs. Stopped hosts are still
+Machines, so keep `max_hosts` within what the limit leaves to the other apps.
+
+### Runner image
+
+The Machine boots the runner image through Fly, but the slots run on the
+host's own Docker, which pulls the image without credentials. The image must
+therefore be public, such as the release image on GHCR. See
+[Private runner images](security.md#private-runner-images) for why no
+registry credential is placed on a host.
 
 ## Static hosts
 
@@ -245,6 +373,11 @@ every five seconds (abridged):
 }
 ```
 
+A host's `phase` is `creating`, `booting`, `ready`, `draining` or `deleting`,
+and for Fly pools also `stopping`, `stopped` (with `stopped_at`) or
+`starting`. Fly pools add `host_stops` and `host_starts`. A stopped host is
+neither reachable nor billed.
+
 `overflowed` counts launches the pool sent to the next tier. A steady rise
 means the pool is too small for the load: raise `slots` or `max_hosts`.
 `billed_hours` and `cost` cover what this controller process has seen since
@@ -260,3 +393,9 @@ it started.
 A Hetzner pool deleted from the file while it still has hosts leaves them
 running and billed. Delete them in the Hetzner console, or with
 `hcloud server list -l runneryard-pool=<name>` then `hcloud server delete`.
+
+A Fly pool drained the same way stops its hosts, keeps `keep_stopped` of them
+and deletes the others after `delete_stopped_after`; set `keep_stopped: 0`
+first to have them all deleted. A Fly pool removed from the file leaves its
+Machines and volumes in the pool app: `fly apps destroy <fly_app>` deletes
+them all.
