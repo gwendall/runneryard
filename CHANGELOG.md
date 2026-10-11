@@ -31,7 +31,7 @@ operator-facing schema or a trust boundary is called out here first.
   stopped hosts beyond `keep_stopped` are deleted after `delete_stopped_after`. The
   Machine boots the runner image with the new `runneryard host boot`, which starts
   Docker on the volume and serves the host agent over SSH on the Machine's private
-  address, with no `sshd`; the controller must run in the same Fly organization. The
+  address, with no `sshd`, and refuses to start without that address; the controller must run in the same Fly organization. The
   pool never touches a Machine without its three pool labels. Status gains the
   `stopping`, `stopped` and `starting` phases and `host_stops` and `host_starts`. Pool
   images stay public: no registry credential is placed on a host. Why: Fly bills per

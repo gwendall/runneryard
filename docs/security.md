@@ -141,8 +141,11 @@ pool host with HTTP 403, for its own app and for the controller's, in the
 first real test; keep the pool app free of secrets so it stays that way. Put the controller and the pool app on a custom
 private network of their own, so an escaped job reaches the controller and
 the other pool hosts, not the rest of the organization. The host agent
-listens on the Machine's private address only, port 2222; slots reach the
-Internet through Docker's IPv4 bridge and cannot reach that address. Port 22
+listens on the Machine's private address only, port 2222: `runneryard host
+boot` takes it from `FLY_PRIVATE_IP` and refuses to start when that variable
+is missing or is not an IP address, rather than listen on every interface, and
+no flag chooses another address. Slots reach the Internet through Docker's
+IPv4 bridge and cannot reach that address. Port 22
 belongs to Fly's own SSH server, as on every Machine: an organization member
 who can run `fly ssh console` gets a root shell on a pool host.
 
