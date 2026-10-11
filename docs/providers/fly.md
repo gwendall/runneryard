@@ -145,6 +145,9 @@ The adapter creates one Machine with:
 Configure shape and cost through `RUNNER_CPUS`, `RUNNER_MEMORY_MB`,
 `RUNNER_ROOTFS_GB`, `MIN_RUNNERS`, `MAX_RUNNERS`, and
 `RUNNER_MAX_LIFETIME`, `RUNNER_USAGE_BUDGET`, and `RUNNER_BUDGET_WINDOW`.
+`runneryard budget estimate` turns jobs a day and minutes per job into a
+starting `RUNNER_USAGE_BUDGET` and a compute estimate at Fly's published rates
+(`--price-multiplier` for the region's markup).
 The generated `performance-2x` shape is a sustained-CI default. Each Fly shared
 vCPU gets a 5 ms baseline in every 80 ms scheduling window (6.25%) plus burst
 capacity; CPU-heavy test suites can become dramatically slower after consuming
