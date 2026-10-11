@@ -18,6 +18,16 @@ updates:
           - react-dom
       web-tooling:
         dependency-type: development
+    # eslint-config-next lints through typescript-eslint (TypeScript below 6.1
+    # as of 8.71) and eslint-plugin-react, import, and jsx-a11y (ESLint 9 at
+    # most). Lift these when their peer ranges accept the next major.
+    ignore:
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
+      - dependency-name: eslint
+        update-types:
+          - version-update:semver-major
   - package-ecosystem: docker
     directory: /
     schedule:

@@ -43,7 +43,7 @@ func TestRuntimeImageIncludesBuildKitTooling(t *testing.T) {
 	contents := readRepositoryFile(t, "Dockerfile")
 	requireSourceContains(t, "runtime image does not guarantee BuildKit tooling", contents,
 		"ARG GO_IMAGE=golang:1.25.14-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437",
-		"FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517",
+		"FROM ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254",
 		"docker-buildx=0.30.1-0ubuntu1~24.04.1",
 		"docker-compose-v2=2.40.3+ds1-0ubuntu1~24.04.1",
 		"docker.io=29.1.3-0ubuntu3~24.04.2",
@@ -80,8 +80,8 @@ func TestRunnerEntrypointPreservesRuntimeTooling(t *testing.T) {
 func TestReleaseBuildsAndCanariesBothWorkerArchitectures(t *testing.T) {
 	contents := readRepositoryFile(t, ".github", "workflows", "release.yml")
 	requireSourceContains(t, "release does not publish and canary both worker architectures", contents,
-		"docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130",
-		"docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f",
+		"docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a",
+		"docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e",
 		"linux/amd64:amd64 linux/arm64:arm64",
 		`"$image:$version-$arch"`,
 		`verify-runtime-toolcache.sh`,
