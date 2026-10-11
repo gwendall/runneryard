@@ -90,9 +90,49 @@ directory.
 
 ### 1. Create the queue's GitHub App
 
-Create a dedicated App, separate from the runner App, under **Settings,
-Developer settings, GitHub Apps, New GitHub App** of the account that owns
-the repository:
+The queue has its own App, separate from the runner App. With
+[gh](https://cli.github.com/) logged in as an administrator of the
+repository, one command creates it, installs it and stores its credentials:
+
+```sh
+runneryard merge-queue setup --github https://github.com/acme/widgets
+```
+
+It checks first that gh can write the repository's Actions secrets, then opens
+the browser twice:
+
+1. **Create GitHub App** on the account that owns the repository. The App is
+   named `RunnerYard merge queue <random suffix>`, is private to that account,
+   has no webhook and requests exactly the permissions in the table below.
+2. **Install**: choose **Only select repositories** and pick the repository.
+
+It then verifies the installation and its permissions, and stores the
+variable `MERGE_QUEUE_APP_CLIENT_ID` and the secret
+`MERGE_QUEUE_APP_PRIVATE_KEY` on the repository through gh, which seals the
+secret with the repository's public key. The private key is never printed or
+written to disk. The command prints the App's bot login, `<app-slug>[bot]`:
+the only author whose markers the queue trusts. Add `--workflows` if queued
+pull requests may change `.github/workflows`, and `--no-browser` to print the
+URLs instead.
+
+To serve another repository of the same owner with the same App, generate a
+new private key in the App's settings, `chmod 600` it, and run:
+
+```sh
+runneryard merge-queue setup --github https://github.com/acme/gadgets \
+  --client-id <client ID> --private-key-file <key.pem>
+```
+
+It opens the installation settings only if the App cannot reach that
+repository yet. Delete the key file afterwards. Every repository that holds a
+key of a shared App can mint tokens for every repository of its installation,
+so share one App only between repositories with the same maintainers;
+otherwise run the command without `--client-id` to create another App.
+
+#### Manual setup
+
+Without gh, create the App under **Settings, Developer settings, GitHub
+Apps, New GitHub App** of the account that owns the repository:
 
 - Name: anything, for example `acme-merge-queue`. Its bot login,
   `<app-slug>[bot]`, is the only author whose markers the queue trusts.

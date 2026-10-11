@@ -17,22 +17,27 @@ import (
 )
 
 func runMergeQueue(args []string) error {
-	if len(args) == 0 || args[0] != "tick" {
-		if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
-			printMergeQueueHelp(os.Stdout)
-			return nil
-		}
-		printMergeQueueHelp(os.Stderr)
-		return errors.New("usage: runneryard merge-queue tick [flags]")
+	if len(args) > 0 && args[0] == "tick" {
+		return runMergeQueueTick(args[1:], os.Stdout, os.Getenv)
 	}
-	return runMergeQueueTick(args[1:], os.Stdout, os.Getenv)
+	if len(args) > 0 && args[0] == "setup" {
+		return runMergeQueueSetup(args[1:], os.Stdout, defaultMergeQueueSetup())
+	}
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printMergeQueueHelp(os.Stdout)
+		return nil
+	}
+	printMergeQueueHelp(os.Stderr)
+	return errors.New("usage: runneryard merge-queue tick|setup [flags]")
 }
 
 func printMergeQueueHelp(output io.Writer) {
-	fmt.Fprint(output, `Usage: runneryard merge-queue tick [flags]
+	fmt.Fprint(output, `Usage:
+  runneryard merge-queue tick [flags]   Run one tick, inside a GitHub Actions workflow
+  runneryard merge-queue setup [flags]  Create the queue's GitHub App and store its credentials
 
-Runs one tick of the merge queue for one repository, inside a GitHub Actions
-workflow. It never runs in the fleet controller and never uses its
+tick runs one tick of the merge queue for one repository, inside a GitHub
+Actions workflow. It never runs in the fleet controller and never uses its
 credentials. See docs/merge-queue.md.
 
 Environment:

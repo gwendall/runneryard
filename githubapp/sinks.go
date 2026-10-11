@@ -259,10 +259,92 @@ func (sink FlySink) Store(ctx context.Context, credentials Credentials) error {
 	return nil
 }
 
+// RepositorySink stores an App's client ID as an Actions variable and its
+// private key as an Actions secret of one repository, through the gh CLI and
+// the operator's own GitHub login. gh seals the secret with the repository's
+// public key; the key travels on gh's standard input only.
+type RepositorySink struct {
+	Owner, Repository string
+	ClientIDVariable  string
+	PrivateKeySecret  string
+	// Run runs gh; nil runs the gh found on PATH.
+	Run CommandRunner
+}
+
+var safeActionsName = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,99}$`)
+
+func (sink RepositorySink) Description() string {
+	return "the Actions variable " + sink.ClientIDVariable + " and secret " + sink.PrivateKeySecret + " of " + sink.slug()
+}
+
+// NextStep tells the operator what changes once both values exist.
+func (sink RepositorySink) NextStep() string {
+	return "The workflow uses the App from its next run on. To go back to the dry run, delete the variable:\n" +
+		"  gh variable delete " + sink.ClientIDVariable + " --repo " + sink.slug()
+}
+
+func (sink RepositorySink) slug() string { return sink.Owner + "/" + sink.Repository }
+
+func (sink RepositorySink) validate() error {
+	if !safeOwner.MatchString(sink.Owner) || !safeRepo.MatchString(sink.Repository) {
+		return errors.New("repository sink needs a valid owner and repository")
+	}
+	if !safeActionsName.MatchString(sink.ClientIDVariable) || !safeActionsName.MatchString(sink.PrivateKeySecret) {
+		return errors.New("repository sink needs valid variable and secret names")
+	}
+	return nil
+}
+
+func (sink RepositorySink) run() CommandRunner {
+	if sink.Run != nil {
+		return sink.Run
+	}
+	return func(ctx context.Context, arguments []string, stdin []byte) error {
+		return runProgram(ctx, "gh", arguments, stdin)
+	}
+}
+
+// Ready checks, before any App exists, that gh is logged in with access to
+// the repository's Actions secrets, so Store cannot fail on access after
+// GitHub handed over a key that is never shown again.
+func (sink RepositorySink) Ready(ctx context.Context) error {
+	if err := sink.validate(); err != nil {
+		return err
+	}
+	if err := sink.run()(ctx, []string{"api", "--silent", "repos/" + sink.slug() + "/actions/secrets/public-key"}, nil); err != nil {
+		return fmt.Errorf("gh cannot manage the Actions secrets of %s (run gh auth login with an account that administers it): %w", sink.slug(), err)
+	}
+	return nil
+}
+
+func (sink RepositorySink) Store(ctx context.Context, credentials Credentials) error {
+	if err := credentials.Validate(); err != nil {
+		return err
+	}
+	if err := sink.validate(); err != nil {
+		return err
+	}
+	run := sink.run()
+	// The secret first: the workflow uses the App only once both exist, so
+	// a failure in between leaves it on the dry run.
+	if err := run(ctx, []string{"secret", "set", sink.PrivateKeySecret, "--app", "actions", "--repo", sink.slug()}, []byte(credentials.PrivateKey)); err != nil {
+		return fmt.Errorf("gh secret set %s failed: %w", sink.PrivateKeySecret, err)
+	}
+	if err := run(ctx, []string{"variable", "set", sink.ClientIDVariable, "--repo", sink.slug(), "--body", credentials.ClientID}, nil); err != nil {
+		return fmt.Errorf("gh variable set %s failed: %w", sink.ClientIDVariable, err)
+	}
+	return nil
+}
+
 func runCommand(ctx context.Context, arguments []string, stdin []byte) error {
-	// Arguments are fixed by FlySink after validating the only variable value,
-	// the app name. exec.CommandContext does not invoke a shell.
-	command := exec.CommandContext(ctx, "fly", arguments...) // #nosec G204
+	return runProgram(ctx, "fly", arguments, stdin)
+}
+
+func runProgram(ctx context.Context, program string, arguments []string, stdin []byte) error {
+	// The program is a constant of each sink, and its arguments are fixed
+	// after validating every variable value. exec.CommandContext does not
+	// invoke a shell.
+	command := exec.CommandContext(ctx, program, arguments...) // #nosec G204
 	command.Stdin = bytes.NewReader(stdin)
 	// Do not return provider output. A future CLI version might echo imported
 	// values on an error path.
