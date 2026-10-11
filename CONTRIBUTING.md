@@ -33,7 +33,7 @@ bash -n controller-entrypoint runner-entrypoint runneryard-job-started.sh script
 git diff --check
 ```
 
-Install the analysis tools once with `go install honnef.co/go/tools/cmd/staticcheck@v0.7.0`,
+Install the analysis tools once with `go install honnef.co/go/tools/cmd/staticcheck@v0.8.1`,
 `go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0`, and
 `go install golang.org/x/vuln/cmd/govulncheck@v1.7.0`; CI pins the same versions.
 
