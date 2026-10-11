@@ -54,8 +54,8 @@ markers:
 - on each member: the commits that are its own, so a member that leaves a
   split or abandoned stack is stacked again without its former batchmates'
   commits;
-- after landing: the head that landed, so the merge detection lag on
-  GitHub's side does not queue a landed pull request again.
+- after landing: each member's own head as it landed, so the merge
+  detection lag on GitHub's side does not queue a landed pull request again.
 
 A stack is abandoned, and its members queued again, when the target moves
 outside the queue, a member is pushed to, closed or unlabeled, or another
@@ -140,11 +140,19 @@ your CI reports, usually the job names. Copy
 - set `RUNNERYARD_VERSION` to an exact release;
 - replace `"CI"` under `workflow_run` with the name of the workflow that
   reports the required checks;
+- replace `main` under `push` with the target;
 - keep the label in `QUEUE_LABEL` and in the `gate` job's `if:` in sync
   with the configuration.
 
 Your CI must run on `pull_request` events, including `synchronize`, which is
 the default: that is how a stack gets tested.
+
+Events drive the ticks: a change of the queue label, a CI run finishing on a
+pull request, and the queue's own push to the target, which forms the next
+stack as soon as one lands. The schedule is only a safety net for missed
+events and check timeouts. On a private repository each scheduled run bills
+the `gate` job one minute, about 1,440 minutes a month at every 30 minutes,
+so widen the interval if minutes matter.
 
 The workflow has two jobs. `gate` starts no runner at all for an event that is
 not about the queue (another label, a CI run on a push to the target), and
@@ -180,8 +188,9 @@ Add `--bot-login acme-merge-queue[bot]` to see stacks already in flight.
   provider inventory. Its token is an installation token for one repository,
   minted per run, which expires within the hour.
 - **No pull request code runs with the App's token.** The workflow is
-  triggered by `pull_request_target`, `workflow_run`, `schedule` and
-  `workflow_dispatch`, which all run the workflow file of the default branch,
+  triggered by `pull_request_target`, `workflow_run`, `schedule`,
+  `workflow_dispatch` and pushes to the target, which all run the workflow
+  file of the default branch (or of the target, for a push),
   and no job checks out pull request code. Do not switch the trigger to
   `pull_request`. The queue itself only runs git: hooks, the user and system
   git configuration, `core.fsmonitor` and LFS smudging are disabled, and git

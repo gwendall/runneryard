@@ -300,8 +300,8 @@ func (a *applier) advance(ctx context.Context, stack Stack) error {
 }
 
 func (a *applier) landed(ctx context.Context, stack Stack) error {
-	for _, number := range stack.Numbers() {
-		if err := a.comment(ctx, number, landedComment(stack)); err != nil {
+	for i, member := range stack.Members {
+		if err := a.comment(ctx, member.Number, landedComment(stack, i)); err != nil {
 			return err
 		}
 	}

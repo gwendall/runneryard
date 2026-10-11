@@ -315,6 +315,27 @@ func TestEndToEndLeavesLandedPullRequestsAloneUntilGitHubCatchesUp(t *testing.T)
 	}
 }
 
+// Every member of a landed stack records its own head, not the top's: a
+// lower member still open during the merge lag must not be stacked again.
+func TestEndToEndLeavesEveryMemberOfALandedStackAloneUntilGitHubCatchesUp(t *testing.T) {
+	e := newE2E(t)
+	e.gh.mergeLag = true
+	e.open(1, map[string]string{"one.txt": "1\n"})
+	e.open(2, map[string]string{"two.txt": "2\n"})
+	e.tick()
+	e.gh.ci(e.head(2), defaultCheck, "success", e.now)
+	_, report := e.tick()
+	wantReport(t, report.Landed, [][]int{{1, 2}}, "landed")
+	if status := e.gh.status(1); !strings.Contains(status, "together with #2.") || strings.Contains(status, "#1") {
+		t.Fatalf("#1 status = %q, want it to name only its batchmate", status)
+	}
+
+	plan, report := e.tick()
+	if !plan.Idle || len(report.Formed) != 0 || len(plan.Actions) != 0 {
+		t.Fatalf("tick during merge lag acted on a landed pull request: %v", plan.Actions)
+	}
+}
+
 func TestEndToEndRecordsAStackTheTargetAlreadyContains(t *testing.T) {
 	e := newE2E(t)
 	e.gh.mergeLag = true

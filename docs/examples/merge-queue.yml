@@ -21,7 +21,12 @@ on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
-  # Safety net for missed events and for check timeouts.
+  # The queue's own fast-forward of the target, so the next stack forms as
+  # soon as one lands. "main" must be the configured target.
+  push:
+    branches: [main]
+  # Safety net for missed events and for check timeouts. On a private
+  # repository each run bills the gate job one minute; widen it if needed.
   schedule:
     - cron: "*/30 * * * *"
   workflow_dispatch:
@@ -94,7 +99,9 @@ jobs:
           fi
 
       # A push made with GITHUB_TOKEN starts no workflow, so a stack pushed
-      # with it would never get CI. The App's token does start it.
+      # with it would never get CI. The App's token does start it. Without
+      # owner or repositories inputs the token covers this repository only,
+      # whatever the event payload holds.
       - name: Mint a token for this repository only
         id: token
         if: steps.app.outputs.configured == 'true'
@@ -102,8 +109,6 @@ jobs:
         with:
           client-id: ${{ vars.MERGE_QUEUE_APP_CLIENT_ID }}
           private-key: ${{ secrets.MERGE_QUEUE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
           permission-actions: write
           permission-checks: read
           permission-contents: write

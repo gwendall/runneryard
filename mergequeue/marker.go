@@ -211,12 +211,21 @@ func stackComment(stack Stack, index int, keep []Own) string {
 	return statusBody(fmt.Sprintf("rebased into a stack%s as %s. CI runs once, on the top pull request.", with, shortSHA(member.SHA)), markers...)
 }
 
-func landedComment(stack Stack) string {
-	with := ""
-	if len(stack.Members) > 1 {
-		with = " together with " + refs(stack.Numbers())
+// landedComment is the status of the member at index once its stack landed.
+// The marker holds that member's own head, which GitHub keeps reporting
+// until it marks the pull request merged.
+func landedComment(stack Stack, index int) string {
+	var batchmates []int
+	for i, member := range stack.Members {
+		if i != index {
+			batchmates = append(batchmates, member.Number)
+		}
 	}
-	return statusBody(fmt.Sprintf("landed on the target as %s%s.", shortSHA(stack.Top().SHA), with), landedMarker(Landed{Head: stack.Top().SHA}))
+	with := ""
+	if len(batchmates) > 0 {
+		with = " together with " + refs(batchmates)
+	}
+	return statusBody(fmt.Sprintf("landed on the target as %s%s.", shortSHA(stack.Top().SHA), with), landedMarker(Landed{Head: stack.Members[index].SHA}))
 }
 
 func rejectedComment(reason, label string, urls []string, owns []Own) string {

@@ -58,9 +58,11 @@ func TestCommentsKeepOwnRecordsAndLandedMarker(t *testing.T) {
 			t.Fatalf("ParseOwns(%q) = %+v, want the first %d records kept", body, got, maxOwns)
 		}
 	}
-	stack := Stack{Base: sha('b'), Members: []Member{{Number: 4, SHA: sha('c')}}}
-	landed, ok := ParseLanded(landedComment(stack))
-	if !ok || landed.Head != sha('c') {
-		t.Fatalf("ParseLanded = %+v, %v", landed, ok)
+	stack := Stack{Base: sha('b'), Members: []Member{{Number: 4, SHA: sha('c')}, {Number: 5, SHA: sha('d')}}}
+	for i, member := range stack.Members {
+		landed, ok := ParseLanded(landedComment(stack, i))
+		if !ok || landed.Head != member.SHA {
+			t.Fatalf("ParseLanded of #%d = %+v, %v, want its own head", member.Number, landed, ok)
+		}
 	}
 }
