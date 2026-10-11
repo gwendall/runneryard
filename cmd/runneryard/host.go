@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -118,7 +119,6 @@ func runHostInstall(args []string) error {
 func runHostBoot(args []string) error {
 	flags := flag.NewFlagSet("host boot", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	listen := flags.String("listen", defaultBootListen(), "agent SSH address (default: the machine's private address, port "+hostagent.BootPort+")")
 	dataRoot := flags.String("data-root", hostagent.BootDataRoot, "mounted volume for Docker's data")
 	defaultDNS := os.Getenv("RUNNERYARD_DOCKER_DNS")
 	if defaultDNS == "" {
@@ -135,6 +135,10 @@ func runHostBoot(args []string) error {
 	if flags.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", flags.Arg(0))
 	}
+	listen, err := bootListen(os.Getenv("FLY_PRIVATE_IP"))
+	if err != nil {
+		return err
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	return hostagent.Boot(ctx, hostagent.BootOptions{
@@ -142,7 +146,7 @@ func runHostBoot(args []string) error {
 		HostKeyPath:       hostagent.BootHostKeyPath,
 		AuthorizedKeyPath: hostagent.BootAuthorizedKeyPath,
 		DataRoot:          *dataRoot,
-		Listen:            *listen,
+		Listen:            listen,
 		DNS:               strings.Split(*dns, ","),
 		LockDir:           filepath.Join(hostagent.AgentHome, "locks"),
 		Version:           version,
@@ -150,14 +154,19 @@ func runHostBoot(args []string) error {
 	})
 }
 
-// defaultBootListen is the machine's private address when the platform names
-// it (Fly's 6PN address), so the agent is not reachable on any other network,
-// including the slots' Docker bridge.
-func defaultBootListen() string {
-	if address := os.Getenv("FLY_PRIVATE_IP"); address != "" {
-		return net.JoinHostPort(address, hostagent.BootPort)
+// bootListen is the agent's SSH address: the machine's private address as the
+// platform names it (Fly's 6PN address), so the agent is not reachable on any
+// other network, including the slots' Docker bridge. Without a usable address
+// boot refuses to start rather than listen on every interface.
+func bootListen(privateIP string) (string, error) {
+	if privateIP == "" {
+		return "", errors.New("FLY_PRIVATE_IP is not set: runneryard host boot serves the agent on the machine's private address only")
 	}
-	return ":" + hostagent.BootPort
+	address, err := netip.ParseAddr(privateIP)
+	if err != nil || address.IsUnspecified() {
+		return "", fmt.Errorf("FLY_PRIVATE_IP %q is not a usable IP address: runneryard host boot serves the agent on the machine's private address only", privateIP)
+	}
+	return net.JoinHostPort(address.String(), hostagent.BootPort), nil
 }
 
 func printHostHelp(output io.Writer) {
@@ -173,10 +182,11 @@ Usage:
         --min-free-disk-gb N   free disk a start requires (default 20)
         --harden-sshd          keys only, no root login, no forwarding
         --block-metadata       keep containers away from 169.254.169.254
-  runneryard host boot [--listen ADDR] [--data-root /data] [--dns 1.1.1.1,8.8.8.8]
+  runneryard host boot [--data-root /data] [--dns 1.1.1.1,8.8.8.8]
       Main process of a machine that boots from the runner image (Fly): start
       Docker on the data volume, clean the slots of the previous run, pull the
-      image, and serve the agent over SSH without sshd. The host source writes
+      image, and serve the agent over SSH without sshd on FLY_PRIVATE_IP, port
+      2222; it refuses to start without that address. The host source writes
       /etc/runneryard/host.json, the host key, and controller.pub.
   runneryard host info | list
       Show what the controller sees (as the runneryard user).
