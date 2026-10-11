@@ -6,6 +6,17 @@ operator-facing schema or a trust boundary is called out here first.
 
 ## Unreleased
 
+- Preview: `runneryard merge-queue tick` runs one tick of a merge queue inside a GitHub
+  Actions workflow of the repository it serves, with its own GitHub App; it never runs in
+  the controller or with its credentials. Pull requests labeled `queue` by someone with
+  write access are stacked on the target, tested by their own CI on the top of the stack,
+  and land by a fast-forward of the target, so GitHub marks them merged. A failure is
+  re-run once, then the stack is split until the culprit is rejected. State lives in one
+  status comment per pull request whose markers are only trusted from the App's bot.
+  Without the App, the example workflow runs a read-only dry run that prints the plan.
+  See `docs/merge-queue.md` and `docs/examples/merge-queue.yml`. Why: GitHub's native
+  merge queue needs a ruleset, which GitHub Free does not offer on private repositories,
+  and a hosted queue needs access to the code.
 - `runneryard budget estimate --provider hetzner` prices the Hetzner bill: every job gets
   its own server, and Hetzner rounds each server up to the next hour, so each job is billed
   whole hours whatever its length. The output shows the hours billed per job, the share

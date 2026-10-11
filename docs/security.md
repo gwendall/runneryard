@@ -77,6 +77,11 @@ key file. It verifies the app identity, target account, installation, and
 required permission before passing the credential to the same sinks. A private
 key file readable by group or others, or any symlinked key path, is rejected.
 
+The merge queue (preview) is a separate trust boundary with its own App: it
+runs in an Actions job of the repository it serves, never in the controller,
+and never with the controller's credentials. Its permissions and threat model
+are in the [merge queue guide](merge-queue.md#security).
+
 ### Rotation
 
 Create a second GitHub App private key before removing the first. Run

@@ -10,6 +10,8 @@
 !controller/**
 !githubapp/
 !githubapp/**
+!mergequeue/
+!mergequeue/**
 !provider/
 !provider/**
 !providers/

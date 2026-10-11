@@ -111,6 +111,8 @@ Read the complete [quickstart](docs/quickstart.md) before routing production CI.
   [operations guide](docs/operations.md).
 - Security review or removal: read the [security model](docs/security.md).
 - New provider: implement the [adapter contract](docs/adapter-contract.md).
+- Merge queue for a repository without GitHub's native one (preview): read
+  the [merge queue guide](docs/merge-queue.md).
 - Contributor or coding agent: read [AGENTS.md](AGENTS.md) and
   [CONTRIBUTING.md](CONTRIBUTING.md).
 
