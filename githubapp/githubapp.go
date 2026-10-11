@@ -123,8 +123,12 @@ type Browser interface {
 // Profile is the kind of App a bootstrap creates and verifies. Options
 // without one create the runner App of one fleet (RunnerProfile).
 type Profile struct {
-	// Name starts the App name; a random suffix keeps it unique on GitHub.
+	// Name starts the App name and is never shortened. Qualifiers, such as
+	// the owner and repository, follow it; the last ones are truncated or
+	// dropped first so the random suffix that keeps the name unique always
+	// fits GitHub's limit.
 	Name        string
+	Qualifiers  []string
 	Description string
 	// Permissions are granted to the App, and verification requires the
 	// installation to grant each of them at least at that level.
@@ -135,12 +139,13 @@ type Profile struct {
 
 // RunnerProfile is the App a RunnerYard controller uses for target.
 func RunnerProfile(target Target) Profile {
-	nameParts := []string{"RunnerYard", target.Owner}
+	qualifiers := []string{target.Owner}
 	if target.Repository != "" {
-		nameParts = append(nameParts, target.Repository)
+		qualifiers = append(qualifiers, target.Repository)
 	}
 	return Profile{
-		Name:        strings.Join(nameParts, " "),
+		Name:        "RunnerYard",
+		Qualifiers:  qualifiers,
 		Description: "Dedicated credentials for one self-hosted RunnerYard fleet.",
 		Permissions: map[string]string{requiredPermission(target): "write"},
 		Explanation: permissionExplanation(target),
@@ -150,6 +155,9 @@ func RunnerProfile(target Target) Profile {
 func (profile Profile) validate() error {
 	if profile.Name == "" || len(profile.Permissions) == 0 {
 		return errors.New("GitHub App profile needs a name and permissions")
+	}
+	if len(profile.Name)+1+2*nameSuffixBytes > maxAppNameLength {
+		return fmt.Errorf("GitHub App profile name %q leaves no room for the random suffix", profile.Name)
 	}
 	for name, level := range profile.Permissions {
 		if !safePermission.MatchString(name) || permissionLevels[level] == 0 {
@@ -207,7 +215,7 @@ func Bootstrap(ctx context.Context, options Options) (Result, error) {
 	if err != nil {
 		return Result{}, errors.New("generate setup state")
 	}
-	nameSuffix, err := randomHex(4)
+	nameSuffix, err := randomHex(nameSuffixBytes)
 	if err != nil {
 		return Result{}, errors.New("generate app name")
 	}
@@ -407,9 +415,46 @@ func permissionExplanation(target Target) string {
 	return "It requests Organization self-hosted runners: write because GitHub places organization runner scale-set management behind that permission."
 }
 
+// GitHub refuses App names longer than maxAppNameLength. The random suffix
+// takes 2*nameSuffixBytes hex characters of it.
+const (
+	maxAppNameLength = 34
+	nameSuffixBytes  = 4
+	// minQualifierLength keeps a truncated qualifier recognizable; a shorter
+	// one is dropped instead.
+	minQualifierLength = 4
+)
+
+// appName joins the profile's name, as many of its qualifiers as fit, and the
+// suffix. It truncates the first qualifier that does not fit and drops the
+// rest, so the repository goes before the owner and the suffix stays whole.
+func appName(profile Profile, suffix string) (string, error) {
+	budget := maxAppNameLength - 1 - len(suffix)
+	name := profile.Name
+	if len(name) > budget {
+		return "", fmt.Errorf("GitHub App name %q leaves no room for the random suffix", name)
+	}
+	for _, qualifier := range profile.Qualifiers {
+		room := budget - len(name) - 1
+		if len(qualifier) > room {
+			qualifier = strings.TrimRight(qualifier[:max(room, 0)], "-._")
+			if len(qualifier) >= minQualifierLength {
+				name += " " + qualifier
+			}
+			break
+		}
+		name += " " + qualifier
+	}
+	return name + " " + suffix, nil
+}
+
 func manifestJSON(profile Profile, redirectURL, homepageURL, suffix string) (string, error) {
+	name, err := appName(profile, suffix)
+	if err != nil {
+		return "", err
+	}
 	manifest := map[string]any{
-		"name":                     profile.Name + " " + suffix,
+		"name":                     name,
 		"url":                      homepageURL,
 		"description":              profile.Description,
 		"redirect_url":             redirectURL,

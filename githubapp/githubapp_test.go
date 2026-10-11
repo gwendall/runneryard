@@ -62,6 +62,43 @@ func TestManifestUsesLeastPrivilegeWithoutWebhooks(t *testing.T) {
 	}
 }
 
+func TestManifestNameFitsGitHubsLimitWithTheWholeSuffix(t *testing.T) {
+	long := strings.Repeat("a", 39)
+	for _, test := range []struct {
+		profile Profile
+		want    string
+	}{
+		{RunnerProfile(Target{Owner: "octo", Repository: "repo"}), "RunnerYard octo repo 1a2b3c4d"},
+		{RunnerProfile(Target{Owner: "octo"}), "RunnerYard octo 1a2b3c4d"},
+		// The case GitHub refused: the repository goes first.
+		{RunnerProfile(Target{Owner: "KamiRobotics", Repository: "kira-monorepo"}), "RunnerYard KamiRobotics 1a2b3c4d"},
+		{RunnerProfile(Target{Owner: "octo", Repository: "kira-monorepo"}), "RunnerYard octo kira-mono 1a2b3c4d"},
+		{RunnerProfile(Target{Owner: "octo", Repository: "abcdefgh-ijkl"}), "RunnerYard octo abcdefgh 1a2b3c4d"},
+		{RunnerProfile(Target{Owner: long, Repository: long}), "RunnerYard aaaaaaaaaaaaaa 1a2b3c4d"},
+		{RunnerProfile(Target{Owner: long}), "RunnerYard aaaaaaaaaaaaaa 1a2b3c4d"},
+		{queueProfile(), "RunnerYard merge queue 1a2b3c4d"},
+	} {
+		raw, err := manifestJSON(test.profile, "http://127.0.0.1/callback", "https://runneryard.com", "1a2b3c4d")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var manifest map[string]any
+		if err := json.Unmarshal([]byte(raw), &manifest); err != nil {
+			t.Fatal(err)
+		}
+		name := manifest["name"].(string)
+		if name != test.want || len(name) > maxAppNameLength {
+			t.Errorf("name = %q (%d characters), want %q", name, len(name), test.want)
+		}
+	}
+
+	tooLong := queueProfile()
+	tooLong.Name = strings.Repeat("n", maxAppNameLength-2*nameSuffixBytes)
+	if err := tooLong.validate(); err == nil {
+		t.Fatal("a profile name without room for the suffix was accepted")
+	}
+}
+
 func TestTargetRejectsMismatchedOrUnsafeIdentity(t *testing.T) {
 	for _, target := range []Target{
 		{ConfigURL: "https://github.com/octo/other", Owner: "octo", Repository: "repo", OwnerKind: OwnerOrganization},
