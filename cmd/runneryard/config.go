@@ -34,6 +34,7 @@ type appConfig struct {
 	FlyAPIBaseURL      string
 	FlyWorkerApp       string
 	FlyRegion          string
+	PoolFlyAPIToken    string
 	HetznerAPIToken    string
 	HetznerAPIBaseURL  string
 	HetznerLocation    string
@@ -94,6 +95,7 @@ func loadConfig() (appConfig, error) {
 		FlyAPIBaseURL:      envOr("FLY_API_BASE_URL", "https://api.machines.dev"),
 		FlyWorkerApp:       strings.TrimSpace(os.Getenv("RUNNER_FLY_APP")),
 		FlyRegion:          envOr("RUNNER_FLY_REGION", os.Getenv("FLY_REGION")),
+		PoolFlyAPIToken:    strings.TrimSpace(os.Getenv(poolFlyTokenEnv)),
 		HetznerAPIToken:    strings.TrimSpace(os.Getenv("HCLOUD_TOKEN")),
 		HetznerAPIBaseURL:  envOr("HCLOUD_API_BASE_URL", "https://api.hetzner.cloud/v1"),
 		HetznerLocation:    envOr("RUNNER_HETZNER_LOCATION", "fsn1"),

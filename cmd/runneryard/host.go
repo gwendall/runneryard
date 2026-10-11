@@ -7,9 +7,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gwendall/runneryard/hostagent"
@@ -23,6 +27,9 @@ const hostCommandTimeout = 2 * time.Minute
 func runHost(args []string) error {
 	if len(args) > 0 && args[0] == "install" {
 		return runHostInstall(args[1:])
+	}
+	if len(args) > 0 && args[0] == "boot" {
+		return runHostBoot(args[1:])
 	}
 	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
 		printHostHelp(os.Stdout)
@@ -105,6 +112,54 @@ func runHostInstall(args []string) error {
 	})
 }
 
+// runHostBoot is the main process of a machine that boots from the runner
+// image as a pool host, such as a Fly Machine: it starts Docker on the data
+// volume and serves the agent over SSH itself.
+func runHostBoot(args []string) error {
+	flags := flag.NewFlagSet("host boot", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	listen := flags.String("listen", defaultBootListen(), "agent SSH address (default: the machine's private address, port 22)")
+	dataRoot := flags.String("data-root", hostagent.BootDataRoot, "mounted volume for Docker's data")
+	defaultDNS := os.Getenv("RUNNERYARD_DOCKER_DNS")
+	if defaultDNS == "" {
+		defaultDNS = "1.1.1.1,8.8.8.8"
+	}
+	dns := flags.String("dns", defaultDNS, "resolvers for slot containers, comma separated")
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printHostHelp(os.Stdout)
+			return nil
+		}
+		return err
+	}
+	if flags.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q", flags.Arg(0))
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	return hostagent.Boot(ctx, hostagent.BootOptions{
+		ConfigPath:        hostagent.ConfigPath,
+		HostKeyPath:       hostagent.BootHostKeyPath,
+		AuthorizedKeyPath: hostagent.BootAuthorizedKeyPath,
+		DataRoot:          *dataRoot,
+		Listen:            *listen,
+		DNS:               strings.Split(*dns, ","),
+		LockDir:           filepath.Join(hostagent.AgentHome, "locks"),
+		Version:           version,
+		Logger:            slog.New(slog.NewJSONHandler(os.Stdout, nil)),
+	})
+}
+
+// defaultBootListen is the machine's private address when the platform names
+// it (Fly's 6PN address), so the agent is not reachable on any other network,
+// including the slots' Docker bridge.
+func defaultBootListen() string {
+	if address := os.Getenv("FLY_PRIVATE_IP"); address != "" {
+		return net.JoinHostPort(address, "22")
+	}
+	return ":22"
+}
+
 func printHostHelp(output io.Writer) {
 	fmt.Fprint(output, `runneryard host runs on a pool host.
 
@@ -118,6 +173,11 @@ Usage:
         --min-free-disk-gb N   free disk a start requires (default 20)
         --harden-sshd          keys only, no root login, no forwarding
         --block-metadata       keep containers away from 169.254.169.254
+  runneryard host boot [--listen ADDR] [--data-root /data] [--dns 1.1.1.1,8.8.8.8]
+      Main process of a machine that boots from the runner image (Fly): start
+      Docker on the data volume, clean the slots of the previous run, pull the
+      image, and serve the agent over SSH without sshd. The host source writes
+      /etc/runneryard/host.json, the host key, and controller.pub.
   runneryard host info | list
       Show what the controller sees (as the runneryard user).
 
