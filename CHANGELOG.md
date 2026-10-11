@@ -4,6 +4,14 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
+## Unreleased
+
+- The Go toolchain and the release image move to Go 1.26.9: govulncheck reports ten
+  standard library vulnerabilities in 1.25.14 (`net/http`, `net/textproto`,
+  `crypto/tls`, `os`), and Go 1.25 no longer receives security fixes. The worker image
+  moves to the current `ubuntu:24.04` digest; the pinned Docker, BuildKit, Compose and
+  fuse-overlayfs packages are unchanged.
+
 ## 0.4.9 (2026-09-06)
 
 - `lint-workflows`: a `pull_request` trigger whose `types` list names neither `opened`

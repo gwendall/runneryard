@@ -42,7 +42,7 @@ func TestRuntimeImageIncludesGitHubCLI(t *testing.T) {
 func TestRuntimeImageIncludesBuildKitTooling(t *testing.T) {
 	contents := readRepositoryFile(t, "Dockerfile")
 	requireSourceContains(t, "runtime image does not guarantee BuildKit tooling", contents,
-		"ARG GO_IMAGE=golang:1.25.14-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437",
+		"ARG GO_IMAGE=golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c",
 		"FROM ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254",
 		"docker-buildx=0.30.1-0ubuntu1~24.04.1",
 		"docker-compose-v2=2.40.3+ds1-0ubuntu1~24.04.1",

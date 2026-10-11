@@ -203,7 +203,7 @@ accessed through provider SSH; RunnerYard opens no monitoring port.
 
 ## Development
 
-Requirements: Go 1.25+, Node 24+, pnpm 10, and Docker for image tests.
+Requirements: Go 1.26+, Node 24+, pnpm 10, and Docker for image tests.
 
 ```sh
 go test -race ./...
