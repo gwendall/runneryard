@@ -23,6 +23,21 @@ operator-facing schema or a trust boundary is called out here first.
   hours. Why: 350 three-minute jobs a day cost about EUR 600 a month on per-job
   Hetzner servers billed by the started hour; one warm four-slot host costs about EUR
   81, and a free slot starts a job on warm caches in seconds. See `docs/pools.md`.
+- Fly pools (preview): `source: fly` runs pool hosts as Fly Machines in an app of their
+  own (`fly_app`), each with a volume for Docker's data. An idle host is stopped after
+  `idle_stop_after` instead of deleted, so its volume keeps the image and the caches and
+  it bills only for storage; the next demand starts it again before creating a new
+  host. `min_hosts` stay running, `max_hosts` counts running and stopped hosts, and
+  stopped hosts beyond `keep_stopped` are deleted after `delete_stopped_after`. The
+  Machine boots the runner image with the new `runneryard host boot`, which starts
+  Docker on the volume and serves the host agent over SSH on the Machine's private
+  address, with no `sshd`; the controller must run in the same Fly organization. The
+  pool never touches a Machine without its three pool labels. Status gains the
+  `stopping`, `stopped` and `starting` phases and `host_stops` and `host_starts`. Pool
+  images stay public: no registry credential is placed on a host. Why: Fly bills per
+  second, so a stopped host with warm caches costs a few dollars a month, and one
+  Machine running four jobs leaves more of the organization's Machine limit to the
+  rest of the fleet.
 - `runneryard budget estimate --provider hetzner` prices the Hetzner bill: every job gets
   its own server, and Hetzner rounds each server up to the next hour, so each job is billed
   whole hours whatever its length. The output shows the hours billed per job, the share

@@ -25,11 +25,16 @@ const (
 	defaultHourMargin       = 2 * time.Minute
 	defaultCallTimeout      = 20 * time.Second
 	defaultStartTimeout     = 90 * time.Second
+	defaultDeleteStopped    = 6 * time.Hour
 	hostRefusalBackoff      = time.Minute
 	initialCreateBackoff    = time.Minute
 	maximumCreateBackoff    = 15 * time.Minute
 	maxStartAttempts        = 3
-	maxParallelCalls        = 8
+	// maxStartFailures is how many failed starts a stopped host gets before
+	// it is deleted: its disk sits on one physical machine, which may stay
+	// full.
+	maxStartFailures = 2
+	maxParallelCalls = 8
 	// CapacityReasonFull is the stable reason a full pool reports to the core.
 	CapacityReasonFull = "pool_full"
 )
@@ -59,6 +64,15 @@ type Config struct {
 	HourMargin       time.Duration
 	CallTimeout      time.Duration
 	StartTimeout     time.Duration
+
+	// IdleStop, KeepStopped, and DeleteStoppedAfter apply when the source is
+	// a Stopper. An empty host is stopped after IdleStop (default IdleReturn)
+	// instead of deleted. The KeepStopped most recently stopped hosts are
+	// kept; the others are deleted once stopped for DeleteStoppedAfter
+	// (default 6h).
+	IdleStop           time.Duration
+	KeepStopped        int
+	DeleteStoppedAfter time.Duration
 }
 
 type phase string
@@ -69,6 +83,9 @@ const (
 	phaseReady    phase = "ready"
 	phaseDraining phase = "draining"
 	phaseDeleting phase = "deleting"
+	phaseStopping phase = "stopping"
+	phaseStopped  phase = "stopped"
+	phaseStarting phase = "starting"
 )
 
 type hostState struct {
@@ -90,6 +107,22 @@ type hostState struct {
 	notBefore   time.Time
 	drainReason string
 	warnedAt    time.Time
+
+	// bootSince is when the pool last started a stopped host; zero for a
+	// host still on its first boot.
+	bootSince time.Time
+	// runningSince starts the current billed period, zero while stopped;
+	// billed holds the hours of earlier periods.
+	runningSince time.Time
+	billed       float64
+	stoppedSince time.Time
+	// startedByPool marks a host this process started that is not ready
+	// yet; startFailures counts its failed starts and boots.
+	startedByPool bool
+	startFailures int
+	// changedAt is the pool's last stop or start of the host. A listing that
+	// began before it may predate the change and does not override it.
+	changedAt time.Time
 }
 
 func (h *hostState) occupied() int { return len(h.slots) }
@@ -122,9 +155,10 @@ func (h *hostState) freeCount() int {
 // Pool runs workers in the slots of shared hosts. It implements
 // provider.Compute; Run keeps the hosts matched to demand.
 type Pool struct {
-	cfg   Config
-	facts Facts
-	log   *slog.Logger
+	cfg     Config
+	facts   Facts
+	stopper Stopper
+	log     *slog.Logger
 
 	mu              sync.Mutex
 	hosts           map[string]*hostState
@@ -138,6 +172,8 @@ type Pool struct {
 	overflowed      uint64
 	returnedHosts   int
 	returnedHours   float64
+	hostStarts      int
+	hostStops       int
 	creations       sync.WaitGroup
 	wake            chan struct{}
 }
@@ -184,21 +220,36 @@ func New(cfg Config) (*Pool, error) {
 		{&cfg.HourMargin, defaultHourMargin},
 		{&cfg.CallTimeout, defaultCallTimeout},
 		{&cfg.StartTimeout, defaultStartTimeout},
+		{&cfg.DeleteStoppedAfter, defaultDeleteStopped},
 	}
 	for _, item := range defaults {
 		if *item.value <= 0 {
 			*item.value = item.fallback
 		}
 	}
+	if cfg.IdleStop <= 0 {
+		cfg.IdleStop = cfg.IdleReturn
+	}
 	if facts.Billing == BillingPerStartedHour && cfg.HourMargin <= cfg.Tick {
 		return nil, fmt.Errorf("pool %s must check its hosts more often than its paid-hour margin", cfg.Name)
 	}
+	var stopper Stopper
+	if facts.CanCreate {
+		stopper, _ = cfg.Source.(Stopper)
+	}
+	if stopper == nil && cfg.KeepStopped != 0 {
+		return nil, fmt.Errorf("pool %s source cannot stop hosts, so keep_stopped does not apply", cfg.Name)
+	}
+	if cfg.KeepStopped < 0 || cfg.KeepStopped > cfg.MaxHosts {
+		return nil, fmt.Errorf("pool %s must keep between 0 and max_hosts stopped hosts", cfg.Name)
+	}
 	return &Pool{
-		cfg:   cfg,
-		facts: facts,
-		log:   cfg.Logger.With("pool", cfg.Name),
-		hosts: make(map[string]*hostState),
-		wake:  make(chan struct{}, 1),
+		cfg:     cfg,
+		facts:   facts,
+		stopper: stopper,
+		log:     cfg.Logger.With("pool", cfg.Name),
+		hosts:   make(map[string]*hostState),
+		wake:    make(chan struct{}, 1),
 	}, nil
 }
 
@@ -270,7 +321,7 @@ func (p *Pool) Inventory(ctx context.Context) ([]provider.Worker, error) {
 		p.log.Warn("host source unavailable; using the last known hosts", "error", err)
 	}
 	p.listSlots(ctx, p.hostsIn(func(h *hostState) bool {
-		return h.host.Address != "" && h.phase != phaseCreating && (h.everReady || !h.ownBoot)
+		return h.host.Address != "" && h.running() && (h.everReady || !h.ownBoot)
 	}))
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -308,6 +359,12 @@ func (p *Pool) Destroy(ctx context.Context, workerID string) error {
 		if host, ok = p.host(hostID); !ok {
 			return nil
 		}
+	}
+	if p.stoppedHost(hostID) {
+		// A stopped host runs nothing, and its next boot removes every slot
+		// container before it serves again.
+		p.cleared(hostID, slot, leaseID)
+		return nil
 	}
 	callCtx, cancel := context.WithTimeout(ctx, p.cfg.CallTimeout)
 	defer cancel()
@@ -370,6 +427,23 @@ func (p *Pool) host(id string) (Host, bool) {
 	return h.host, true
 }
 
+func (p *Pool) stoppedHost(id string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	h, ok := p.hosts[id]
+	return ok && h.phase == phaseStopped
+}
+
+// running reports whether the host's machine may be up and its agent
+// reachable.
+func (h *hostState) running() bool {
+	switch h.phase {
+	case phaseCreating, phaseStopped, phaseStarting, phaseStopping:
+		return false
+	}
+	return true
+}
+
 func (p *Pool) hostsIn(match func(*hostState) bool) []Host {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -416,9 +490,12 @@ func (p *Pool) refreshHosts(ctx context.Context, force bool) error {
 		seen[host.ID] = struct{}{}
 		if existing, ok := p.hosts[host.ID]; ok {
 			existing.host = host
+			if !existing.changedAt.After(started) {
+				p.reconcile(existing, now)
+			}
 			continue
 		}
-		p.hosts[host.ID] = &hostState{
+		h := &hostState{
 			host:      host,
 			phase:     phaseBooting,
 			slots:     map[int]Slot{},
@@ -426,7 +503,14 @@ func (p *Pool) refreshHosts(ctx context.Context, force bool) error {
 			firstSeen: now,
 			ownBoot:   !host.CreatedAt.IsZero() && now.Sub(host.CreatedAt) < p.cfg.BootTimeout,
 		}
-		p.log.Info("found pool host", "host", host.ID, "created_at", host.CreatedAt)
+		if p.stopper != nil && host.State == HostStopped {
+			h.phase = phaseStopped
+			h.stoppedSince = earliest(host.StateSince, now)
+		} else {
+			h.runningSince = firstNonZero(host.StateSince, host.CreatedAt, now)
+		}
+		p.hosts[host.ID] = h
+		p.log.Info("found pool host", "host", host.ID, "created_at", host.CreatedAt, "phase", h.phase)
 	}
 	for id, h := range p.hosts {
 		// A host created while the listing was in flight is not in it yet.
@@ -441,6 +525,52 @@ func (p *Pool) refreshHosts(ctx context.Context, force bool) error {
 	p.hostsListedAt = now
 	p.hostsKnown = true
 	return nil
+}
+
+// reconcile follows a stop or a start the pool did not make itself: a crash,
+// the provider's maintenance, or an operator. Callers hold p.mu.
+func (p *Pool) reconcile(h *hostState, now time.Time) {
+	if p.stopper == nil {
+		return
+	}
+	stopped := h.host.State == HostStopped
+	switch {
+	case stopped && (h.phase == phaseBooting || h.phase == phaseReady || h.phase == phaseDraining):
+		if h.occupied() > 0 {
+			p.log.Warn("pool host stopped with slots in use", "host", h.host.ID, "slots", h.occupied())
+		} else {
+			p.log.Warn("pool host stopped outside the pool", "host", h.host.ID, "phase", h.phase)
+		}
+		if h.startedByPool {
+			h.startFailures++
+			h.notBefore = now.Add(hostRefusalBackoff)
+		}
+		p.markStopped(h, earliest(h.host.StateSince, now))
+	case !stopped && h.phase == phaseStopped:
+		p.log.Warn("stopped pool host started outside the pool", "host", h.host.ID, "state", h.host.State)
+		h.phase = phaseBooting
+		h.bootSince = now
+		h.ownBoot = false
+		h.everReady = false
+		h.lastContact = time.Time{}
+		h.runningSince = firstNonZero(h.host.StateSince, now)
+		h.stoppedSince = time.Time{}
+	}
+}
+
+// markStopped records a host as stopped: its slot containers died with it.
+// Callers hold p.mu.
+func (p *Pool) markStopped(h *hostState, at time.Time) {
+	if !h.runningSince.IsZero() {
+		h.billed += p.billedHours(h.runningSince, at)
+	}
+	h.phase = phaseStopped
+	h.runningSince = time.Time{}
+	h.stoppedSince = at
+	h.slots = map[int]Slot{}
+	h.lastListed = time.Time{}
+	h.emptySince = time.Time{}
+	h.startedByPool = false
 }
 
 // probe asks every booting host whether it is ready.
@@ -475,7 +605,9 @@ func (p *Pool) probe(ctx context.Context) {
 		case info.Ready && info.Slots > 0:
 			h.phase = phaseReady
 			h.everReady = true
-			p.log.Info("pool host ready", "host", host.ID, "slots", info.Slots, "boot", now.Sub(firstNonZero(host.CreatedAt, h.firstSeen)).Round(time.Second))
+			h.startedByPool = false
+			h.startFailures = 0
+			p.log.Info("pool host ready", "host", host.ID, "slots", info.Slots, "boot", now.Sub(firstNonZero(h.bootSince, host.CreatedAt, h.firstSeen)).Round(time.Second))
 		}
 	}
 }
@@ -666,6 +798,11 @@ func (p *Pool) noteFull() {
 	p.demand++
 	p.overflowed++
 	p.mu.Unlock()
+	p.signal()
+}
+
+// signal runs the maintenance loop now instead of at its next tick.
+func (p *Pool) signal() {
 	select {
 	case p.wake <- struct{}{}:
 	default:
@@ -676,6 +813,8 @@ type returnCandidate struct {
 	host     Host
 	previous phase
 	reason   string
+	// stop stops the host, keeping its disk, instead of deleting it.
+	stop bool
 }
 
 // returnHosts gives empty hosts back to their source when the source's
@@ -687,7 +826,7 @@ func (p *Pool) returnHosts(ctx context.Context) {
 	}
 	candidates := p.returnCandidates()
 	for _, candidate := range candidates {
-		if candidate.reason != "boot_timeout" && candidate.reason != "unreachable" {
+		if candidate.previous != phaseStopped && candidate.reason != "boot_timeout" && candidate.reason != "unreachable" {
 			callCtx, cancel := context.WithTimeout(ctx, p.cfg.CallTimeout)
 			slots, err := p.cfg.Agent.List(callCtx, candidate.host)
 			cancel()
@@ -695,6 +834,10 @@ func (p *Pool) returnHosts(ctx context.Context) {
 				p.restorePhase(candidate.host.ID, candidate.previous)
 				continue
 			}
+		}
+		if candidate.stop {
+			p.stopHost(ctx, candidate)
+			continue
 		}
 		if err := p.cfg.Source.Delete(ctx, candidate.host.ID); err != nil {
 			p.log.Warn("could not return pool host", "host", candidate.host.ID, "reason", candidate.reason, "error", err)
@@ -704,13 +847,32 @@ func (p *Pool) returnHosts(ctx context.Context) {
 		p.mu.Lock()
 		now := p.cfg.Now()
 		if h, ok := p.hosts[candidate.host.ID]; ok {
-			p.returnedHours += p.billedHours(h.host.CreatedAt, now)
+			p.returnedHours += p.hostBilled(h, now)
 			delete(p.hosts, candidate.host.ID)
 		}
 		p.returnedHosts++
 		p.mu.Unlock()
 		p.log.Info("returned pool host", "host", candidate.host.ID, "reason", candidate.reason, "age", p.cfg.Now().Sub(candidate.host.CreatedAt).Round(time.Second))
 	}
+}
+
+// stopHost stops an idle host. Its disk keeps the slots' images and caches
+// for the next start.
+func (p *Pool) stopHost(ctx context.Context, candidate returnCandidate) {
+	if err := p.stopper.Stop(ctx, candidate.host.ID); err != nil {
+		p.log.Warn("could not stop pool host", "host", candidate.host.ID, "error", err)
+		p.restorePhase(candidate.host.ID, candidate.previous)
+		return
+	}
+	p.mu.Lock()
+	now := p.cfg.Now()
+	if h, ok := p.hosts[candidate.host.ID]; ok {
+		p.markStopped(h, now)
+		h.changedAt = now
+	}
+	p.hostStops++
+	p.mu.Unlock()
+	p.log.Info("stopped idle pool host", "host", candidate.host.ID, "reason", candidate.reason)
 }
 
 func (p *Pool) returnCandidates() []returnCandidate {
@@ -722,10 +884,12 @@ func (p *Pool) returnCandidates() []returnCandidate {
 	for _, id := range p.sortedIDs() {
 		h := p.hosts[id]
 		reason := ""
+		stop := false
+		bootStart := firstNonZero(h.bootSince, h.host.CreatedAt)
 		switch {
-		case h.phase == phaseBooting && h.ownBoot && !h.everReady && !h.host.CreatedAt.IsZero() && now.Sub(h.host.CreatedAt) > p.cfg.BootTimeout:
+		case h.phase == phaseBooting && h.ownBoot && !h.everReady && !bootStart.IsZero() && now.Sub(bootStart) > p.cfg.BootTimeout:
 			reason = "boot_timeout"
-		case (h.phase == phaseReady || h.phase == phaseDraining || h.phase == phaseBooting) && now.Sub(firstNonZero(h.lastContact, h.firstSeen)) > p.cfg.MaxLifetime+p.cfg.UnreachableGrace:
+		case (h.phase == phaseReady || h.phase == phaseDraining || h.phase == phaseBooting) && now.Sub(latest(h.lastContact, h.firstSeen, h.bootSince)) > p.cfg.MaxLifetime+p.cfg.UnreachableGrace:
 			// Every slot container has a deadline within the maximum lifetime,
 			// so nothing on a host silent for longer can still be a job.
 			reason = "unreachable"
@@ -742,17 +906,76 @@ func (p *Pool) returnCandidates() []returnCandidate {
 				reason = "paid_hour_ending"
 			}
 		case p.facts.Billing == BillingPerSecond:
-			if !h.emptySince.IsZero() && now.Sub(h.emptySince) >= p.cfg.IdleReturn {
+			idle := p.cfg.IdleReturn
+			if p.stopper != nil {
+				idle = p.cfg.IdleStop
+			}
+			if !h.emptySince.IsZero() && now.Sub(h.emptySince) >= idle {
 				reason = "idle"
+				stop = p.stopper != nil
 			}
 		}
 		if reason == "" {
 			continue
 		}
-		candidates = append(candidates, returnCandidate{host: h.host, previous: h.phase, reason: reason})
+		candidates = append(candidates, returnCandidate{host: h.host, previous: h.phase, reason: reason, stop: stop})
+		if stop {
+			h.phase = phaseStopping
+		} else {
+			h.phase = phaseDeleting
+		}
+	}
+	return append(candidates, p.stoppedCandidates(now)...)
+}
+
+// stoppedCandidates picks the stopped hosts to delete: at once those that
+// cannot serve again, and, beyond the KeepStopped most recently stopped,
+// those stopped for DeleteStoppedAfter. Callers hold p.mu.
+func (p *Pool) stoppedCandidates(now time.Time) []returnCandidate {
+	stopped := make([]*hostState, 0)
+	for _, h := range p.hosts {
+		if h.phase == phaseStopped {
+			stopped = append(stopped, h)
+		}
+	}
+	sort.Slice(stopped, func(i, j int) bool {
+		if !stopped[i].stoppedSince.Equal(stopped[j].stoppedSince) {
+			return stopped[i].stoppedSince.After(stopped[j].stoppedSince)
+		}
+		return stopped[i].host.ID < stopped[j].host.ID
+	})
+	candidates := make([]returnCandidate, 0)
+	kept := 0
+	for _, h := range stopped {
+		reason := p.unusable(h)
+		switch {
+		case reason != "":
+		case kept < p.cfg.KeepStopped:
+			kept++
+			continue
+		case now.Sub(h.stoppedSince) >= p.cfg.DeleteStoppedAfter:
+			reason = "stopped_expired"
+		default:
+			continue
+		}
+		candidates = append(candidates, returnCandidate{host: h.host, previous: phaseStopped, reason: reason})
 		h.phase = phaseDeleting
 	}
 	return candidates
+}
+
+// unusable says why a stopped host must not be started again, or "".
+// Callers hold p.mu.
+func (p *Pool) unusable(h *hostState) string {
+	switch {
+	case h.drainReason != "":
+		return h.drainReason
+	case h.host.Image != "" && h.host.Image != p.cfg.Image:
+		return "image_mismatch"
+	case h.startFailures >= maxStartFailures:
+		return "start_failed"
+	}
+	return ""
 }
 
 // baseHosts returns the min_hosts oldest ready hosts, which are kept warm;
@@ -780,7 +1003,7 @@ func (p *Pool) baseHosts() map[string]bool {
 func (p *Pool) restorePhase(hostID string, previous phase) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if h, ok := p.hosts[hostID]; ok && h.phase == phaseDeleting {
+	if h, ok := p.hosts[hostID]; ok && (h.phase == phaseDeleting || h.phase == phaseStopping) {
 		h.phase = previous
 	}
 }
@@ -809,7 +1032,7 @@ func (p *Pool) grow(ctx context.Context) {
 	active, pending := 0, 0
 	for _, h := range p.hosts {
 		switch h.phase {
-		case phaseCreating:
+		case phaseCreating, phaseStarting:
 			active++
 			pending++
 		case phaseBooting:
@@ -826,6 +1049,18 @@ func (p *Pool) grow(ctx context.Context) {
 		want = 1
 	}
 	p.demand = 0
+	// A stopped host comes back with its images and caches, and starting it
+	// adds nothing to max_hosts, so stopped hosts go first.
+	for ; want > 0; want-- {
+		h := p.startable(now)
+		if h == nil {
+			break
+		}
+		h.phase = phaseStarting
+		h.changedAt = now
+		p.creations.Add(1)
+		go p.start(ctx, h.host.ID)
+	}
 	want = min(want, max(0, p.cfg.MaxHosts-len(p.hosts)))
 	if now.Before(p.createNotBefore) {
 		want = 0
@@ -838,6 +1073,69 @@ func (p *Pool) grow(ctx context.Context) {
 		go p.create(ctx, placeholder)
 	}
 	p.mu.Unlock()
+}
+
+// startable returns the most recently stopped host that may be started, or
+// nil; callers hold p.mu.
+func (p *Pool) startable(now time.Time) *hostState {
+	if p.stopper == nil {
+		return nil
+	}
+	var best *hostState
+	for _, id := range p.sortedIDs() {
+		h := p.hosts[id]
+		if h.phase != phaseStopped || now.Before(h.notBefore) || p.unusable(h) != "" {
+			continue
+		}
+		if best == nil || h.stoppedSince.After(best.stoppedSince) {
+			best = h
+		}
+	}
+	return best
+}
+
+// start starts a stopped host. A failed start leaves it stopped and backs
+// it off; a host that fails to start maxStartFailures times, or is refused
+// for capacity, is deleted on the next pass and replaced by a new one.
+func (p *Pool) start(ctx context.Context, id string) {
+	defer p.creations.Done()
+	err := p.stopper.Start(ctx, id)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	h, ok := p.hosts[id]
+	if !ok {
+		return
+	}
+	now := p.cfg.Now()
+	h.changedAt = now
+	defer p.signal()
+	if err != nil {
+		h.phase = phaseStopped
+		h.startFailures++
+		var capacity *provider.CapacityError
+		if errors.As(err, &capacity) {
+			h.startFailures = maxStartFailures
+		}
+		h.notBefore = now.Add(hostRefusalBackoff)
+		// The demand that asked for the start still waits: the next pass
+		// starts another stopped host or creates one.
+		p.demand++
+		p.log.Warn("could not start stopped pool host", "host", id, "failures", h.startFailures, "error", err)
+		return
+	}
+	p.log.Info("started stopped pool host", "host", id, "stopped_for", now.Sub(h.stoppedSince).Round(time.Second))
+	h.phase = phaseBooting
+	h.bootSince = now
+	h.runningSince = now
+	h.ownBoot = true
+	h.everReady = false
+	h.startedByPool = true
+	h.lastContact = time.Time{}
+	h.stoppedSince = time.Time{}
+	h.notBefore = time.Time{}
+	p.hostStarts++
+	// The next pass reads the host again, with its address after the start.
+	p.hostsListedAt = time.Time{}
 }
 
 func (p *Pool) create(ctx context.Context, placeholder string) {
@@ -869,9 +1167,19 @@ func (p *Pool) create(ctx context.Context, placeholder string) {
 	}
 	p.hosts[host.ID] = &hostState{
 		host: host, phase: phaseBooting, firstSeen: now, ownBoot: true,
-		slots: map[int]Slot{}, reserved: map[int]string{},
+		slots: map[int]Slot{}, reserved: map[int]string{}, runningSince: firstNonZero(host.CreatedAt, now),
 	}
 	p.log.Info("created pool host", "host", host.ID)
+}
+
+// hostBilled returns the host hours this process counts for h: its earlier
+// running periods and the current one. Callers hold p.mu.
+func (p *Pool) hostBilled(h *hostState, now time.Time) float64 {
+	billed := h.billed
+	if !h.runningSince.IsZero() {
+		billed += p.billedHours(h.runningSince, now)
+	}
+	return billed
 }
 
 func (p *Pool) billedHours(createdAt, now time.Time) float64 {
@@ -902,8 +1210,13 @@ type Status struct {
 	Launched      uint64  `json:"launched"`
 	Overflowed    uint64  `json:"overflowed"`
 	ReturnedHosts int     `json:"returned_hosts"`
+	// HostStops and HostStarts count idle hosts stopped and stopped hosts
+	// started again, for sources that stop hosts.
+	HostStops  int `json:"host_stops,omitempty"`
+	HostStarts int `json:"host_starts,omitempty"`
 	// BilledHours counts host hours this process has seen billed: returned
-	// hosts in full, live hosts up to now. Cost is BilledHours * HourlyPrice.
+	// hosts in full, live hosts up to now, stopped hosts while they ran. Cost
+	// is BilledHours * HourlyPrice; a stopped host's storage is not in it.
 	BilledHours float64      `json:"billed_hours"`
 	Cost        float64      `json:"cost"`
 	Hosts       []HostStatus `json:"hosts"`
@@ -917,6 +1230,7 @@ type HostStatus struct {
 	Busy      int       `json:"busy"`
 	Reachable bool      `json:"reachable"`
 	CreatedAt time.Time `json:"created_at,omitzero"`
+	StoppedAt time.Time `json:"stopped_at,omitzero"`
 }
 
 // Status reports the pool's hosts, slots, and billed hours.
@@ -927,20 +1241,22 @@ func (p *Pool) Status() Status {
 	status := Status{
 		Name: p.cfg.Name, Billing: p.facts.Billing, HourlyPrice: p.facts.HourlyPrice, Currency: p.facts.Currency,
 		MinHosts: p.cfg.MinHosts, MaxHosts: p.cfg.MaxHosts, Launched: p.launched, Overflowed: p.overflowed,
-		ReturnedHosts: p.returnedHosts, BilledHours: p.returnedHours, Hosts: make([]HostStatus, 0, len(p.hosts)),
+		ReturnedHosts: p.returnedHosts, HostStops: p.hostStops, HostStarts: p.hostStarts,
+		BilledHours: p.returnedHours, Hosts: make([]HostStatus, 0, len(p.hosts)),
 	}
 	for _, id := range p.sortedIDs() {
 		h := p.hosts[id]
 		busy := h.occupied() + len(h.reserved)
 		host := HostStatus{
 			ID: id, Phase: string(h.phase), Slots: h.info.Slots, Busy: busy, CreatedAt: h.host.CreatedAt,
-			Reachable: !h.lastContact.IsZero() && now.Sub(h.lastContact) <= p.cfg.UnreachableGrace,
+			Reachable: h.running() && !h.lastContact.IsZero() && now.Sub(h.lastContact) <= p.cfg.UnreachableGrace,
+			StoppedAt: h.stoppedSince,
 		}
 		if h.phase == phaseReady {
 			status.SlotsTotal += h.info.Slots
 			status.SlotsBusy += min(busy, h.info.Slots)
 		}
-		status.BilledHours += p.billedHours(h.host.CreatedAt, now)
+		status.BilledHours += p.hostBilled(h, now)
 		status.Hosts = append(status.Hosts, host)
 	}
 	status.Cost = math.Round(status.BilledHours*p.facts.HourlyPrice*100) / 100
@@ -952,6 +1268,25 @@ func remainingPaid(age time.Duration) time.Duration {
 		return time.Hour
 	}
 	return time.Hour - age%time.Hour
+}
+
+// latest returns the latest of values.
+func latest(values ...time.Time) time.Time {
+	var result time.Time
+	for _, value := range values {
+		if value.After(result) {
+			result = value
+		}
+	}
+	return result
+}
+
+// earliest returns value when it is set and before limit, otherwise limit.
+func earliest(value, limit time.Time) time.Time {
+	if !value.IsZero() && value.Before(limit) {
+		return value
+	}
+	return limit
 }
 
 func firstNonZero(values ...time.Time) time.Time {

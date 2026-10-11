@@ -124,6 +124,51 @@ adapter; the pool deletes only servers that carry all of its labels. Attach a
 dedicated firewall that admits SSH from the controller only. See
 [Host pools](pools.md).
 
+Fly pool hosts live in an app of their own, carry the same three labels as
+Machine metadata, and the pool stops, starts or deletes only Machines that
+carry all three. They run without app secrets. Give the controller a deploy
+token for the pool app only (`RUNNER_POOL_FLY_API_TOKEN`), never an
+organization token. A host's private SSH key is written as a Machine file, so
+whoever can read the pool app's Machine configuration can read it, as whoever
+can read a Hetzner server's user data can read a Hetzner host's key; the key
+only lets its holder pose as that one host.
+
+A slot is privileged, so a job that escapes it is root on a Fly Machine. From
+there it reaches the Machine's private network and Fly's local `/.fly/api`
+socket, which issues OIDC tokens in the pool app's name: do not grant any
+cloud role to that identity. Put the controller and the pool app on a custom
+private network of their own, so an escaped job reaches the controller and
+the other pool hosts, not the rest of the organization. The host agent
+listens on the Machine's private address only; slots reach the Internet
+through Docker's IPv4 bridge and cannot reach that address.
+
+### Private runner images
+
+Pool hosts pull the runner image with their own Docker, so a private image
+would need a registry credential on every host, readable by any job that
+escapes its slot. RunnerYard places no registry credential on a host: pool
+images must be public, such as the release image on GHCR. The options
+considered on 2026-10-12:
+
+- **Public image (current).** No credential anywhere. The image holds no
+  secret, as for ephemeral workers.
+- **GHCR token with `read:packages`: rejected.** GHCR packages are only
+  reachable with a classic personal access token, which reads every package
+  its owner can read, in every organization, until it is revoked.
+- **Fly read-only token: rejected.** It is organization-wide.
+- **Fly deploy token for the image's app: rejected.** It can deploy.
+- **Attenuated Fly token, possible later.** `fly tokens attenuate` adds
+  caveats to a token offline. A token limited to one app, to reading, and to
+  fifteen minutes, minted by the controller at each host start, would let a
+  host pull from that app's registry and do nothing else, briefly. It needs
+  the controller to mint macaroons (a new dependency) and a check that Fly's
+  registry honors every caveat; not implemented.
+- **Slot image from the Machine's root filesystem, possible later.** Fly pulls
+  the Machine image with the organization's own access, private or not, so a
+  Fly host already runs the runner image as its root filesystem. Importing it
+  into Docker would need no credential, but must leave out the host's key
+  files and repeat the image's configuration; not implemented.
+
 ## Supply chain
 
 The runtime pins the Ubuntu base, official GitHub Actions runner, and Node 22

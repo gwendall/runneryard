@@ -55,8 +55,20 @@ type Host struct {
 	HostKey   string
 	CreatedAt time.Time
 	// State is the source's own word for the machine ("running", "off", ...).
+	// A source that can stop hosts reports HostStopped for a stopped one.
 	State string
+	// StateSince is when the source last changed the machine's state, when it
+	// knows: the start of the current running or stopped period.
+	StateSince time.Time
+	// Image is the runner image the source prepared the host for, when it
+	// records it. A stopped host prepared for another image is deleted
+	// instead of started.
+	Image string
 }
+
+// HostStopped is the Host.State of a stopped host: it keeps its disk, and with
+// it the slots' images and caches, and costs only its storage.
+const HostStopped = "stopped"
 
 // Source provides hosts. List must return only hosts this controller owns in
 // this pool. Create and Delete are only called when Facts().CanCreate.
@@ -65,6 +77,16 @@ type Source interface {
 	List(context.Context) ([]Host, error)
 	Create(context.Context) (Host, error)
 	Delete(context.Context, string) error
+}
+
+// Stopper is a source whose hosts can be stopped and started again with
+// their disk. A pool over such a source stops an idle host instead of
+// deleting it, and starts a stopped host before it creates a new one. Stop
+// and Start act only on hosts the source owns, and return once the host has
+// reached the state asked for.
+type Stopper interface {
+	Stop(ctx context.Context, id string) error
+	Start(ctx context.Context, id string) error
 }
 
 // Slot is one runner container as the host agent reports it.
