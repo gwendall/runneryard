@@ -20,8 +20,15 @@ controller supervise its own GitHub session (a transport failure reopens the
 session in-process instead of exiting into the platform's restart backoff),
 turned a provider's permanent launch rejection into the same bounded
 condition as a capacity ceiling, and taught the Fly adapter every documented
-shortage. Next in line: C1,
-R10, R13, C4, P1, P3, S3, O1, O3, O4, W1, W6, H5.
+shortage. 0.4.5 to 0.4.10 shipped derived worker images declared with
+`RUNNER_IMAGE_BASE` (I2 and I3 in part), `lint-workflows` and
+`init --with-workflows` (what a repository's workflow shape costs on a fleet),
+`doctor` checks for alerting (`ALERT_WEBHOOK_URL` is now required), the budget
+horizon, and the Fly capacity margin, `budget estimate` with Fly's price table
+(the pricing half of C1; the per-job receipt remains), and Go 1.26.9. P1 was
+already done: the release has published and canaried `linux/amd64` and
+`linux/arm64` since #51. Next in line: C1, R10, R13, C4, P3, S3, O1, O3, O4,
+W1, W6, H5.
 
 How to read it:
 
@@ -37,7 +44,7 @@ How to read it:
 3. R13 load test before raising the ceiling further (P1, S)
 4. R10 nightly integration workflow against a real provider (P1, M)
 5. C4 region fallback with a circuit breaker (P1, S)
-6. P1 multi-architecture image or narrower documentation (P1, S)
+6. P3 public Hetzner canary before moving the adapter to "available" (P1, S)
 7. O1 troubleshooting guide (P1, S)
 8. O4 version, shape, and region visible in the job (P1, S)
 9. W1 and W6 status and configuration reference updates (P1, S)
@@ -88,7 +95,7 @@ How to read it:
 
 | Id | Item | Priority | Effort |
 | --- | --- | --- | --- |
-| P1 | The GHCR image is `linux/amd64` only (`release.yml` builds with `--platform linux/amd64`) while `docs/security.md` describes the toolcache on x64 and arm64. Build multi-platform with `buildx` and run the offline toolcache canary on both, or narrow the documentation. | P1 | S |
+| P1 | Done (#51): the release builds `linux/amd64` and `linux/arm64`, runs the offline toolcache canary on both, and publishes one manifest. Was: the GHCR image is `linux/amd64` only (`release.yml` builds with `--platform linux/amd64`) while `docs/security.md` describes the toolcache on x64 and arm64. Build multi-platform with `buildx` and run the offline toolcache canary on both, or narrow the documentation. | P1 | S |
 | P2 | Deliver the JIT configuration through a short-lived presigned object (Tigris on Fly, Object Storage on Hetzner) instead of environment or instance user data: the controller writes the lease, passes the URL, and deletes the object on `JobStarted`. Instance user data persists in provider metadata for the VM lifetime, so this is the stronger boundary. | P2 | M |
 | P3 | Complete a public Hetzner canary in a real project, record the receipt, and only then move the adapter from "preview" to "available". | P1 | S |
 | P4 | Hetzner CAX (Ampere) support once P1 ships an arm64 image. | P2 | S |
