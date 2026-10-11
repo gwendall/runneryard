@@ -143,6 +143,63 @@ func TestCapacityRejectionBacksOffWhileCompletionsAndReplacementsContinue(t *tes
 	}
 }
 
+func TestCapacityRetryHintProbesEarlyWithoutGrowingTheBackoff(t *testing.T) {
+	clock := time.Now().UTC()
+	growing := &provider.CapacityError{Reason: "pool_full", RetryAfter: 10 * time.Second, Err: errors.New("no free slot")}
+	compute := &fakeCompute{launchErr: growing}
+	scaler := testScaler(t, newWorkerState(), compute)
+	scaler.maxWorkers = 2
+	scaler.capacityNow = func() time.Time { return clock }
+	client := scaler.scaleSetClient.(*fakeRunnerScaleSetClient)
+	client.generateJIT = &scaleset.RunnerScaleSetJitRunnerConfig{
+		Runner: &scaleset.RunnerReference{ID: 42}, EncodedJITConfig: "jit",
+	}
+
+	if _, err := scaler.HandleDesiredRunnerCount(context.Background(), 2); err != nil {
+		t.Fatal(err)
+	}
+	if !scaler.capacityRetryAt.Equal(clock.Add(10*time.Second)) || scaler.capacityBackoff != 0 {
+		t.Fatalf("hinted gate: retry at %s, backoff %s; want the hint and no backoff", scaler.capacityRetryAt.Sub(clock), scaler.capacityBackoff)
+	}
+	clock = clock.Add(5 * time.Second)
+	if _, err := scaler.HandleDesiredRunnerCount(context.Background(), 2); err != nil {
+		t.Fatal(err)
+	}
+	if compute.launchCalls != 1 {
+		t.Fatalf("a probe inside the hint: %d launch calls, want 1", compute.launchCalls)
+	}
+
+	// A hint below the floor is raised to it, so it cannot hot-loop.
+	growing.RetryAfter = time.Millisecond
+	clock = clock.Add(6 * time.Second)
+	if _, err := scaler.HandleDesiredRunnerCount(context.Background(), 2); err != nil {
+		t.Fatal(err)
+	}
+	if compute.launchCalls != 2 || !scaler.capacityRetryAt.Equal(clock.Add(capacityMinimumRetry)) {
+		t.Fatalf("tiny hint: calls=%d retry at %s, want the floor", compute.launchCalls, scaler.capacityRetryAt.Sub(clock))
+	}
+
+	// A real ceiling without a hint falls back to the backoff.
+	compute.launchErr = &provider.CapacityError{Reason: "pool_full", Err: errors.New("no free slot")}
+	clock = clock.Add(capacityMinimumRetry)
+	if _, err := scaler.HandleDesiredRunnerCount(context.Background(), 2); err != nil {
+		t.Fatal(err)
+	}
+	if !scaler.capacityRetryAt.Equal(clock.Add(capacityInitialBackoff)) {
+		t.Fatalf("unhinted gate: retry at %s, want the initial backoff", scaler.capacityRetryAt.Sub(clock))
+	}
+
+	compute.launchErr = nil
+	compute.launchWorker = provider.Worker{ID: "worker-one", CreatedAt: clock}
+	clock = clock.Add(capacityInitialBackoff)
+	if count, err := scaler.HandleDesiredRunnerCount(context.Background(), 1); err != nil || count != 1 {
+		t.Fatalf("probe after the backoff: count=%d err=%v", count, err)
+	}
+	if scaler.capacityReason != "" || scaler.capacityBackoff != 0 {
+		t.Fatal("a successful probe must clear the gate")
+	}
+}
+
 func TestCompletionKeepsRetirementPendingWhenProviderIsTransientlyUnavailable(t *testing.T) {
 	worker := provider.Worker{ID: "worker-one", LeaseID: "lease-one", RunnerName: "runner-00000001", RunnerScaleSetID: 1}
 	compute := &fakeCompute{workers: []provider.Worker{worker}, destroyErr: transient("delete timed out")}

@@ -306,8 +306,8 @@ func (p *Pool) Launch(ctx context.Context, lease provider.Lease) (provider.Worke
 			return provider.Worker{}, &provider.PartialLaunchError{Worker: worker, Err: fmt.Errorf("start slot %d on %s: %w", slot, host.ID, err)}
 		}
 	}
-	p.noteFull()
-	return provider.Worker{}, &provider.CapacityError{Reason: CapacityReasonFull, Err: fmt.Errorf("pool %s: %w", p.cfg.Name, ErrFull)}
+	retryAfter := p.noteFull()
+	return provider.Worker{}, &provider.CapacityError{Reason: CapacityReasonFull, RetryAfter: retryAfter, Err: fmt.Errorf("pool %s: %w", p.cfg.Name, ErrFull)}
 }
 
 // Inventory lists this controller's slots on every known host. A host that
@@ -793,12 +793,34 @@ func (p *Pool) cleared(hostID string, slot int, leaseID string) {
 	}
 }
 
-func (p *Pool) noteFull() {
+// noteFull records an overflow for the next growth pass. It returns one tick
+// when room is on its way, so the core probes again as soon as the host can
+// be ready instead of after its capacity backoff, and zero otherwise.
+func (p *Pool) noteFull() time.Duration {
 	p.mu.Lock()
 	p.demand++
 	p.overflowed++
+	coming := p.roomComing(p.cfg.Now())
 	p.mu.Unlock()
 	p.signal()
+	if coming {
+		return p.cfg.Tick
+	}
+	return 0
+}
+
+// roomComing reports whether a host is being created, started, or booted, or
+// whether the next growth pass can start or create one. Callers hold p.mu.
+func (p *Pool) roomComing(now time.Time) bool {
+	for _, h := range p.hosts {
+		if h.phase == phaseCreating || h.phase == phaseStarting || h.phase == phaseBooting {
+			return true
+		}
+	}
+	if p.startable(now) != nil {
+		return true
+	}
+	return p.facts.CanCreate && len(p.hosts) < p.cfg.MaxHosts && !now.Before(p.createNotBefore)
 }
 
 // signal runs the maintenance loop now instead of at its next tick.

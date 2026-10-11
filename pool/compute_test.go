@@ -350,6 +350,41 @@ func TestLaunchOnAFullPoolReportsCapacityAndGrowsOneHost(t *testing.T) {
 	}
 }
 
+func TestAFullPoolAsksForAnEarlyProbeOnlyWhileRoomIsComing(t *testing.T) {
+	facts := Facts{Billing: BillingPerSecond, HourlyPrice: 0.1, Currency: "EUR", CanCreate: true}
+	h := newHarness(t, facts, 0, 1)
+	h.step(t, time.Second)
+	_, err := h.pool.Launch(context.Background(), lease("l1"))
+	if got := provider.CapacityRetryAfter(err); got != 10*time.Second {
+		t.Fatalf("retry after = %s with room under max_hosts, want one tick", got)
+	}
+	h.step(t, time.Second)
+	_, err = h.pool.Launch(context.Background(), lease("l2"))
+	if got := provider.CapacityRetryAfter(err); got != 10*time.Second {
+		t.Fatalf("retry after = %s while the new host boots, want one tick", got)
+	}
+	h.agent.ready("new-1", 1)
+	h.step(t, time.Second)
+	if _, err := h.pool.Launch(context.Background(), lease("l3")); err != nil {
+		t.Fatal(err)
+	}
+	_, err = h.pool.Launch(context.Background(), lease("l4"))
+	if !provider.IsCapacity(err) || provider.CapacityRetryAfter(err) != 0 {
+		t.Fatalf("launch on a pool full at max_hosts = %v, want capacity without a retry hint", err)
+	}
+
+	owned := newHarness(t, ownedFacts, 0, 0)
+	owned.readyHost("a", 1, owned.clock.Now().Add(-time.Hour))
+	owned.step(t, time.Second)
+	if _, err := owned.pool.Launch(context.Background(), lease("o1")); err != nil {
+		t.Fatal(err)
+	}
+	_, err = owned.pool.Launch(context.Background(), lease("o2"))
+	if !provider.IsCapacity(err) || provider.CapacityRetryAfter(err) != 0 {
+		t.Fatalf("launch on a full static pool = %v, want capacity without a retry hint", err)
+	}
+}
+
 func TestGrowthStopsAtMaxHostsAndBacksOffOnCreateFailure(t *testing.T) {
 	facts := Facts{Billing: BillingPerSecond, CanCreate: true}
 	h := newHarness(t, facts, 2, 2)

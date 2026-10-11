@@ -136,7 +136,9 @@ only lets its holder pose as that one host.
 A slot is privileged, so a job that escapes it is root on a Fly Machine. From
 there it reaches the Machine's private network and Fly's local `/.fly/api`
 socket, which issues OIDC tokens in the pool app's name: do not grant any
-cloud role to that identity. Put the controller and the pool app on a custom
+cloud role to that identity. Through that socket the Machines API answered a
+pool host with HTTP 403, for its own app and for the controller's, in the
+first real test; keep the pool app free of secrets so it stays that way. Put the controller and the pool app on a custom
 private network of their own, so an escaped job reaches the controller and
 the other pool hosts, not the rest of the organization. The host agent
 listens on the Machine's private address only, port 2222; slots reach the
