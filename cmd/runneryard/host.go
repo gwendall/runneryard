@@ -118,7 +118,7 @@ func runHostInstall(args []string) error {
 func runHostBoot(args []string) error {
 	flags := flag.NewFlagSet("host boot", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	listen := flags.String("listen", defaultBootListen(), "agent SSH address (default: the machine's private address, port 22)")
+	listen := flags.String("listen", defaultBootListen(), "agent SSH address (default: the machine's private address, port "+hostagent.BootPort+")")
 	dataRoot := flags.String("data-root", hostagent.BootDataRoot, "mounted volume for Docker's data")
 	defaultDNS := os.Getenv("RUNNERYARD_DOCKER_DNS")
 	if defaultDNS == "" {
@@ -155,9 +155,9 @@ func runHostBoot(args []string) error {
 // including the slots' Docker bridge.
 func defaultBootListen() string {
 	if address := os.Getenv("FLY_PRIVATE_IP"); address != "" {
-		return net.JoinHostPort(address, "22")
+		return net.JoinHostPort(address, hostagent.BootPort)
 	}
-	return ":22"
+	return ":" + hostagent.BootPort
 }
 
 func printHostHelp(output io.Writer) {

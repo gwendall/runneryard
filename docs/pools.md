@@ -223,7 +223,8 @@ image itself, as root, with `runneryard host boot`:
    public key, written as Machine files at creation;
 2. starts `dockerd` with its data root on the volume, and removes any slot
    container a previous run left behind;
-3. serves the host agent over SSH on the Machine's private address, port 22;
+3. serves the host agent over SSH on the Machine's private address, port
+   2222 (Fly's own SSH server, used by `fly ssh console`, holds port 22);
 4. pulls the runner image when the volume does not have it yet.
 
 Every step is safe to repeat, because a stopped Machine runs them again on its
