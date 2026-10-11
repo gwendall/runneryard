@@ -41,8 +41,8 @@ env:
   # Keep in sync with "label" in .github/merge-queue.yml and with the gate's
   # if: below, which cannot read env.
   QUEUE_LABEL: queue
-  # An exact release of the runneryard npm package that ships merge-queue.
-  RUNNERYARD_VERSION: "x.y.z"
+  # An exact release of the runneryard npm package, 0.5.0 or later.
+  RUNNERYARD_VERSION: "0.5.0"
 
 jobs:
   # Most events are not about the queue: any label change, any CI run on a

@@ -177,7 +177,7 @@ your CI reports, usually the job names. Copy
 [examples/merge-queue.yml](examples/merge-queue.yml) to
 `.github/workflows/merge-queue.yml` and:
 
-- set `RUNNERYARD_VERSION` to an exact release;
+- set `RUNNERYARD_VERSION` to an exact release, 0.5.0 or later;
 - replace `"CI"` under `workflow_run` with the name of the workflow that
   reports the required checks;
 - replace `main` under `push` with the target;

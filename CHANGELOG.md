@@ -4,7 +4,7 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
-## Unreleased
+## 0.5.0 (2026-10-12)
 
 - Preview: `runneryard merge-queue tick` runs one tick of a merge queue inside a GitHub
   Actions workflow of the repository it serves, with its own GitHub App; it never runs in
@@ -52,8 +52,9 @@ operator-facing schema or a trust boundary is called out here first.
   stopped hosts beyond `keep_stopped` are deleted after `delete_stopped_after`. The
   Machine boots the runner image with the new `runneryard host boot`, which starts
   Docker on the volume and serves the host agent over SSH on the Machine's private
-  address, with no `sshd`, and refuses to start without that address; the controller must run in the same Fly organization. The
-  pool never touches a Machine without its three pool labels. Status gains the
+  address, with no `sshd`, and refuses to start without that address; the controller
+  must run in the same Fly organization. The pool never touches a Machine without its
+  three pool labels. Status gains the
   `stopping`, `stopped` and `starting` phases and `host_stops` and `host_starts`. Pool
   images stay public: no registry credential is placed on a host. Why: Fly bills per
   second, so a stopped host with warm caches costs a few dollars a month, and one
