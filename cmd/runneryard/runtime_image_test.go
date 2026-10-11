@@ -20,6 +20,18 @@ func readRepositoryFile(t *testing.T, elements ...string) string {
 	return string(contents)
 }
 
+// requireSourceMatches fails unless every pattern matches contents. Pins are
+// checked by shape (an immutable digest or commit SHA), not by value, so a
+// Dependabot update of a pin qualifies on its own.
+func requireSourceMatches(t *testing.T, description, contents string, patterns ...string) {
+	t.Helper()
+	for _, pattern := range patterns {
+		if !regexp.MustCompile(pattern).MatchString(contents) {
+			t.Fatalf("%s: no match for %s", description, pattern)
+		}
+	}
+}
+
 func requireSourceContains(t *testing.T, description, contents string, required ...string) {
 	t.Helper()
 	for _, fragment := range required {
@@ -41,9 +53,15 @@ func TestRuntimeImageIncludesGitHubCLI(t *testing.T) {
 
 func TestRuntimeImageIncludesBuildKitTooling(t *testing.T) {
 	contents := readRepositoryFile(t, "Dockerfile")
+	goVersion := regexp.MustCompile(`(?m)^go (\S+)$`).FindStringSubmatch(readRepositoryFile(t, "go.mod"))
+	if goVersion == nil {
+		t.Fatal("go.mod has no go directive")
+	}
+	requireSourceMatches(t, "runtime image is not built from an immutable base", contents,
+		`(?m)^ARG GO_IMAGE=golang:`+regexp.QuoteMeta(goVersion[1])+`-bookworm@sha256:[0-9a-f]{64}$`,
+		`(?m)^FROM ubuntu:24\.04@sha256:[0-9a-f]{64}$`,
+	)
 	requireSourceContains(t, "runtime image does not guarantee BuildKit tooling", contents,
-		"ARG GO_IMAGE=golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c",
-		"FROM ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254",
 		"docker-buildx=0.30.1-0ubuntu1~24.04.1",
 		"docker-compose-v2=2.40.3+ds1-0ubuntu1~24.04.1",
 		"docker.io=29.1.3-0ubuntu3~24.04.2",
@@ -79,9 +97,11 @@ func TestRunnerEntrypointPreservesRuntimeTooling(t *testing.T) {
 
 func TestReleaseBuildsAndCanariesBothWorkerArchitectures(t *testing.T) {
 	contents := readRepositoryFile(t, ".github", "workflows", "release.yml")
+	requireSourceMatches(t, "release does not set up both worker architectures from pinned actions", contents,
+		`docker/setup-qemu-action@[0-9a-f]{40}\b`,
+		`docker/setup-buildx-action@[0-9a-f]{40}\b`,
+	)
 	requireSourceContains(t, "release does not publish and canary both worker architectures", contents,
-		"docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a",
-		"docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e",
 		"linux/amd64:amd64 linux/arm64:arm64",
 		`"$image:$version-$arch"`,
 		`verify-runtime-toolcache.sh`,
