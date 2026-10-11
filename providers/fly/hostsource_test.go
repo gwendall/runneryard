@@ -419,7 +419,7 @@ func TestHostSourceListsOnlyThisPoolsMachines(t *testing.T) {
 	running := got["fly-a1running"]
 	_, public, _ := x.controller.HostKey("ry-pool-a1running")
 	if running.State != "running" || running.HostKey != public || running.Image != testPoolImage ||
-		!strings.HasPrefix(running.Address, "[fdaa:0:1::") || !strings.HasSuffix(running.Address, "]:22") ||
+		!strings.HasPrefix(running.Address, "[fdaa:0:1::") || !strings.HasSuffix(running.Address, "]:2222") ||
 		!running.StateSince.Equal(x.fly.now.Add(-10*time.Minute)) {
 		t.Fatalf("running host = %+v", running)
 	}

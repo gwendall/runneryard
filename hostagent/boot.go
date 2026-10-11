@@ -28,6 +28,9 @@ const (
 	// BootDataRoot is the machine's persistent volume; Docker keeps its data,
 	// and with it the slots' images and caches, under BootDataRoot/docker.
 	BootDataRoot = "/data"
+	// BootPort is the agent's SSH port. Fly's init already serves its own
+	// SSH, for fly ssh console, on port 22 of the private address.
+	BootPort = "2222"
 
 	dockerdConfigPath  = "/etc/docker/daemon.json"
 	dockerdLogPath     = "/var/log/dockerd.log"

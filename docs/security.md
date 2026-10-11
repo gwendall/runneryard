@@ -139,8 +139,10 @@ socket, which issues OIDC tokens in the pool app's name: do not grant any
 cloud role to that identity. Put the controller and the pool app on a custom
 private network of their own, so an escaped job reaches the controller and
 the other pool hosts, not the rest of the organization. The host agent
-listens on the Machine's private address only; slots reach the Internet
-through Docker's IPv4 bridge and cannot reach that address.
+listens on the Machine's private address only, port 2222; slots reach the
+Internet through Docker's IPv4 bridge and cannot reach that address. Port 22
+belongs to Fly's own SSH server, as on every Machine: an organization member
+who can run `fly ssh console` gets a root shell on a pool host.
 
 ### Private runner images
 
