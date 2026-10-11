@@ -40,6 +40,18 @@ type Compute interface {
 	Destroy(context.Context, string) error
 }
 
+// Maintainer is implemented by compute that keeps capacity on its own, such as
+// a pool of shared hosts. The controller runs it for its whole lifetime.
+type Maintainer interface {
+	Run(context.Context) error
+}
+
+// StatusReporter is implemented by compute with state of its own to publish.
+// The controller writes the value under "compute" in the fleet status.
+type StatusReporter interface {
+	ComputeStatus() any
+}
+
 // PartialLaunchError reports that a provider created a worker but could not
 // confirm the complete response. The core immediately schedules its cleanup.
 type PartialLaunchError struct {

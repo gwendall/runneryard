@@ -12,6 +12,10 @@
 !githubapp/**
 !mergequeue/
 !mergequeue/**
+!hostagent/
+!hostagent/**
+!pool/
+!pool/**
 !provider/
 !provider/**
 !providers/

@@ -136,8 +136,27 @@ func (c *Controller) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if source, ok := c.compute.(provider.StatusReporter); ok {
+		reporter.watchCompute(source)
+	}
 	reporter.start(ctx, budget)
 	defer reporter.close()
+	if maintainer, ok := c.compute.(provider.Maintainer); ok {
+		// Compute that keeps its own capacity, such as a pool of hosts, runs
+		// for the controller's lifetime and stops before the status reporter.
+		maintainCtx, stopMaintaining := context.WithCancel(ctx)
+		maintained := make(chan struct{})
+		go func() {
+			defer close(maintained)
+			if err := maintainer.Run(maintainCtx); err != nil && !errors.Is(err, context.Canceled) {
+				cfg.Logger.Error("compute maintenance stopped", "error", err)
+			}
+		}()
+		defer func() {
+			stopMaintaining()
+			<-maintained
+		}()
+	}
 	retirements, err := newRetirementQueue(cfg.RetirementFile)
 	if err != nil {
 		reporter.degraded("runner_retirement_state_failed")

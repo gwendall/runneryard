@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/gwendall/runneryard/provider"
 )
 
 const (
@@ -33,6 +35,9 @@ type FleetStatus struct {
 	Launch        LaunchStatus     `json:"launch"`
 	Latency       LatencyStatus    `json:"latency"`
 	Budget        BudgetStatus     `json:"budget"`
+	// Compute is the compute's own state when it publishes one, such as the
+	// hosts and slots of its pools.
+	Compute json.RawMessage `json:"compute,omitempty"`
 }
 
 type ControllerStatus struct {
@@ -131,7 +136,11 @@ type statusReporter struct {
 	cancel   context.CancelFunc
 	done     chan struct{}
 	alerter  *alerter
+	compute  provider.StatusReporter
 }
+
+// computeStatusInterval paces how often the compute's own state is sampled.
+const computeStatusInterval = 5 * time.Second
 
 func newStatusReporter(cfg Config, budget BudgetStatus) (*statusReporter, error) {
 	now := time.Now().UTC()
@@ -314,6 +323,33 @@ func (reporter *statusReporter) recovered() {
 	reporter.update(func(_ *FleetStatus) { reporter.failure = "" })
 }
 
+// watchCompute publishes the compute's own state with the fleet status. It is
+// called before start.
+func (reporter *statusReporter) watchCompute(source provider.StatusReporter) {
+	if reporter == nil || source == nil {
+		return
+	}
+	reporter.mu.Lock()
+	reporter.compute = source
+	reporter.mu.Unlock()
+	reporter.sampleCompute()
+}
+
+func (reporter *statusReporter) sampleCompute() {
+	reporter.mu.Lock()
+	source := reporter.compute
+	reporter.mu.Unlock()
+	if source == nil {
+		return
+	}
+	encoded, err := json.Marshal(source.ComputeStatus())
+	if err != nil {
+		reporter.logger.Warn("could not encode compute status", "error", err)
+		return
+	}
+	reporter.update(func(status *FleetStatus) { status.Compute = encoded })
+}
+
 func (reporter *statusReporter) start(ctx context.Context, budget *usageBudget) {
 	if reporter == nil {
 		return
@@ -337,8 +373,10 @@ func (reporter *statusReporter) loop(ctx context.Context, budget *usageBudget, d
 	defer close(done)
 	flushTicker := time.NewTicker(time.Second)
 	heartbeatTicker := time.NewTicker(30 * time.Second)
+	computeTicker := time.NewTicker(computeStatusInterval)
 	defer flushTicker.Stop()
 	defer heartbeatTicker.Stop()
+	defer computeTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -347,6 +385,8 @@ func (reporter *statusReporter) loop(ctx context.Context, budget *usageBudget, d
 			reporter.flush()
 		case now := <-heartbeatTicker.C:
 			reporter.budget(budget.snapshot(now))
+		case <-computeTicker.C:
+			reporter.sampleCompute()
 		}
 	}
 }

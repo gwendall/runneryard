@@ -14,8 +14,8 @@ func TestRunnerEntrypointPreservesCompleteLeaseAcrossPrivilegeEscalation(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(contents), "--preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE,RUNNERYARD_DOCKER_DNS,RUNNERYARD_DIAG_HOLD,RUNNERYARD_IDLE_TIMEOUT") {
-		t.Fatal("sudo must preserve the JIT configuration, lease deadline, and provider Docker DNS policy")
+	if !strings.Contains(string(contents), "--preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE,RUNNERYARD_DOCKER_DNS,RUNNERYARD_DIAG_HOLD,RUNNERYARD_IDLE_TIMEOUT,RUNNERYARD_REUSED_SLOT") {
+		t.Fatal("sudo must preserve the JIT configuration, lease deadline, provider Docker DNS policy, and pool slot mode")
 	}
 	if output, err := exec.Command("bash", "-n", entrypoint).CombinedOutput(); err != nil {
 		t.Fatalf("runner entrypoint syntax: %v: %s", err, output)
@@ -145,5 +145,36 @@ func TestRunnerEntrypointRestoresRunnerHomeOwnershipBeforeStartingRunner(t *test
 	}
 	if strings.Index(source, `rm -f "$marker_dir/home-ownership-restored"`) > strings.Index(source, "find /home/runner -xdev") {
 		t.Fatal("a stale ownership marker must be cleared before the probe writes a fresh one")
+	}
+}
+
+func TestRunnerEntrypointClearsAReusedSlotBeforeStartingRunner(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "runner-entrypoint"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(contents)
+	runnerStart := strings.Index(source, "/home/runner/run.sh &")
+	for _, step := range []string{
+		`chown runner "$mount_point"`,
+		`if (( reused_slot )); then`,
+		`docker rm --force --volumes $containers`,
+		`docker network prune --force`,
+		`docker volume prune --all --force`,
+		`if ! reset_docker_state; then`,
+	} {
+		index := strings.Index(source, step)
+		if index < 0 || index > runnerStart {
+			t.Fatalf("a reused slot must run %q before the runner can take a job", step)
+		}
+	}
+	if strings.Contains(source, "docker system prune") || strings.Contains(source, "docker image prune") || strings.Contains(source, "builder prune") {
+		t.Fatal("a reused slot keeps its images and build cache")
+	}
+	if strings.Index(source, `chown runner "$mount_point"`) > strings.Index(source, "find /home/runner -xdev") {
+		t.Fatal("pool volume mount points must belong to runner before the ownership net scans the home")
+	}
+	if !strings.Contains(source, `fail 1 "could not clear the previous job's Docker state; releasing the worker"`) {
+		t.Fatal("a slot whose previous Docker state cannot be cleared must not run a job")
 	}
 }
