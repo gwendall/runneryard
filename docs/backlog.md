@@ -25,7 +25,10 @@ shortage. 0.4.5 to 0.4.10 shipped derived worker images declared with
 `init --with-workflows` (what a repository's workflow shape costs on a fleet),
 `doctor` checks for alerting (`ALERT_WEBHOOK_URL` is now required), the budget
 horizon, and the Fly capacity margin, `budget estimate` with Fly's price table
-(the pricing half of C1; the per-job receipt remains), and Go 1.26.9. P1 was
+(the pricing half of C1; the per-job receipt remains), and Go 1.26.9.
+Unreleased: the documentation half of C3 (the Hetzner guide states hourly
+billing, and `budget estimate --provider hetzner` prices whole server hours);
+reusing a server within its paid hour remains. P1 was
 already done: the release has published and canaried `linux/amd64` and
 `linux/arm64` since #51. Next in line: C1, R10, R13, C4, P3, S3, O1, O3, O4,
 W1, W6, H5.

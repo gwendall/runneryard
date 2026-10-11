@@ -4,6 +4,23 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
+## Unreleased
+
+- `runneryard budget estimate --provider hetzner` prices the Hetzner bill: every job gets
+  its own server, and Hetzner rounds each server up to the next hour, so each job is billed
+  whole hours whatever its length. The output shows the hours billed per job, the share
+  actually used, and warns when most of the bill is unused time. Built-in Germany and
+  Finland list prices (in force since 2026-06-15, read 2026-10-11) cover `cx33`, `cx53`,
+  `cpx22`, `cpx32`, `cpx42` and `ccx33`; `--hourly-price` covers other types and
+  locations. A shape flag of the other provider (`--cpus` with Hetzner, `--server-type`
+  with Fly) is refused instead of silently ignored. Why: since the 2026-06-15 price
+  change, 350 three-minute jobs a day cost about EUR 600 a month on per-job `cpx32`
+  servers, against about USD 105 on Fly.
+- The Hetzner guide documents hourly billing and why the default server type stays
+  `cpx32`: `cx33` is about a quarter of the price for the same 4 vCPU and 8 GB, but
+  Hetzner lists its cost-optimized line as currently not available, and a type that
+  cannot be ordered rejects every launch.
+
 ## 0.4.10 (2026-10-11)
 
 - `runneryard budget estimate` sizes `RUNNER_USAGE_BUDGET` and the Fly compute bill from

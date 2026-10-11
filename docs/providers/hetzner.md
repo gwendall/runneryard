@@ -10,6 +10,38 @@ ownership filtering, bootstrap isolation, and idempotent deletion. It still
 needs a public release canary in a real Hetzner project before production use.
 Start with a low-risk private repository.
 
+## Billing: every job pays whole hours
+
+Hetzner rounds each server's usage up to the next hour and bills it until the
+server is deleted, powered on or not. RunnerYard creates one server per job, so
+every job pays at least one full hour: a 3-minute job on `cpx32` costs as much
+as a 59-minute one. Prices for new servers rose on 2026-06-15, and every worker
+is a new server. At the list price read on 2026-10-11 (EUR 0.0569 an hour for
+`cpx32` in Germany and Finland, excluding VAT and the primary IPv4), 350
+three-minute jobs a day cost about EUR 600 a month, against about USD 105 on a
+Fly `performance-2x` worker billed per second.
+
+Estimate your own workload before routing it:
+
+```sh
+npx runneryard budget estimate --provider hetzner \
+  --jobs-per-day 350 --minutes-per-job 3 --max-runners 10
+```
+
+It prints the whole hours each job's server is billed, the share actually used,
+and the bill per window. Built-in prices cover `cx33`, `cx53`, `cpx22`,
+`cpx32`, `cpx42`, and `ccx33` in Germany and Finland; pass `--hourly-price` for
+another type or location.
+
+Per-job Hetzner servers suit jobs that run close to a whole hour, or a low job
+count. For many short jobs, prefer Fly. `cx33` has the same 4 vCPU and 8 GB as
+`cpx32` at about a quarter of the price, but Hetzner listed its cost-optimized
+line as currently not available on 2026-10-11, and a type that cannot be
+ordered rejects every launch. The default therefore stays `cpx32`, the cheapest
+8 GB type that could be ordered. Set `RUNNER_HETZNER_SERVER_TYPE=cx33` once
+`hcloud server create --type cx33` succeeds in your location. Reusing a server
+within its paid hour is backlog item C3.
+
 ## Isolation layout
 
 Create a dedicated Hetzner Cloud project for the fleet. Do not connect it to a

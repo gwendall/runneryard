@@ -57,7 +57,7 @@ Each launch first reserves one full `RUNNER_MAX_LIFETIME`. A budget therefore
 admits at most `floor(remaining budget / maximum lifetime)` new workers, even
 when `MAX_RUNNERS` is higher. Set the rolling budget from an explicit monthly
 worker-time allowance (`runneryard budget estimate` computes one from jobs a day
-and minutes per job), and keep a separate provider spending alert for the
+and minutes per job, with the Fly or Hetzner compute bill), and keep a separate provider spending alert for the
 controller, storage, images, network, taxes, and price changes.
 
 Provider throttling, provider-side errors, and transport failures are retried
@@ -145,10 +145,16 @@ an upgrade. Set both variables explicitly to opt in to a new shape.
 | Variable | Purpose | Generated value |
 | --- | --- | --- |
 | `RUNNER_HETZNER_LOCATION` | Worker location. | `fsn1`, or `--region` |
-| `RUNNER_HETZNER_SERVER_TYPE` | Hetzner server shape. | `cpx32` |
+| `RUNNER_HETZNER_SERVER_TYPE` | Hetzner server shape. Each job's server is billed whole hours. | `cpx32` |
 | `RUNNER_HETZNER_IMAGE` | Host image or prequalified snapshot ID. | `docker-ce` |
 | `RUNNER_HETZNER_FIREWALL_ID` | Mandatory firewall with no inbound rules. | Operator supplied. |
 | `RUNNER_HETZNER_NETWORK_ID` | Optional dedicated private network. | Empty. |
+
+Hetzner rounds every server up to a whole hour and RunnerYard creates one
+server per job, so a short job pays a full hour. Run
+`runneryard budget estimate --provider hetzner` before routing short jobs to
+Hetzner; [the provider guide](providers/hetzner.md#billing-every-job-pays-whole-hours)
+explains the choice of server type.
 
 `HCLOUD_TOKEN` must be read/write scoped to a dedicated CI project and stored
 only on the controller. A Hetzner firewall does not filter private-network

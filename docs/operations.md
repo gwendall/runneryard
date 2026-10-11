@@ -391,7 +391,9 @@ and the 15 s teardown grace (`--overhead`), adds the margin, then adds one
 `RUNNER_MAX_LIFETIME` per `MAX_RUNNERS` because every running worker holds that
 reservation until it settles. It prints `RUNNER_USAGE_BUDGET` as a duration the
 controller accepts, and a Fly compute estimate from the iad/ewr rates times
-`--price-multiplier` (cdg is 1.1346; the pricing page lists the others). Count
+`--price-multiplier` (cdg is 1.1346; the pricing page lists the others). With
+`--provider hetzner` it prices whole server hours instead: Hetzner rounds each
+server up to the next hour, and every job gets its own server. Count
 jobs, not workflow runs: every job is one worker. After a week of traffic, read
 `burn` and `horizon` in `runneryard status` instead of the estimate.
 

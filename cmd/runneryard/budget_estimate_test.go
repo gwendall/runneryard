@@ -10,6 +10,7 @@ import (
 
 func estimateWorkload() budgetWorkload {
 	return budgetWorkload{
+		Provider:        "fly",
 		JobsPerDay:      100,
 		MinutesPerJob:   3,
 		JobOverhead:     time.Minute,
@@ -89,6 +90,7 @@ func TestBudgetEstimateRejectsImpossibleWorkloads(t *testing.T) {
 		"free region":          func(w *budgetWorkload) { w.PriceMultiplier = 0 },
 		"unknown cpu kind":     func(w *budgetWorkload) { w.CPUKind = "exotic" },
 		"no memory":            func(w *budgetWorkload) { w.MemoryMB = 0 },
+		"unknown provider":     func(w *budgetWorkload) { w.Provider = "aws" },
 	} {
 		workload := estimateWorkload()
 		mutate(&workload)
@@ -113,6 +115,97 @@ func TestBudgetEstimatePrintsABudgetTheControllerAccepts(t *testing.T) {
 	parsed, err := time.ParseDuration("260h")
 	if err != nil || parsed < workload.MaxLifetime {
 		t.Fatalf("suggestion %v must parse and cover one RUNNER_MAX_LIFETIME", parsed)
+	}
+}
+
+func hetznerWorkload() budgetWorkload {
+	workload := estimateWorkload()
+	workload.Provider = "hetzner"
+	workload.ServerType = "cpx32"
+	return workload
+}
+
+func TestBudgetEstimateBillsEachHetznerServerWholeHours(t *testing.T) {
+	estimate, err := estimateBudget(hetznerWorkload())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 3 000 jobs of 4 min, each on its own server billed one full hour.
+	if estimate.BilledHoursPerJob != 1 || estimate.PricePerHourEUR != 0.0569 {
+		t.Fatalf("billed %dh at EUR %g, want 1h at the cpx32 list price", estimate.BilledHoursPerJob, estimate.PricePerHourEUR)
+	}
+	if math.Abs(estimate.ComputeEUR-3000*0.0569) > 1e-9 {
+		t.Fatalf("compute = EUR %.4f, want EUR %.4f", estimate.ComputeEUR, 3000*0.0569)
+	}
+	// The usage budget counts worker time, not billed hours, on every provider.
+	if estimate.SuggestedBudget != 260*time.Hour {
+		t.Fatalf("suggested budget = %s, want the provider-independent 260h", estimate.SuggestedBudget)
+	}
+}
+
+func TestBudgetEstimateRoundsAHetznerJobUpToTheNextHour(t *testing.T) {
+	for minutes, want := range map[float64]int64{59: 1, 60: 2, 119: 2, 120: 3} {
+		workload := hetznerWorkload()
+		workload.MinutesPerJob = minutes // plus 1 min of overhead
+		estimate, err := estimateBudget(workload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if estimate.BilledHoursPerJob != want {
+			t.Errorf("%s per job billed %dh, want %dh", estimate.PerJob, estimate.BilledHoursPerJob, want)
+		}
+	}
+}
+
+func TestBudgetEstimateNeedsAPriceForAnUnlistedHetznerType(t *testing.T) {
+	workload := hetznerWorkload()
+	workload.ServerType = "cax21"
+	if _, err := estimateBudget(workload); err == nil || !strings.Contains(err.Error(), "--hourly-price") {
+		t.Fatalf("unlisted type without a price: err = %v, want a request for --hourly-price", err)
+	}
+	workload.HourlyPriceEUR = 0.02
+	estimate, err := estimateBudget(workload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if estimate.PricePerHourEUR != 0.02 {
+		t.Fatalf("price = EUR %g, want the operator's EUR 0.02", estimate.PricePerHourEUR)
+	}
+	workload.HourlyPriceEUR = -1
+	if _, err := estimateBudget(workload); err == nil {
+		t.Fatal("estimate accepted a negative hourly price")
+	}
+}
+
+func TestBudgetEstimateWarnsWhenHetznerBillsMostlyIdleTime(t *testing.T) {
+	workload := hetznerWorkload()
+	estimate, err := estimateBudget(workload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	writeBudgetEstimate(&out, workload, estimate)
+	for _, want := range []string{"billed 1h for 4m0s of use (7%)", "most of this bill is unused time", "primary IPv4"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "Fly compute") {
+		t.Errorf("a Hetzner estimate must not price Fly:\n%s", out.String())
+	}
+}
+
+func TestBudgetEstimateRejectsAnotherProvidersShapeFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"--provider", "hetzner", "--cpus", "4"},
+		{"--provider", "hetzner", "--price-multiplier", "1.13"},
+		{"--hourly-price", "0.05"},
+		{"--provider", "fly", "--server-type", "cx33"},
+	} {
+		args = append([]string{"--jobs-per-day", "100", "--minutes-per-job", "3"}, args...)
+		if err := runBudgetEstimate(args); err == nil || !strings.Contains(err.Error(), "applies to --provider") {
+			t.Errorf("%v: err = %v, want a provider-flag refusal", args, err)
+		}
 	}
 }
 
