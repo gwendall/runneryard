@@ -109,6 +109,8 @@ Read the complete [quickstart](docs/quickstart.md) before routing production CI.
 - Sizing or changing a fleet: read the
   [configuration reference](docs/configuration.md) and
   [operations guide](docs/operations.md).
+- Persistent machines shared by several runners, for private repositories:
+  read [Host pools](docs/pools.md).
 - Security review or removal: read the [security model](docs/security.md).
 - New provider: implement the [adapter contract](docs/adapter-contract.md).
 - Contributor or coding agent: read [AGENTS.md](AGENTS.md) and

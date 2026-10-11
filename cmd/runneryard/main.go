@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/gwendall/runneryard/controller"
+	"github.com/gwendall/runneryard/githubapp"
 )
 
 var (
@@ -47,6 +48,8 @@ func run(args []string) error {
 		return runBudget(args)
 	case "lint-workflows":
 		return runLintWorkflows(args)
+	case "host":
+		return runHost(args)
 	case "version", "--version", "-v":
 		fmt.Printf("runneryard %s (%s)\n", version, commitSHA)
 		return nil
@@ -71,7 +74,7 @@ func serve() error {
 	if err != nil {
 		return fmt.Errorf("create GitHub adapter: %w", err)
 	}
-	compute, err := cfg.compute()
+	compute, err := cfg.compute(logger)
 	if err != nil {
 		return fmt.Errorf("create compute adapter: %w", err)
 	}
@@ -80,10 +83,21 @@ func serve() error {
 		return fmt.Errorf("create controller: %w", err)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	signalCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	ctx, stop := context.WithCancelCause(signalCtx)
+	defer stop(nil)
+	if cfg.Pools != nil {
+		if err := cfg.checkPoolTrust(ctx, githubapp.API{}); err != nil {
+			return err
+		}
+		go cfg.watchPoolTrust(ctx, githubapp.API{}, poolTrustInterval, stop, logger)
+	}
 	if err := fleet.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return fmt.Errorf("controller stopped: %w", err)
+	}
+	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+		return fmt.Errorf("controller stopped: %w", cause)
 	}
 	return nil
 }
@@ -100,6 +114,7 @@ Usage:
   runneryard budget init      Initialize the durable usage ledger once
   runneryard budget estimate  Size RUNNER_USAGE_BUDGET and the Fly or Hetzner bill from a workload
   runneryard lint-workflows   Say what a repository's workflows will cost on a fleet
+  runneryard host             Run or install the agent of a pool host
   runneryard serve            Run the fleet controller (default)
   runneryard version          Print version information
 

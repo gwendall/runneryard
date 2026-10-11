@@ -97,6 +97,33 @@ Hetzner Cloud firewalls protect public networking only. Do not attach workers
 to a private network that can reach production. A separate Cloud project is the
 safest default boundary.
 
+## Host pools
+
+A pool host runs one job after another, several at a time, in privileged
+containers on one kernel. Those slots are not isolated from each other against
+hostile code: a job can reach the other slots, their just-in-time
+configurations, and the caches the next job on its slot reuses. Pools are
+therefore limited to a single trust domain. The pools file must declare
+`trust: private`, and the controller refuses to contact a pool host unless
+GitHub confirms that the target is a private or internal repository, or an
+organization runner group that does not allow public repositories. It checks
+again every hour and stops when the answer changes. Disable fork pull request
+workflows on every repository a pool serves.
+
+The controller reaches its hosts over SSH with a dedicated ed25519 key that
+never leaves the controller. Hosts accept it only as a forced command running
+the host agent, which can start the configured runner image in a slot, list
+slots, and remove a slot's container; it cannot run a shell or another image.
+Host keys are pinned: derived per server from the controller key for Hetzner
+hosts, listed by the operator for static ones. A host never holds
+`HCLOUD_TOKEN`, the GitHub App key, or the controller key, and never connects
+to the controller.
+
+Hetzner pool hosts carry their own labels and are invisible to the ephemeral
+adapter; the pool deletes only servers that carry all of its labels. Attach a
+dedicated firewall that admits SSH from the controller only. See
+[Host pools](pools.md).
+
 ## Supply chain
 
 The runtime pins the Ubuntu base, official GitHub Actions runner, and Node 22

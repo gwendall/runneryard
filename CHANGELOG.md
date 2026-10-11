@@ -6,6 +6,23 @@ operator-facing schema or a trust boundary is called out here first.
 
 ## Unreleased
 
+- Host pools (preview): `RUNNER_POOLS_FILE` declares machines that stay up and run
+  several jobs at once, one per slot, with the slot's Docker images, build cache,
+  workspace and tool caches kept between jobs. A pool is either Hetzner servers the
+  controller creates and returns before their next paid hour (`min_hosts`,
+  `max_hosts`), or machines the operator prepared with `runneryard host install`.
+  The controller tries the tiers in `placement` order and moves to the next one only
+  when a pool is full, so the per-job ephemeral provider stays the overflow; without a
+  pools file nothing changes. Pools require `trust: private`: the controller checks
+  with GitHub at startup and every hour that the target is a private or internal
+  repository, or a runner group that refuses public repositories, and stops
+  otherwise, because slots on one host are privileged containers that a hostile job
+  could reach. The controller drives hosts over SSH with its own ed25519 key, forced to
+  the host agent on every host, and pins every host key. `status.json` gains a
+  `compute` object with each pool's hosts, busy slots, overflow count and billed
+  hours. Why: 350 three-minute jobs a day cost about EUR 600 a month on per-job
+  Hetzner servers billed by the started hour; one warm four-slot host costs about EUR
+  81, and a free slot starts a job on warm caches in seconds. See `docs/pools.md`.
 - `runneryard budget estimate --provider hetzner` prices the Hetzner bill: every job gets
   its own server, and Hetzner rounds each server up to the next hour, so each job is billed
   whole hours whatever its length. The output shows the hours billed per job, the share

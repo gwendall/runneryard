@@ -10,6 +10,10 @@
 !controller/**
 !githubapp/
 !githubapp/**
+!hostagent/
+!hostagent/**
+!pool/
+!pool/**
 !provider/
 !provider/**
 !providers/

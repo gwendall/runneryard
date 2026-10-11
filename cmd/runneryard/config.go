@@ -62,7 +62,14 @@ type appConfig struct {
 	DanglingTimeout    time.Duration
 	AlertWebhookURL    string
 	LogLevel           slog.Level
+	// PoolsFile places workers on pools of shared hosts first; Pools is its
+	// validated content. Without it every job gets its own worker.
+	PoolsFile string
+	Pools     *poolsFile
 }
+
+// computeProviderNone runs pools without an ephemeral tier.
+const computeProviderNone = "none"
 
 func loadConfig() (appConfig, error) {
 	runnerCPUKind := strings.TrimSpace(os.Getenv("RUNNER_CPU_KIND"))
@@ -99,6 +106,7 @@ func loadConfig() (appConfig, error) {
 		RunnerStatusFile:   strings.TrimSpace(os.Getenv("RUNNER_STATUS_FILE")),
 		AlertWebhookURL:    strings.TrimSpace(os.Getenv("ALERT_WEBHOOK_URL")),
 		LogLevel:           parseLogLevel(envOr("LOG_LEVEL", "info")),
+		PoolsFile:          strings.TrimSpace(os.Getenv(poolsFileEnv)),
 	}
 
 	var err error
@@ -172,6 +180,12 @@ func loadConfig() (appConfig, error) {
 		PrivateKey:     privateKey,
 	}
 
+	if cfg.PoolsFile != "" {
+		if cfg.Pools, err = loadPoolsFile(cfg.PoolsFile); err != nil {
+			return appConfig{}, err
+		}
+	}
+
 	if err := cfg.validate(); err != nil {
 		return appConfig{}, err
 	}
@@ -208,8 +222,17 @@ func (c appConfig) validate() error {
 		if c.HetznerNetworkID < 0 {
 			return fmt.Errorf("RUNNER_HETZNER_NETWORK_ID cannot be negative")
 		}
+	case computeProviderNone:
+		if c.Pools == nil {
+			return fmt.Errorf("COMPUTE_PROVIDER=none requires %s", poolsFileEnv)
+		}
 	default:
 		return fmt.Errorf("unsupported COMPUTE_PROVIDER %q", c.ComputeProvider)
+	}
+	if c.Pools != nil {
+		if err := c.Pools.validate(c); err != nil {
+			return err
+		}
 	}
 	if c.MinWorkers < 0 || c.MaxWorkers < 1 || c.MinWorkers > c.MaxWorkers {
 		return fmt.Errorf("worker bounds must satisfy 0 <= MIN_RUNNERS <= MAX_RUNNERS and MAX_RUNNERS >= 1")
@@ -269,8 +292,23 @@ func (c appConfig) githubClient() (*scaleset.Client, error) {
 	})
 }
 
-func (c appConfig) compute() (provider.Compute, error) {
+// compute returns the configured workers: the ephemeral provider, behind the
+// pools when a pools file is set.
+func (c appConfig) compute(logger *slog.Logger) (provider.Compute, error) {
+	ephemeral, err := c.ephemeralCompute()
+	if err != nil {
+		return nil, err
+	}
+	if c.Pools == nil {
+		return ephemeral, nil
+	}
+	return c.withPools(ephemeral, logger)
+}
+
+func (c appConfig) ephemeralCompute() (provider.Compute, error) {
 	switch c.ComputeProvider {
+	case computeProviderNone:
+		return nil, nil
 	case "fly":
 		return flyprovider.New(flyprovider.Config{
 			APIToken:     c.FlyAPIToken,
