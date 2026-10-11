@@ -23,6 +23,31 @@ const DefaultLabel = "queue"
 // branch, never from a pull request.
 const ConfigPath = ".github/merge-queue.yml"
 
+// The workflow reads the queue App's credentials from these repository
+// settings: the client ID as an Actions variable, the key as a secret.
+const (
+	AppClientIDVariable = "MERGE_QUEUE_APP_CLIENT_ID"
+	AppPrivateKeySecret = "MERGE_QUEUE_APP_PRIVATE_KEY" // #nosec G101 -- the secret's name, not a credential
+)
+
+// AppPermissions are the repository permissions of the queue's GitHub App,
+// as docs/merge-queue.md lists them. workflows adds the one a queued pull
+// request needs to change .github/workflows.
+func AppPermissions(workflows bool) map[string]string {
+	permissions := map[string]string{
+		"actions":       "write", // find, cancel and re-run workflow runs
+		"checks":        "read",  // read check runs on the top of a stack
+		"contents":      "write", // read the configuration, push stacks, fast-forward the target
+		"issues":        "write", // list labeled pull requests, edit the status comment, remove the label
+		"metadata":      "read",  // collaborator permissions
+		"pull_requests": "write", // read pull requests, comment on them
+	}
+	if workflows {
+		permissions["workflows"] = "write"
+	}
+	return permissions
+}
+
 var (
 	// ErrRebaseConflict means a pull request does not rebase cleanly onto
 	// the stack below it. It is deterministic, so it is never retried.

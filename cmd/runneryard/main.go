@@ -102,7 +102,7 @@ Usage:
   runneryard budget init      Initialize the durable usage ledger once
   runneryard budget estimate  Size RUNNER_USAGE_BUDGET and the Fly or Hetzner bill from a workload
   runneryard lint-workflows   Say what a repository's workflows will cost on a fleet
-  runneryard merge-queue tick Run one merge queue tick in a workflow (preview)
+  runneryard merge-queue      Run a merge queue tick or set up its App (preview)
   runneryard serve            Run the fleet controller (default)
   runneryard version          Print version information
 

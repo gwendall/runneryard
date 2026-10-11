@@ -17,6 +17,16 @@ operator-facing schema or a trust boundary is called out here first.
   See `docs/merge-queue.md` and `docs/examples/merge-queue.yml`. Why: GitHub's native
   merge queue needs a ruleset, which GitHub Free does not offer on private repositories,
   and a hosted queue needs access to the code.
+- Preview: `runneryard merge-queue setup --github <repository URL>` creates the queue's
+  own GitHub App from a manifest, private to the owner and without a webhook, waits for
+  its installation on the repository, verifies its permissions, and stores
+  `MERGE_QUEUE_APP_CLIENT_ID` and the sealed secret `MERGE_QUEUE_APP_PRIVATE_KEY` there
+  through gh. The key is never printed or written to disk. `--client-id` and
+  `--private-key-file` add a further repository of the same owner to an existing queue App.
+- Fix: `runneryard auth github create` prefilled an App name such as
+  `RunnerYard <owner> <repository> <suffix>` that could exceed GitHub's 34 character limit,
+  so the operator had to shorten it by hand. Names now fit: the repository is truncated or
+  dropped first, then the owner, and the random suffix stays whole.
 - `runneryard budget estimate --provider hetzner` prices the Hetzner bill: every job gets
   its own server, and Hetzner rounds each server up to the next hour, so each job is billed
   whole hours whatever its length. The output shows the hours billed per job, the share

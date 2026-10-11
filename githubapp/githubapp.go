@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,7 +36,17 @@ var (
 	safeRepo  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
 	safeID    = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 	safeSlug  = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,99})$`)
+	// safePermission matches GitHub App permission names.
+	safePermission = regexp.MustCompile(`^[a-z][a-z_]{1,63}$`)
 )
+
+// permissionLevels orders GitHub App permission levels.
+var permissionLevels = map[string]int{"read": 1, "write": 2, "admin": 3}
+
+// grants reports whether an installation permission level covers want.
+func grants(have, want string) bool {
+	return permissionLevels[have] >= permissionLevels[want] && permissionLevels[want] > 0
+}
 
 type OwnerKind string
 
@@ -109,8 +120,57 @@ type Browser interface {
 	Open(string) error
 }
 
+// Profile is the kind of App a bootstrap creates and verifies. Options
+// without one create the runner App of one fleet (RunnerProfile).
+type Profile struct {
+	// Name starts the App name and is never shortened. Qualifiers, such as
+	// the owner and repository, follow it; the last ones are truncated or
+	// dropped first so the random suffix that keeps the name unique always
+	// fits GitHub's limit.
+	Name        string
+	Qualifiers  []string
+	Description string
+	// Permissions are granted to the App, and verification requires the
+	// installation to grant each of them at least at that level.
+	Permissions map[string]string
+	// Explanation tells the operator why the App needs these permissions.
+	Explanation string
+}
+
+// RunnerProfile is the App a RunnerYard controller uses for target.
+func RunnerProfile(target Target) Profile {
+	qualifiers := []string{target.Owner}
+	if target.Repository != "" {
+		qualifiers = append(qualifiers, target.Repository)
+	}
+	return Profile{
+		Name:        "RunnerYard",
+		Qualifiers:  qualifiers,
+		Description: "Dedicated credentials for one self-hosted RunnerYard fleet.",
+		Permissions: map[string]string{requiredPermission(target): "write"},
+		Explanation: permissionExplanation(target),
+	}
+}
+
+func (profile Profile) validate() error {
+	if profile.Name == "" || len(profile.Permissions) == 0 {
+		return errors.New("GitHub App profile needs a name and permissions")
+	}
+	if len(profile.Name)+1+2*nameSuffixBytes > maxAppNameLength {
+		return fmt.Errorf("GitHub App profile name %q leaves no room for the random suffix", profile.Name)
+	}
+	for name, level := range profile.Permissions {
+		if !safePermission.MatchString(name) || permissionLevels[level] == 0 {
+			return fmt.Errorf("GitHub App profile has an invalid permission %s: %s", name, level)
+		}
+	}
+	return nil
+}
+
 type Options struct {
-	Target      Target
+	Target Target
+	// Profile is the App to create; nil means RunnerProfile(Target).
+	Profile     *Profile
 	Sink        SecretSink
 	Browser     Browser
 	NoBrowser   bool
@@ -126,49 +186,21 @@ type Options struct {
 
 type Result struct {
 	AppURL          string
+	Slug            string
 	InstallationID  int64
 	SinkDescription string
+	// AllRepositories is true when the installation covers every
+	// repository of the owner instead of selected ones.
+	AllRepositories bool
 }
 
 // Bootstrap runs GitHub's App Manifest Flow on a loopback listener, verifies
 // that the resulting installation can reach the requested target, and only
 // then hands credentials to the configured sink.
 func Bootstrap(ctx context.Context, options Options) (Result, error) {
-	if err := options.Target.Validate(); err != nil {
+	options, profile, err := options.prepare()
+	if err != nil {
 		return Result{}, err
-	}
-	if options.Sink == nil {
-		return Result{}, errors.New("credential sink is required")
-	}
-	if options.Browser == nil && !options.NoBrowser {
-		return Result{}, errors.New("browser opener is required unless --no-browser is used")
-	}
-	if options.Timeout <= 0 {
-		options.Timeout = 10 * time.Minute
-	}
-	if options.Timeout > time.Hour {
-		return Result{}, errors.New("GitHub App setup timeout cannot exceed one hour")
-	}
-	if options.APIBaseURL == "" {
-		options.APIBaseURL = defaultAPIURL
-	}
-	if options.SiteBaseURL == "" {
-		options.SiteBaseURL = defaultSiteURL
-	}
-	if options.HomepageURL == "" {
-		options.HomepageURL = "https://runneryard.com"
-	}
-	if options.HTTPClient == nil {
-		options.HTTPClient = &http.Client{Timeout: 15 * time.Second}
-	}
-	if options.Output == nil {
-		options.Output = io.Discard
-	}
-	if options.Now == nil {
-		options.Now = time.Now
-	}
-	if options.Listen == nil {
-		options.Listen = net.Listen
 	}
 
 	setupCtx, cancel := context.WithTimeout(ctx, options.Timeout)
@@ -183,13 +215,13 @@ func Bootstrap(ctx context.Context, options Options) (Result, error) {
 	if err != nil {
 		return Result{}, errors.New("generate setup state")
 	}
-	nameSuffix, err := randomHex(4)
+	nameSuffix, err := randomHex(nameSuffixBytes)
 	if err != nil {
 		return Result{}, errors.New("generate app name")
 	}
 	callbackBase := "http://" + listener.Addr().String()
 	callbackURL := callbackBase + "/callback"
-	manifest, err := manifestJSON(options.Target, callbackURL, options.HomepageURL, nameSuffix)
+	manifest, err := manifestJSON(profile, callbackURL, options.HomepageURL, nameSuffix)
 	if err != nil {
 		return Result{}, err
 	}
@@ -222,7 +254,7 @@ func Bootstrap(ctx context.Context, options Options) (Result, error) {
 
 	startURL := callbackBase + "/start"
 	fmt.Fprintf(options.Output, "RunnerYard will create a private GitHub App owned by %s.\n", options.Target.Owner)
-	fmt.Fprintln(options.Output, permissionExplanation(options.Target))
+	fmt.Fprintln(options.Output, profile.Explanation)
 	fmt.Fprintln(options.Output, "The app subscribes to no webhooks and RunnerYard receives no credential.")
 	if err := exposeAndOpen(
 		options.Output,
@@ -243,37 +275,129 @@ func Bootstrap(ctx context.Context, options Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	installURL, err := installationURL(credentials)
+	fmt.Fprintln(options.Output, "GitHub App created. Approve its installation only for the requested target.")
+	return installAndStore(setupCtx, api, options, profile, credentials, true)
+}
+
+// Reuse installs an existing App, identified by its client ID and one of its
+// private keys, on options.Target, verifies the installation against the
+// profile, and stores the credentials through the sink. It opens the
+// installation page only when the App cannot reach the target yet.
+func Reuse(ctx context.Context, options Options, credentials Credentials) (Result, error) {
+	options, profile, err := options.prepare()
 	if err != nil {
 		return Result{}, err
 	}
-	fmt.Fprintln(options.Output, "GitHub App created. Approve its installation only for the requested target.")
-	if err := exposeAndOpen(
-		options.Output,
-		options.Browser,
-		options.NoBrowser,
-		"GitHub installation URL (safe fallback if the browser opens elsewhere)",
-		installURL,
-	); err != nil {
-		return Result{}, fmt.Errorf("open installation page: %w; rerun with --no-browser", err)
+	setupCtx, cancel := context.WithTimeout(ctx, options.Timeout)
+	defer cancel()
+	api := API{BaseURL: options.APIBaseURL, Client: options.HTTPClient, Now: options.Now}
+	identified, err := api.Identify(setupCtx, credentials)
+	if err != nil {
+		return Result{}, err
 	}
+	appToken, err := api.appJWT(identified)
+	if err != nil {
+		return Result{}, err
+	}
+	_, err = api.targetInstallation(setupCtx, appToken, options.Target)
+	var statusError *githubStatusError
+	switch {
+	case err == nil:
+		return installAndStore(setupCtx, api, options, profile, identified, false)
+	case errors.As(err, &statusError) && statusError.StatusCode == http.StatusNotFound:
+		fmt.Fprintf(options.Output, "Add %s to the installation of %s, and only that repository.\n", options.Target.ConfigURL, identified.Slug)
+		return installAndStore(setupCtx, api, options, profile, identified, true)
+	default:
+		return Result{}, fmt.Errorf("look up the installation for %s: %w", options.Target.ConfigURL, err)
+	}
+}
 
-	installationID, err := api.WaitForInstallation(setupCtx, credentials, options.Target, 2*time.Second)
+// installAndStore waits for the App's installation on the target, opening
+// the installation page first when open is set, verifies it against the
+// profile, and only then hands the credentials to the sink.
+func installAndStore(ctx context.Context, api API, options Options, profile Profile, credentials Credentials, open bool) (Result, error) {
+	if open {
+		installURL, err := installationURL(credentials)
+		if err != nil {
+			return Result{}, err
+		}
+		if err := exposeAndOpen(
+			options.Output,
+			options.Browser,
+			options.NoBrowser,
+			"GitHub installation URL (safe fallback if the browser opens elsewhere)",
+			installURL,
+		); err != nil {
+			return Result{}, fmt.Errorf("open installation page: %w; rerun with --no-browser", err)
+		}
+	}
+	installationID, err := api.WaitForInstallationFor(ctx, credentials, options.Target, profile, 2*time.Second)
 	if err != nil {
 		return Result{}, err
 	}
 	credentials.InstallationID = installationID
-	if err := api.Verify(setupCtx, credentials, options.Target); err != nil {
+	installation, err := api.verify(ctx, credentials, options.Target, profile)
+	if err != nil {
 		return Result{}, err
 	}
-	if err := options.Sink.Store(setupCtx, credentials); err != nil {
+	if err := options.Sink.Store(ctx, credentials); err != nil {
 		return Result{}, fmt.Errorf("store verified GitHub App credentials: %w", err)
 	}
 	return Result{
 		AppURL:          credentials.HTMLURL,
+		Slug:            credentials.Slug,
 		InstallationID:  credentials.InstallationID,
 		SinkDescription: options.Sink.Description(),
+		AllRepositories: installation.RepositorySelection == "all",
 	}, nil
+}
+
+// prepare validates options and fills their defaults.
+func (options Options) prepare() (Options, Profile, error) {
+	if err := options.Target.Validate(); err != nil {
+		return options, Profile{}, err
+	}
+	profile := RunnerProfile(options.Target)
+	if options.Profile != nil {
+		profile = *options.Profile
+	}
+	if err := profile.validate(); err != nil {
+		return options, Profile{}, err
+	}
+	if options.Sink == nil {
+		return options, Profile{}, errors.New("credential sink is required")
+	}
+	if options.Browser == nil && !options.NoBrowser {
+		return options, Profile{}, errors.New("browser opener is required unless --no-browser is used")
+	}
+	if options.Timeout <= 0 {
+		options.Timeout = 10 * time.Minute
+	}
+	if options.Timeout > time.Hour {
+		return options, Profile{}, errors.New("GitHub App setup timeout cannot exceed one hour")
+	}
+	if options.APIBaseURL == "" {
+		options.APIBaseURL = defaultAPIURL
+	}
+	if options.SiteBaseURL == "" {
+		options.SiteBaseURL = defaultSiteURL
+	}
+	if options.HomepageURL == "" {
+		options.HomepageURL = "https://runneryard.com"
+	}
+	if options.HTTPClient == nil {
+		options.HTTPClient = &http.Client{Timeout: 15 * time.Second}
+	}
+	if options.Output == nil {
+		options.Output = io.Discard
+	}
+	if options.Now == nil {
+		options.Now = time.Now
+	}
+	if options.Listen == nil {
+		options.Listen = net.Listen
+	}
+	return options, profile, nil
 }
 
 func exposeAndOpen(output io.Writer, browser Browser, noBrowser bool, label, target string) error {
@@ -291,22 +415,48 @@ func permissionExplanation(target Target) string {
 	return "It requests Organization self-hosted runners: write because GitHub places organization runner scale-set management behind that permission."
 }
 
-func manifestJSON(target Target, redirectURL, homepageURL, suffix string) (string, error) {
-	permissions := map[string]string{}
-	if target.Repository != "" {
-		permissions["administration"] = "write"
-	} else {
-		permissions["organization_self_hosted_runners"] = "write"
+// GitHub refuses App names longer than maxAppNameLength. The random suffix
+// takes 2*nameSuffixBytes hex characters of it.
+const (
+	maxAppNameLength = 34
+	nameSuffixBytes  = 4
+	// minQualifierLength keeps a truncated qualifier recognizable; a shorter
+	// one is dropped instead.
+	minQualifierLength = 4
+)
+
+// appName joins the profile's name, as many of its qualifiers as fit, and the
+// suffix. It truncates the first qualifier that does not fit and drops the
+// rest, so the repository goes before the owner and the suffix stays whole.
+func appName(profile Profile, suffix string) (string, error) {
+	budget := maxAppNameLength - 1 - len(suffix)
+	name := profile.Name
+	if len(name) > budget {
+		return "", fmt.Errorf("GitHub App name %q leaves no room for the random suffix", name)
 	}
-	nameParts := []string{"RunnerYard", target.Owner}
-	if target.Repository != "" {
-		nameParts = append(nameParts, target.Repository)
+	for _, qualifier := range profile.Qualifiers {
+		room := budget - len(name) - 1
+		if len(qualifier) > room {
+			qualifier = strings.TrimRight(qualifier[:max(room, 0)], "-._")
+			if len(qualifier) >= minQualifierLength {
+				name += " " + qualifier
+			}
+			break
+		}
+		name += " " + qualifier
 	}
-	nameParts = append(nameParts, suffix)
+	return name + " " + suffix, nil
+}
+
+func manifestJSON(profile Profile, redirectURL, homepageURL, suffix string) (string, error) {
+	name, err := appName(profile, suffix)
+	if err != nil {
+		return "", err
+	}
 	manifest := map[string]any{
-		"name":                     strings.Join(nameParts, " "),
+		"name":                     name,
 		"url":                      homepageURL,
-		"description":              "Dedicated credentials for one self-hosted RunnerYard fleet.",
+		"description":              profile.Description,
 		"redirect_url":             redirectURL,
 		"public":                   false,
 		"request_oauth_on_install": false,
@@ -314,7 +464,7 @@ func manifestJSON(target Target, redirectURL, homepageURL, suffix string) (strin
 			"url":    homepageURL + "/github/no-webhook",
 			"active": false,
 		},
-		"default_permissions": permissions,
+		"default_permissions": profile.Permissions,
 		"default_events":      []string{},
 	}
 	encoded, err := json.Marshal(manifest)
@@ -507,47 +657,90 @@ func installationURL(credentials Credentials) (string, error) {
 	return strings.TrimRight(credentials.HTMLURL, "/") + "/installations/new", nil
 }
 
+// Verify checks credentials against the runner App's permissions for target.
 func (api API) Verify(ctx context.Context, credentials Credentials, target Target) error {
+	return api.VerifyFor(ctx, credentials, target, RunnerProfile(target))
+}
+
+// VerifyFor checks that credentials belong to an App installed on target
+// with at least the profile's permissions.
+func (api API) VerifyFor(ctx context.Context, credentials Credentials, target Target, profile Profile) error {
+	_, err := api.verify(ctx, credentials, target, profile)
+	return err
+}
+
+func (api API) verify(ctx context.Context, credentials Credentials, target Target, profile Profile) (installationRecord, error) {
 	api = api.defaults()
 	if err := credentials.Validate(); err != nil {
-		return err
+		return installationRecord{}, err
+	}
+	app, err := api.Identify(ctx, credentials)
+	if err != nil {
+		return installationRecord{}, err
 	}
 	appToken, err := api.appJWT(credentials)
 	if err != nil {
-		return err
-	}
-	var app struct {
-		ID          int64             `json:"id"`
-		ClientID    string            `json:"client_id"`
-		Permissions map[string]string `json:"permissions"`
-	}
-	if err := api.doJSON(ctx, http.MethodGet, "/app", appToken, nil, &app, http.StatusOK); err != nil {
-		return fmt.Errorf("verify GitHub App identity: %w", err)
-	}
-	clientMatches := app.ClientID == credentials.ClientID || strconv.FormatInt(app.ID, 10) == credentials.ClientID
-	if app.ID < 1 || !clientMatches {
-		return errors.New("GitHub App identity does not match the supplied client ID")
-	}
-	if credentials.AppID > 0 && credentials.AppID != app.ID {
-		return errors.New("GitHub App identity does not match the created app")
+		return installationRecord{}, err
 	}
 	installation, err := api.targetInstallation(ctx, appToken, target)
 	if err != nil {
-		return fmt.Errorf("verify GitHub App installation for %s: %w", target.ConfigURL, err)
+		return installationRecord{}, fmt.Errorf("verify GitHub App installation for %s: %w", target.ConfigURL, err)
 	}
-	if installation.ID != credentials.InstallationID || installation.AppID != app.ID {
-		return errors.New("GitHub App installation does not match the created app or selected target")
+	if installation.ID != credentials.InstallationID || installation.AppID != app.AppID {
+		return installationRecord{}, errors.New("GitHub App installation does not match the created app or selected target")
 	}
 	if !strings.EqualFold(installation.Account.Login, target.Owner) {
-		return errors.New("GitHub App installation belongs to a different account")
+		return installationRecord{}, errors.New("GitHub App installation belongs to a different account")
 	}
-	if installation.Permissions[requiredPermission(target)] != "write" {
-		return fmt.Errorf("GitHub App installation lacks required %s: write permission", requiredPermission(target))
+	if err := installation.covers(profile); err != nil {
+		return installationRecord{}, err
 	}
-	return nil
+	return installation, nil
 }
 
+// Identify reads the App that credentials sign for, checks it matches their
+// client ID (and app ID, when known), and returns the credentials with the
+// App's ID, slug and URL filled in.
+func (api API) Identify(ctx context.Context, credentials Credentials) (Credentials, error) {
+	api = api.defaults()
+	appToken, err := api.appJWT(credentials)
+	if err != nil {
+		return Credentials{}, err
+	}
+	var app struct {
+		ID       int64  `json:"id"`
+		ClientID string `json:"client_id"`
+		Slug     string `json:"slug"`
+		HTMLURL  string `json:"html_url"`
+	}
+	if err := api.doJSON(ctx, http.MethodGet, "/app", appToken, nil, &app, http.StatusOK); err != nil {
+		return Credentials{}, fmt.Errorf("verify GitHub App identity: %w", err)
+	}
+	clientMatches := app.ClientID == credentials.ClientID || strconv.FormatInt(app.ID, 10) == credentials.ClientID
+	if app.ID < 1 || !clientMatches {
+		return Credentials{}, errors.New("GitHub App identity does not match the supplied client ID")
+	}
+	if credentials.AppID > 0 && credentials.AppID != app.ID {
+		return Credentials{}, errors.New("GitHub App identity does not match the created app")
+	}
+	credentials.AppID = app.ID
+	if credentials.Slug == "" {
+		credentials.Slug = app.Slug
+	}
+	if credentials.HTMLURL == "" {
+		credentials.HTMLURL = app.HTMLURL
+	}
+	return credentials, nil
+}
+
+// WaitForInstallation waits until the runner App is installed on target.
 func (api API) WaitForInstallation(ctx context.Context, credentials Credentials, target Target, interval time.Duration) (int64, error) {
+	return api.WaitForInstallationFor(ctx, credentials, target, RunnerProfile(target), interval)
+}
+
+// WaitForInstallationFor waits until the App is installed on target, and
+// fails at once if that installation lacks one of the profile's permissions.
+func (api API) WaitForInstallationFor(ctx context.Context, credentials Credentials, target Target, profile Profile, interval time.Duration) (int64, error) {
 	api = api.defaults()
 	if interval <= 0 {
 		interval = 2 * time.Second
@@ -561,8 +754,8 @@ func (api API) WaitForInstallation(ctx context.Context, credentials Credentials,
 		}
 		installation, err := api.targetInstallation(ctx, appToken, target)
 		if err == nil {
-			if installation.Permissions[requiredPermission(target)] != "write" {
-				return 0, fmt.Errorf("GitHub App installation lacks required %s: write permission", requiredPermission(target))
+			if err := installation.covers(profile); err != nil {
+				return 0, err
 			}
 			return installation.ID, nil
 		}
@@ -584,7 +777,25 @@ type installationRecord struct {
 	Account struct {
 		Login string `json:"login"`
 	} `json:"account"`
-	Permissions map[string]string `json:"permissions"`
+	Permissions         map[string]string `json:"permissions"`
+	RepositorySelection string            `json:"repository_selection"`
+}
+
+// covers checks that the installation grants every permission of profile,
+// in a stable order so the error names the same one each time.
+func (installation installationRecord) covers(profile Profile) error {
+	names := make([]string, 0, len(profile.Permissions))
+	for name := range profile.Permissions {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		want := profile.Permissions[name]
+		if !grants(installation.Permissions[name], want) {
+			return fmt.Errorf("GitHub App installation lacks required %s: %s permission", name, want)
+		}
+	}
+	return nil
 }
 
 func (api API) targetInstallation(ctx context.Context, appToken string, target Target) (installationRecord, error) {
