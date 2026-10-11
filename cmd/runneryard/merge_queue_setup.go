@@ -17,6 +17,8 @@ import (
 // 34 characters, so it leaves room for the random suffix and no more.
 const mergeQueueAppName = "RunnerYard merge queue"
 
+var errMergeQueueNeedsRepository = errors.New("the merge queue serves one repository: pass --github https://github.com/<owner>/<repository>")
+
 // mergeQueueSetup holds what setup reaches outside the process, so tests can
 // replace it.
 type mergeQueueSetup struct {
@@ -30,12 +32,24 @@ type mergeQueueSetup struct {
 
 func defaultMergeQueueSetup() mergeQueueSetup {
 	return mergeQueueSetup{
-		target:    authTarget,
+		target:    mergeQueueTarget,
 		bootstrap: githubapp.Bootstrap,
 		reuse:     githubapp.Reuse,
 		readKey:   readPrivateKeyFile,
 		browser:   systemBrowser{},
 	}
+}
+
+// mergeQueueTarget resolves the repository as auth does, but refuses an
+// account URL with the queue's own reason before the runner rules see it.
+func mergeQueueTarget(ctx context.Context, options authOptions) (githubapp.Target, error) {
+	if options.githubURL == "" {
+		options.githubURL = inferGitHubURL(options.directory)
+	}
+	if normalized, _, err := normalizeGitHubConfigURL(options.githubURL); err == nil && !strings.Contains(strings.TrimPrefix(normalized, "https://github.com/"), "/") {
+		return githubapp.Target{}, errMergeQueueNeedsRepository
+	}
+	return authTarget(ctx, options)
 }
 
 func mergeQueueProfile(workflows bool) githubapp.Profile {
@@ -104,7 +118,7 @@ func runMergeQueueSetup(args []string, output io.Writer, setup mergeQueueSetup) 
 		return err
 	}
 	if target.Repository == "" {
-		return errors.New("the merge queue serves one repository: pass --github https://github.com/<owner>/<repository>")
+		return errMergeQueueNeedsRepository
 	}
 	sink := githubapp.RepositorySink{
 		Owner: target.Owner, Repository: target.Repository,

@@ -34,6 +34,14 @@ func TestMergeQueueProfileRequestsTheDocumentedPermissionsOnly(t *testing.T) {
 	}
 }
 
+func TestMergeQueueTargetRefusesAnAccountWithTheQueuesReason(t *testing.T) {
+	for _, url := range []string{"https://github.com/octo", "https://github.com/octo/"} {
+		if _, err := mergeQueueTarget(context.Background(), authOptions{githubURL: url, ownerKind: "auto"}); !errors.Is(err, errMergeQueueNeedsRepository) {
+			t.Fatalf("%s: err = %v", url, err)
+		}
+	}
+}
+
 type setupHarness struct {
 	t          *testing.T
 	key        string
