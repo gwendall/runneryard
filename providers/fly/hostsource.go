@@ -31,7 +31,6 @@ const (
 	poolImageKey    = "runneryard-pool-image"
 	hostIDPrefix    = "fly-"
 	hostNamePrefix  = "ry-"
-	agentPort       = "22"
 	dataPath        = "/data"
 	defaultPoll     = 2 * time.Second
 	defaultStateFor = 3 * time.Minute
@@ -316,7 +315,7 @@ func (s *HostSource) toHost(item poolMachine) (pool.Host, error) {
 		host.State = item.State
 	}
 	if item.PrivateIP != "" {
-		host.Address = net.JoinHostPort(item.PrivateIP, agentPort)
+		host.Address = net.JoinHostPort(item.PrivateIP, hostagent.BootPort)
 	}
 	switch tag := item.Config.Metadata[poolImageKey]; {
 	case tag == s.imageTag:
