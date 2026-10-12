@@ -97,7 +97,7 @@ func hetznerPool(name string, overrides ...string) string {
 func flyPool(name string, overrides ...string) string {
 	return poolEntry(map[string]string{
 		"name": name, "source": "fly", "fly_app": "ci-pool", "cpus": "8", "memory_mb": "16384",
-		"slots": "4", "slot_memory_mb": "4096", "min_hosts": "1", "max_hosts": "2",
+		"slots": "4", "slot_memory_mb": "3584", "min_hosts": "1", "max_hosts": "2",
 	}, overrides...)
 }
 
@@ -238,6 +238,8 @@ func TestPoolsFileValidateRefusals(t *testing.T) {
 		"fly no cpus":              {contents: poolsYAML(privateTop, flyPool("fly", "cpus: -")), want: "cpus, and memory_mb"},
 		"fly memory step":          {contents: poolsYAML(privateTop, flyPool("fly", "memory_mb: 16500")), want: "steps of 256 MB"},
 		"fly slots overflow":       {contents: poolsYAML(privateTop, flyPool("fly", "slots: 5")), want: "do not fit in memory_mb"},
+		"fly no room for the host": {contents: poolsYAML(privateTop, flyPool("fly", "slot_memory_mb: 4096")), want: "1024 MB for the host"},
+		"fly default share small":  {contents: poolsYAML(privateTop, flyPool("fly", "memory_mb: 2048", "slot_memory_mb: -")), want: "at least 512 MB each"},
 		"fly zero slots":           {contents: poolsYAML(privateTop, flyPool("fly", "slots: -")), want: "slots must be between"},
 		"fly min above max":        {contents: poolsYAML(privateTop, flyPool("fly", "min_hosts: 3")), want: "min_hosts <= max_hosts"},
 		"fly keep above max":       {contents: poolsYAML(privateTop, flyPool("fly", "keep_stopped: 3")), want: "keep_stopped"},
@@ -321,7 +323,7 @@ func TestFlyPoolDefaults(t *testing.T) {
 	parsed, err := loadPoolsYAML(t, poolsYAML(privateTop,
 		flyPool("fly"),
 		flyPool("solo", "fly_app: ci-solo", "max_hosts: 1", "min_hosts: 0", "region: iad", "cpu_kind: shared", "cpus: 4", "memory_mb: 4096",
-			"slots: 2", "slot_memory_mb: 2048", "volume_gb: 20", "idle_stop_after: 2m", "keep_stopped: 0", "delete_stopped_after: 1h"),
+			"slots: 2", "slot_memory_mb: 1536", "volume_gb: 20", "idle_stop_after: 2m", "keep_stopped: 0", "delete_stopped_after: 1h"),
 	))
 	if err != nil {
 		t.Fatal(err)
@@ -345,6 +347,20 @@ func TestFlyPoolDefaults(t *testing.T) {
 	cfg.PoolFlyAPIToken = "pool-token"
 	if source := fly.flySourceConfig(cfg); source.APIToken != "pool-token" || source.App != "ci-pool" {
 		t.Fatalf("the pool token %s did not take precedence", poolFlyTokenEnv)
+	}
+}
+
+func TestFlyPoolSlotsShareWhatTheHostKeepsFree(t *testing.T) {
+	t.Setenv(poolSSHKeyFileEnv, "")
+	parsed, err := loadPoolsYAML(t, poolsYAML(privateTop, flyPool("fly", "slot_memory_mb: -")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := parsed.validate(poolsAppConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := parsed.Pools[0].SlotMemoryMB, (16384-flyHostReservedMB)/4; got != want {
+		t.Fatalf("slot_memory_mb = %d, want %d: an equal share of memory_mb less the host's part", got, want)
 	}
 }
 
