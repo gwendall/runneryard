@@ -152,7 +152,11 @@ type Agent struct {
 	Docker    Docker
 	FreeBytes func(path string) (uint64, error)
 	// Lock serializes start and remove on one slot.
-	Lock    func(slot int) (func(), error)
+	Lock func(slot int) (func(), error)
+	// CPUs are the host's online CPUs, from OnlineCPUs. Slots are pinned to
+	// their own cores when they fit (see slotCPUSet); nil leaves them a CPU
+	// quota only.
+	CPUs    []int
 	Now     func() time.Time
 	Version string
 }
@@ -313,7 +317,9 @@ func (a *Agent) runArgs(slot int, request pool.StartRequest) []string {
 		"--label", labelImage + "=" + request.Image,
 		"--log-driver", "json-file", "--log-opt", "max-size=20m", "--log-opt", "max-file=2",
 	}
-	if a.Config.SlotCPUs > 0 {
+	if cpus := a.slotCPUSet(slot); cpus != "" {
+		args = append(args, "--cpuset-cpus", cpus)
+	} else if a.Config.SlotCPUs > 0 {
 		args = append(args, "--cpus", strconv.FormatFloat(a.Config.SlotCPUs, 'f', -1, 64))
 	}
 	if a.Config.SlotMemoryMB > 0 {
@@ -335,6 +341,82 @@ func (a *Agent) runArgs(slot int, request pool.StartRequest) []string {
 		"--entrypoint", "/usr/bin/dumb-init",
 		a.image(), "--", slotEntrypoint,
 	)
+}
+
+// slotCPUSet is the cores a slot is pinned to, such as "2,3", or "" when the
+// slot gets a CPU quota instead. A quota (--cpus) limits the slot's CPU time
+// but leaves every host CPU visible: nproc, Node's availableParallelism and
+// Go's NumCPU report the host's count, so a test runner that sizes its
+// workers by it runs, on an eight-CPU host, eight workers in two CPUs' time,
+// and its tests time out. A pinned slot sees only its cores. Pinning needs a
+// whole number of CPUs per slot and enough host CPUs for every slot to have
+// its own.
+func (a *Agent) slotCPUSet(slot int) string {
+	count := int(a.Config.SlotCPUs)
+	if count < 1 || float64(count) != a.Config.SlotCPUs || a.Config.Slots*count > len(a.CPUs) || slot < 0 || slot >= a.Config.Slots {
+		return ""
+	}
+	cores := make([]string, 0, count)
+	for _, cpu := range a.CPUs[slot*count : (slot+1)*count] {
+		cores = append(cores, strconv.Itoa(cpu))
+	}
+	return strings.Join(cores, ",")
+}
+
+// SlotsPinned reports whether slots are pinned to their own cores, or a CPU
+// quota leaves them seeing every host CPU.
+func (a *Agent) SlotsPinned() bool {
+	return a.slotCPUSet(0) != ""
+}
+
+// onlineCPUsPath lists the host's online CPUs, such as "0-7".
+const onlineCPUsPath = "/sys/devices/system/cpu/online"
+
+// maxCPU bounds a CPU number read from the host.
+const maxCPU = 8191
+
+// OnlineCPUs returns the host's online CPUs, or nil when they cannot be read,
+// such as on a host that is not Linux.
+func OnlineCPUs() []int {
+	contents, err := os.ReadFile(onlineCPUsPath)
+	if err != nil {
+		return nil
+	}
+	cpus, err := ParseCPUList(string(contents))
+	if err != nil {
+		return nil
+	}
+	return cpus
+}
+
+// ParseCPUList parses a Linux CPU list such as "0-3,6,8-9" into ascending CPU
+// numbers. It refuses ranges out of order or overlapping.
+func ParseCPUList(list string) ([]int, error) {
+	list = strings.TrimSpace(list)
+	if list == "" {
+		return nil, errors.New("empty CPU list")
+	}
+	var cpus []int
+	for _, part := range strings.Split(list, ",") {
+		first, last, isRange := strings.Cut(part, "-")
+		low, err := strconv.Atoi(first)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CPU list %q", list)
+		}
+		high := low
+		if isRange {
+			if high, err = strconv.Atoi(last); err != nil {
+				return nil, fmt.Errorf("invalid CPU list %q", list)
+			}
+		}
+		if low < 0 || high < low || high > maxCPU || (len(cpus) > 0 && low <= cpus[len(cpus)-1]) {
+			return nil, fmt.Errorf("invalid CPU list %q", list)
+		}
+		for cpu := low; cpu <= high; cpu++ {
+			cpus = append(cpus, cpu)
+		}
+	}
+	return cpus, nil
 }
 
 type volume struct {

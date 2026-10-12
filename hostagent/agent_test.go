@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -596,6 +597,90 @@ func TestStartAppliesSlotLimitsAndAUTCDeadline(t *testing.T) {
 	}
 	if cpus, env := slices.Index(args, "--cpus"), slices.Index(args, "--env"); cpus > env {
 		t.Fatalf("limits come after the environment in %q", args)
+	}
+}
+
+// A CPU quota leaves every host CPU visible in the slot, so tools that size
+// their parallelism by the CPU count oversubscribe it: a slot with whole CPUs
+// is pinned to its own cores instead.
+func TestStartPinsEachSlotToItsOwnCores(t *testing.T) {
+	t.Parallel()
+	docker := newFakeDocker()
+	agent := newTestAgent(docker)
+	agent.Config.SlotCPUs = 2
+	agent.CPUs = []int{0, 1, 2, 3, 8, 9}
+	if !agent.SlotsPinned() {
+		t.Fatal("two slots of two CPUs on six CPUs are not pinned")
+	}
+	for slot, want := range []string{"0,1", "2,3"} {
+		decodeOK(t, agent.Handle(context.Background(), "start "+strconv.Itoa(slot), requestBody(t, validStartRequest())), nil)
+		args := docker.find("run --detach")[slot].args
+		if !hasPair(args, "--cpuset-cpus", want) {
+			t.Fatalf("slot %d run args %q lack --cpuset-cpus %s", slot, args, want)
+		}
+		if slices.Contains(args, "--cpus") {
+			t.Fatalf("slot %d run args %q pin the slot and also give it a quota", slot, args)
+		}
+		if cpus, env := slices.Index(args, "--cpuset-cpus"), slices.Index(args, "--env"); cpus > env {
+			t.Fatalf("limits come after the environment in %q", args)
+		}
+	}
+}
+
+func TestStartFallsBackToACPUQuota(t *testing.T) {
+	t.Parallel()
+	eight := []int{0, 1, 2, 3, 4, 5, 6, 7}
+	for name, tc := range map[string]struct {
+		slotCPUs float64
+		cpus     []int
+		want     []string
+	}{
+		"fractional CPUs":     {slotCPUs: 1.5, cpus: eight, want: []string{"--cpus", "1.5"}},
+		"more CPUs than host": {slotCPUs: 5, cpus: eight, want: []string{"--cpus", "5"}},
+		"host CPUs unknown":   {slotCPUs: 2, want: []string{"--cpus", "2"}},
+		"no CPU limit":        {cpus: eight},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			docker := newFakeDocker()
+			agent := newTestAgent(docker)
+			agent.Config.SlotCPUs = tc.slotCPUs
+			agent.CPUs = tc.cpus
+			if agent.SlotsPinned() {
+				t.Fatal("slots are pinned")
+			}
+			decodeOK(t, agent.Handle(context.Background(), "start 1", requestBody(t, validStartRequest())), nil)
+			args := docker.find("run --detach")[0].args
+			if slices.Contains(args, "--cpuset-cpus") {
+				t.Fatalf("run args %q pin the slot", args)
+			}
+			if tc.want == nil && slices.Contains(args, "--cpus") {
+				t.Fatalf("run args %q limit CPUs", args)
+			}
+			if tc.want != nil && !hasPair(args, tc.want[0], tc.want[1]) {
+				t.Fatalf("run args %q lack %s %s", args, tc.want[0], tc.want[1])
+			}
+		})
+	}
+}
+
+func TestParseCPUList(t *testing.T) {
+	t.Parallel()
+	for list, want := range map[string][]int{
+		"0-7\n":      {0, 1, 2, 3, 4, 5, 6, 7},
+		"0-3,6,8-9":  {0, 1, 2, 3, 6, 8, 9},
+		"5":          {5},
+		" 0-1,4-5\n": {0, 1, 4, 5},
+	} {
+		got, err := ParseCPUList(list)
+		if err != nil || !slices.Equal(got, want) {
+			t.Fatalf("ParseCPUList(%q) = %v, %v, want %v", list, got, err, want)
+		}
+	}
+	for _, list := range []string{"", "\n", "a", "0-", "-1", "3-1", "0-3,2", "1,1", "0,", ",0", "0-99999", "0-1-2"} {
+		if got, err := ParseCPUList(list); err == nil {
+			t.Fatalf("ParseCPUList(%q) = %v, want an error", list, got)
+		}
 	}
 }
 
