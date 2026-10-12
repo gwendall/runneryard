@@ -197,11 +197,15 @@ func SeparateFilesystem(path string) error {
 	return nil
 }
 
-// DockerDaemonConfig returns the daemon.json of the host's Docker.
+// DockerDaemonConfig returns the daemon.json of the host's Docker. It keeps
+// Docker's own overlay2 storage rather than the containerd image store:
+// importing the 1.9 GB runner image took 21 s on overlay2 and 116 s on the
+// containerd store, which compresses the imported layer again (measured on
+// a Fly performance-8x host on 2026-10-12).
 func DockerDaemonConfig(dataRoot string, dns []string) ([]byte, error) {
 	config := map[string]any{
 		"data-root": dataRoot,
-		"features":  map[string]bool{"buildkit": true},
+		"features":  map[string]bool{"buildkit": true, "containerd-snapshotter": false},
 	}
 	if len(dns) > 0 {
 		if len(dns) > 3 {

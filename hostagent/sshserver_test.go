@@ -320,7 +320,7 @@ func TestDockerDaemonConfigKeepsDataOnTheVolume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(config), `{"data-root":"/data/docker","dns":["1.1.1.1","8.8.8.8"],"features":{"buildkit":true}}`+"\n"; got != want {
+	if got, want := string(config), `{"data-root":"/data/docker","dns":["1.1.1.1","8.8.8.8"],"features":{"buildkit":true,"containerd-snapshotter":false}}`+"\n"; got != want {
 		t.Fatalf("daemon.json = %s, want %s", got, want)
 	}
 	for _, dns := range [][]string{{"1.1.1.1", "1.1.1.1"}, {"resolver"}, {"1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4"}} {
