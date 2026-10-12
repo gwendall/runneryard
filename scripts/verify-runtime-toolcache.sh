@@ -38,7 +38,9 @@ docker run --rm --network none "${docker_platform_args[@]}" --entrypoint docker 
 # Exercise the real runner privilege transition. The fake daemon isolates this
 # canary from the host while the mounted run.sh observes the exact environment
 # received by a GitHub job. Do not pass the toolcache variables to docker run:
-# they must come from runner-entrypoint after sudo/setpriv.
+# they must come from the image and runner-entrypoint after sudo/setpriv. The
+# canary variable and PATH stand for what a derived image sets with ENV, which
+# sudo would otherwise drop.
 entrypoint_canary_directory=$(mktemp -d)
 cleanup_entrypoint_canary() {
   rm -rf "$entrypoint_canary_directory"
@@ -76,6 +78,10 @@ printf '%s\n' \
   'test "$RUNNER_TOOL_CACHE" = /opt/hostedtoolcache' \
   'test "$ImageOS" = ubuntu24' \
   'test "$DOCKER_BUILDKIT" = 1' \
+  'test "$RUNNERYARD_CANARY_IMAGE_ENV" = "set by the image, kept across sudo"' \
+  'case ":$PATH:" in *:/opt/runneryard-canary/bin:*) ;; *) exit 1 ;; esac' \
+  'test "$ACTIONS_RUNNER_INPUT_JITCONFIG" = offline-canary' \
+  'test -z "${SUDO_COMMAND:-}${RUNNERYARD_RUNNER_ENVIRONMENT:-}"' \
   'case "$(uname -m)" in' \
   '  x86_64) toolcache_arch=x64 ;;' \
   '  aarch64|arm64) toolcache_arch=arm64 ;;' \
@@ -97,6 +103,8 @@ docker run --rm "${docker_platform_args[@]}" \
   -e ACTIONS_RUNNER_INPUT_JITCONFIG=offline-canary \
   -e RUNNERYARD_DEADLINE=2099-01-01T00:00:00Z \
   -e RUNNERYARD_DOCKER_DNS=1.1.1.1,8.8.8.8 \
+  -e "RUNNERYARD_CANARY_IMAGE_ENV=set by the image, kept across sudo" \
+  -e PATH=/opt/runneryard-canary/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
   -v "$entrypoint_canary_directory/dockerd:/usr/local/sbin/dockerd:ro" \
   -v "$entrypoint_canary_directory/docker:/usr/local/sbin/docker:ro" \
   -v "$entrypoint_canary_directory/findmnt:/usr/bin/findmnt:ro" \

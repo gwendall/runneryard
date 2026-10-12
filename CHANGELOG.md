@@ -36,6 +36,19 @@ operator-facing schema or a trust boundary is called out here first.
   ready 59 and 72 s after its creation in the real test, against 60 to 100 s before.
   Hosts created before keep their Docker storage and pull until they are replaced;
   Hetzner and static pools still need a public image.
+- Jobs now receive the worker image's environment. `runner-entrypoint` starts as
+  `runner`, switches to root with `sudo` to start Docker, then starts the runner as
+  `runner` again; `sudo` reset the environment on the way, so the runner got only the
+  lease variables and the few the entrypoint sets itself. Every `ENV` of a derived image
+  (`npm_config_store_dir`, `PLAYWRIGHT_BROWSERS_PATH`, an extended `PATH`) was dropped,
+  on ephemeral workers and in pool slots alike, although the derived image guide
+  recommends them. The entrypoint now carries its whole starting environment across
+  `sudo` for the runner; the root steps keep `sudo`'s. Why: a warm package store or
+  browser directory set with `ENV` was never used, and each job downloaded it again.
+  Check a derived image before upgrading: what its `ENV` sets now applies to every job,
+  so a store path must be writable by `runner`, as the guide already requires. Jobs
+  also see what the provider passed to the worker, such as Fly's `FLY_*` variables;
+  `runner` already had passwordless `sudo`, so nothing new becomes readable.
 
 ## 0.5.0 (2026-10-12)
 

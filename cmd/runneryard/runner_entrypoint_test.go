@@ -14,8 +14,8 @@ func TestRunnerEntrypointPreservesCompleteLeaseAcrossPrivilegeEscalation(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(contents), "--preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE,RUNNERYARD_DOCKER_DNS,RUNNERYARD_DIAG_HOLD,RUNNERYARD_IDLE_TIMEOUT,RUNNERYARD_REUSED_SLOT") {
-		t.Fatal("sudo must preserve the JIT configuration, lease deadline, provider Docker DNS policy, and pool slot mode")
+	if !strings.Contains(string(contents), "--preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE,RUNNERYARD_DOCKER_DNS,RUNNERYARD_DIAG_HOLD,RUNNERYARD_IDLE_TIMEOUT,RUNNERYARD_REUSED_SLOT,RUNNERYARD_RUNNER_ENVIRONMENT") {
+		t.Fatal("sudo must preserve the JIT configuration, lease deadline, provider Docker DNS policy, pool slot mode, and the runner's environment")
 	}
 	if output, err := exec.Command("bash", "-n", entrypoint).CombinedOutput(); err != nil {
 		t.Fatalf("runner entrypoint syntax: %v: %s", err, output)
@@ -44,12 +44,37 @@ func TestRunnerEntrypointNormalizesUnprivilegedEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "env HOME=/home/runner USER=runner LOGNAME=runner"
+	want := `"${runner_environment[@]}" HOME=/home/runner USER=runner LOGNAME=runner`
 	if !strings.Contains(string(contents), want) {
 		t.Fatal("job environment must not inherit root's home after privilege escalation")
 	}
 	if !strings.Contains(string(contents), "XDG_CONFIG_HOME=/home/runner/.config") {
 		t.Fatal("job tools must resolve configuration beneath the runner home")
+	}
+}
+
+func TestRunnerEntrypointCarriesTheImageEnvironmentAcrossSudo(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "runner-entrypoint"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(contents)
+	carried := strings.Index(source, `RUNNERYARD_RUNNER_ENVIRONMENT="$(env -u RUNNERYARD_RUNNER_ENVIRONMENT -0 | base64 --wrap=0)"`)
+	escalation := strings.Index(source, "exec sudo")
+	if carried < 0 || escalation < 0 || carried > escalation {
+		t.Fatal("the entrypoint must record its environment before sudo resets it")
+	}
+	for _, guard := range []string{
+		// A carrier that does not decode stops the worker with a diagnosis.
+		`if ! base64 --decode <<<"$RUNNERYARD_RUNNER_ENVIRONMENT" >"$carried_environment"; then`,
+		// Only NAME=value entries, so none can reach env as an option.
+		`"$entry" != [A-Za-z_]*=*`,
+		`runner_environment=(env --ignore-environment "${carried[@]}")`,
+		"unset RUNNERYARD_RUNNER_ENVIRONMENT",
+	} {
+		if !strings.Contains(source, guard) {
+			t.Fatalf("the runner must get the carried environment and nothing else; missing %q", guard)
+		}
 	}
 }
 

@@ -44,6 +44,11 @@ the derived image from the new release and moving `[build] image` and
   Node, or the entrypoints; the canary checks those against the release.
 - Install as `root`, then end with `USER runner`. The base sets `HOME`,
   `RUNNER_TOOL_CACHE`, and the entrypoint; keep them.
+- Set what jobs need with `ENV`: the worker entrypoint gives the runner the
+  environment the worker started with, the image's own included, across its
+  switch to root and back. It always sets `HOME`, `USER`, `LOGNAME`,
+  `RUNNER_TOOL_CACHE`, `ImageOS`, `DOCKER_BUILDKIT`, `XDG_CONFIG_HOME` and
+  `ACTIONS_RUNNER_HOOK_JOB_STARTED` itself.
 - Give the home back before `USER runner`. The base sets `HOME=/home/runner`
   for every stage, so each `npm`, `npx`, `pnpm`, or `pip` call of the root
   phase writes its cache there as root (`~/.npm`, `~/.cache`, `~/.config`,
