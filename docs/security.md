@@ -183,6 +183,16 @@ on Fly therefore needs nothing on the host, as for ephemeral workers.
 - The image is tagged only after `tar` read the whole layer; a failed read
   removes the untagged image.
 
+**A Fly pool that follows a tag reads the registry from the controller, not
+from a host.** To learn which digest the tag names, the controller sends
+`registry.fly.io` the pool token it already holds, which Fly's registry
+accepts for reading every app's images in the organization: the token gains
+no use it did not already have. It goes to `registry.fly.io` only, over
+HTTPS, with no redirect followed; a token service on another host gets no
+credential, and every other registry is read anonymously. The controller only
+reads manifests, and the hosts it creates are pinned to the digest it read.
+See [Following a tag](pools.md#following-a-tag).
+
 **Hetzner and static hosts pull the image with their own Docker, without
 credentials**, so their image must be public, such as the release image on
 GHCR. The options considered on 2026-10-12 for them:

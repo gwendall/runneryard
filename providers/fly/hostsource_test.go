@@ -34,6 +34,7 @@ const (
 
 type fakeMachine struct {
 	ID, Name, State, PrivateIP string
+	Image                      string
 	CreatedAt, UpdatedAt       time.Time
 	Metadata                   map[string]string
 	Mounts                     []machineMount
@@ -83,7 +84,7 @@ func (f *fakeFly) machineJSON(m *fakeMachine) map[string]any {
 		"id": m.ID, "name": m.Name, "state": m.State, "region": "cdg", "private_ip": m.PrivateIP,
 		"created_at": m.CreatedAt, "updated_at": m.UpdatedAt,
 		"config": map[string]any{
-			"metadata": m.Metadata, "mounts": m.Mounts,
+			"image": m.Image, "metadata": m.Metadata, "mounts": m.Mounts,
 			// The real API returns the files; the source must not need them.
 			"files": []map[string]any{{"guest_path": "/etc/runneryard/ssh_host_ed25519_key", "raw_value": "c2VjcmV0"}},
 		},
@@ -157,6 +158,7 @@ func (f *fakeFly) handler() http.Handler {
 		var request struct {
 			Name   string `json:"name"`
 			Config struct {
+				Image    string            `json:"image"`
 				Metadata map[string]string `json:"metadata"`
 				Mounts   []machineMount    `json:"mounts"`
 			} `json:"config"`
@@ -171,7 +173,7 @@ func (f *fakeFly) handler() http.Handler {
 		}
 		f.seq++
 		machine := &fakeMachine{
-			ID: fmt.Sprintf("e%04d", f.seq), Name: request.Name, State: "created", PrivateIP: "fdaa:0:1::99",
+			ID: fmt.Sprintf("e%04d", f.seq), Name: request.Name, State: "created", PrivateIP: "fdaa:0:1::99", Image: request.Config.Image,
 			CreatedAt: f.now, UpdatedAt: f.now, Metadata: request.Config.Metadata, Mounts: request.Config.Mounts, pending: startedMachine,
 		}
 		f.machines[machine.ID] = machine
@@ -462,7 +464,7 @@ func TestHostSourceNeverTouchesAForeignMachine(t *testing.T) {
 
 func TestHostSourceCreatesAMachineWithItsVolumeAndKeys(t *testing.T) {
 	x := newHostSourceFixture(t)
-	host, err := x.source.Create(context.Background())
+	host, err := x.source.Create(context.Background(), testPoolImage)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,10 +541,66 @@ func TestHostSourceCreatesAMachineWithItsVolumeAndKeys(t *testing.T) {
 	}
 }
 
+func TestHostSourceCreatesAndListsAHostOnAPinnedDigest(t *testing.T) {
+	x := newHostSourceFixture(t)
+	pinned := "ghcr.io/example/runner@sha256:" + strings.Repeat("ab", 32)
+	host, err := x.source.Create(context.Background(), pinned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host.Image != pinned {
+		t.Fatalf("created host image = %q, want %q", host.Image, pinned)
+	}
+	var request createPoolMachineRequest
+	if err := json.Unmarshal(x.fly.bodies["POST /v1/apps/"+testPoolApp+"/machines"], &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Config.Image != pinned || request.Config.Metadata[poolImageKey] != imageTag(pinned) {
+		t.Fatalf("machine image = %q, metadata = %v", request.Config.Image, request.Config.Metadata)
+	}
+	var hostJSON struct {
+		Image string `json:"image"`
+	}
+	for _, file := range request.Config.Files {
+		if file.GuestPath == "/etc/runneryard/host.json" {
+			raw, err := base64.StdEncoding.DecodeString(file.RawValue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(raw, &hostJSON); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if hostJSON.Image != pinned {
+		t.Fatalf("host.json image = %q, want the digest the host boots", hostJSON.Image)
+	}
+
+	// The listing reports the configured image when the metadata confirms
+	// it, and another image when they disagree.
+	x.fly.addMachine("a1tag", startedMachine, x.owned()).Image = testPoolImage
+	x.fly.addMachine("a2mismatch", startedMachine, with(x.owned(), poolImageKey, imageTag(pinned))).Image = "ghcr.io/example/other@sha256:" + strings.Repeat("cd", 32)
+	hosts, err := x.source.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	images := map[string]string{}
+	for _, listed := range hosts {
+		images[listed.ID] = listed.Image
+	}
+	if images[host.ID] != pinned || images["fly-a1tag"] != testPoolImage ||
+		images["fly-a2mismatch"] == pinned || !strings.HasPrefix(images["fly-a2mismatch"], "other-image@") {
+		t.Fatalf("listed images = %v", images)
+	}
+	if _, err := x.source.Create(context.Background(), "not an image"); err == nil {
+		t.Fatal("created a host for an invalid image")
+	}
+}
+
 func TestHostSourceCreateRejectedDeletesTheVolume(t *testing.T) {
 	x := newHostSourceFixture(t)
 	x.fly.failMachineCreate = http.StatusUnprocessableEntity
-	if _, err := x.source.Create(context.Background()); err == nil {
+	if _, err := x.source.Create(context.Background(), testPoolImage); err == nil {
 		t.Fatal("create succeeded")
 	}
 	if len(x.fly.volumes) != 0 || len(x.fly.machines) != 0 {
@@ -553,7 +611,7 @@ func TestHostSourceCreateRejectedDeletesTheVolume(t *testing.T) {
 func TestHostSourceCreateFindsTheMachineAfterATransientFailure(t *testing.T) {
 	x := newHostSourceFixture(t)
 	x.fly.failMachineCreate, x.fly.createAnyway = http.StatusBadGateway, true
-	host, err := x.source.Create(context.Background())
+	host, err := x.source.Create(context.Background(), testPoolImage)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -565,7 +623,7 @@ func TestHostSourceCreateFindsTheMachineAfterATransientFailure(t *testing.T) {
 func TestHostSourceDeleteRemovesTheMachineThenItsVolume(t *testing.T) {
 	x := newHostSourceFixture(t)
 	x.fly.volumeDetachReads = 2
-	host, err := x.source.Create(context.Background())
+	host, err := x.source.Create(context.Background(), testPoolImage)
 	if err != nil {
 		t.Fatal(err)
 	}

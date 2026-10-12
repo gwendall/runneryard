@@ -248,6 +248,7 @@ func TestPoolsFileValidateRefusals(t *testing.T) {
 		"fly cpu kind":             {contents: poolsYAML(privateTop, flyPool("fly", "cpu_kind: gpu")), want: "shared or performance"},
 		"fly small volume":         {contents: poolsYAML(privateTop, flyPool("fly", "volume_gb: 5")), want: "volume_gb"},
 		"fly unpriced region":      {contents: poolsYAML(privateTop, flyPool("fly", "region: syd")), want: "set hourly_price"},
+		"fly invalid image":        {contents: poolsYAML(privateTop, flyPool("fly", "runner_image: registry.fly.io/CI:current")), want: "runner_image"},
 		"fly with hetzner keys":    {contents: poolsYAML(privateTop, flyPool("fly", "firewall_id: 77")), want: "only apply to Hetzner pools"},
 		"fly with static keys":     {contents: poolsYAML(privateTop, flyPool("fly", "billing: owned")), want: "only apply to static pools"},
 		"hetzner with fly keys":    {contents: poolsYAML(privateTop, hetznerPool("fast", "keep_stopped: 1")), want: "only apply to Fly pools"},
@@ -384,6 +385,49 @@ func TestWithPoolsBuildsAFlyPool(t *testing.T) {
 	status := placementStatus(t, compute)
 	if !slices.Equal(status.Tiers, []string{"fly"}) || len(status.Pools) != 1 {
 		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestFlyPoolFollowsATagButNotADigest(t *testing.T) {
+	t.Setenv(poolSSHKeyFileEnv, "")
+	digest := "sha256:" + strings.Repeat("ab", 32)
+	parsed, err := loadPoolsYAML(t, poolsYAML(privateTop,
+		flyPool("tagged", "runner_image: registry.fly.io/ci-workers:current"),
+		flyPool("pinned", "fly_app: ci-pinned", "runner_image: registry.fly.io/ci-workers@"+digest),
+		hetznerPool("fast", "runner_image: ghcr.io/gwendall/runneryard:current"),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := poolsAppConfig()
+	if err := parsed.validate(cfg); err != nil {
+		t.Fatal(err)
+	}
+	tagged, pinned, hetzner := parsed.Pools[0], parsed.Pools[1], parsed.Pools[2]
+	follow, err := tagged.follower(cfg)
+	if err != nil || follow == nil {
+		t.Fatalf("tagged pool follower = %v, %v", follow, err)
+	}
+	if !follow.Related("registry.fly.io/ci-workers@"+digest) || follow.Related("registry.fly.io/ci-pool@"+digest) {
+		t.Fatal("the follower does not know its repository")
+	}
+	for _, p := range []poolConfig{pinned, hetzner} {
+		if follow, err := p.follower(cfg); err != nil || follow != nil {
+			t.Fatalf("pool %s follower = %v, %v; a pinned or non-Fly pool matches its image exactly", p.Name, follow, err)
+		}
+	}
+
+	credentials := flyRegistryCredentials("pool-token")
+	if user, password, ok := credentials("registry.fly.io"); !ok || user != "x" || password != "pool-token" {
+		t.Fatal("Fly's registry did not get the pool token")
+	}
+	for _, host := range []string{"ghcr.io", "docker.io", "registry.fly.io.example", "fly.io"} {
+		if _, password, ok := credentials(host); ok || password != "" {
+			t.Fatalf("registry %s received the pool token", host)
+		}
+	}
+	if _, _, ok := flyRegistryCredentials("")("registry.fly.io"); ok {
+		t.Fatal("an empty token was offered as a credential")
 	}
 }
 

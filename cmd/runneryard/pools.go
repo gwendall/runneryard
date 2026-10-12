@@ -18,6 +18,7 @@ import (
 	"github.com/gwendall/runneryard/provider"
 	flyprovider "github.com/gwendall/runneryard/providers/fly"
 	hetznerprovider "github.com/gwendall/runneryard/providers/hetzner"
+	"github.com/gwendall/runneryard/registry"
 )
 
 const (
@@ -38,6 +39,7 @@ const (
 	poolSSHKeyFileEnv   = "RUNNER_POOL_SSH_KEY_FILE"
 	poolsFileEnv        = "RUNNER_POOLS_FILE"
 	defaultHetznerImage = "docker-ce"
+	flyRegistry         = "registry.fly.io"
 )
 
 // flyHostReservedMB is the part of a Fly pool host's memory no slot may use:
@@ -329,6 +331,9 @@ func (p *poolConfig) validateFly(cfg appConfig) error {
 	if p.Billing != "" || p.Currency != "" || len(p.Hosts) > 0 {
 		return fmt.Errorf("fly pool %s: billing, currency, and hosts only apply to static pools", p.Name)
 	}
+	if _, err := p.follower(cfg); err != nil {
+		return err
+	}
 	// The source checks the rest: CPU kind, memory steps, volume size, and
 	// price. The controller key is read later, at startup.
 	check := p.flySourceConfig(cfg)
@@ -338,6 +343,39 @@ func (p *poolConfig) validateFly(cfg appConfig) error {
 		return err
 	}
 	return nil
+}
+
+// follower follows the tag a Fly pool's runner_image names, or is nil for an
+// image pinned by digest, which hosts must match exactly. It reads
+// registry.fly.io with the pool's own token, which Fly lets read the
+// organization's images, and sends no credential to any other registry.
+func (p poolConfig) follower(cfg appConfig) (pool.Follower, error) {
+	if p.Source != poolSourceFly {
+		return nil, nil
+	}
+	ref, err := registry.Parse(p.RunnerImage)
+	if err != nil {
+		return nil, fmt.Errorf("fly pool %s runner_image: %w", p.Name, err)
+	}
+	if ref.Pinned() {
+		return nil, nil
+	}
+	tag, err := registry.NewTag(p.RunnerImage, &registry.Client{Credentials: flyRegistryCredentials(cfg.poolFlyToken())})
+	if err != nil {
+		return nil, fmt.Errorf("fly pool %s runner_image: %w", p.Name, err)
+	}
+	return tag, nil
+}
+
+// flyRegistryCredentials gives token to registry.fly.io, as Fly's registry
+// expects it, and nothing to any other registry, which is read anonymously.
+func flyRegistryCredentials(token string) func(string) (string, string, bool) {
+	return func(host string) (string, string, bool) {
+		if host != flyRegistry || token == "" {
+			return "", "", false
+		}
+		return "x", token, true
+	}
 }
 
 func (p poolConfig) flySourceConfig(cfg appConfig) flyprovider.HostSourceConfig {
@@ -390,6 +428,9 @@ func (c appConfig) withPools(ephemeral provider.Compute, logger *slog.Logger) (p
 		}
 		if p.Source == poolSourceFly {
 			poolCfg.IdleStop, poolCfg.KeepStopped, poolCfg.DeleteStoppedAfter = p.IdleStopAfter, *p.KeepStopped, p.DeleteStoppedAfter
+			if poolCfg.Follow, err = p.follower(c); err != nil {
+				return nil, err
+			}
 		}
 		created, err := pool.New(poolCfg)
 		if err != nil {

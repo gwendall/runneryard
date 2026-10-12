@@ -61,8 +61,8 @@ type Host struct {
 	// knows: the start of the current running or stopped period.
 	StateSince time.Time
 	// Image is the runner image the source prepared the host for, when it
-	// records it. A stopped host prepared for another image is deleted
-	// instead of started.
+	// records it. A stopped host prepared for another image, or for an
+	// earlier digest of a followed tag, is deleted instead of started.
 	Image string
 }
 
@@ -71,12 +71,25 @@ type Host struct {
 const HostStopped = "stopped"
 
 // Source provides hosts. List must return only hosts this controller owns in
-// this pool. Create and Delete are only called when Facts().CanCreate.
+// this pool. Create and Delete are only called when Facts().CanCreate; Create
+// prepares the host for the runner image it is given.
 type Source interface {
 	Facts() Facts
 	List(context.Context) ([]Host, error)
-	Create(context.Context) (Host, error)
+	Create(ctx context.Context, image string) (Host, error)
 	Delete(context.Context, string) error
+}
+
+// Follower follows the tag a pool's runner image names, for a pool whose
+// hosts must not stay on the image the tag named when they were created.
+type Follower interface {
+	// Resolve returns the image pinned to the digest the tag names now, such
+	// as registry.example/runner@sha256:....
+	Resolve(context.Context) (string, error)
+	// Related reports whether image is from the followed repository: the tag
+	// itself, or one of the repository's digests. A host on such an image
+	// keeps serving until the pool replaces it.
+	Related(image string) bool
 }
 
 // Stopper is a source whose hosts can be stopped and started again with

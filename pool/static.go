@@ -89,7 +89,7 @@ func (s *StaticSource) List(context.Context) ([]Host, error) {
 	return append([]Host(nil), s.hosts...), nil
 }
 
-func (s *StaticSource) Create(context.Context) (Host, error) {
+func (s *StaticSource) Create(context.Context, string) (Host, error) {
 	return Host{}, errors.New("a static pool cannot create hosts")
 }
 
