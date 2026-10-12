@@ -16,6 +16,19 @@ either reappearance or `JobStarted` clears it. Workers older than
 off, or failed, still retire immediately, since a stopped server can neither
 run its job nor stop being billed on every provider.
 
+A runner exits after its one job, so a pool slot is listed `stopped`, and a
+Hetzner server powers `off`, often before GitHub's `JobCompleted` message
+arrives, seconds to a minute later. That order is routine and logs at INFO:
+`retired stopped worker; awaiting its job completion`, then `job completed
+after its worker stopped`, and `job started after its worker was retired`
+when even the start message comes after the stop. A stopped worker whose
+completion has still not arrived five minutes after its stop is reported once
+at WARN as `stopped worker never reported its job completion`: its runner
+exited without finishing a job. A worker that stopped in a failed or other
+abnormal state, or that this controller does not know, still logs the WARN
+`retired stopped worker`. An idle worker that stopped after
+`RUNNER_IDLE_TIMEOUT`, and an adopted worker, log at INFO.
+
 Desired-count updates only scale up. They never opportunistically delete an
 apparently idle JIT runner: GitHub may already be assigning that runner while
 the corresponding `JobStarted` message is still in flight. One-job workers are
