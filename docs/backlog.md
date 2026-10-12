@@ -26,9 +26,17 @@ shortage. 0.4.5 to 0.4.10 shipped derived worker images declared with
 `doctor` checks for alerting (`ALERT_WEBHOOK_URL` is now required), the budget
 horizon, and the Fly capacity margin, `budget estimate` with Fly's price table
 (the pricing half of C1; the per-job receipt remains), and Go 1.26.9.
-Unreleased: the documentation half of C3 (the Hetzner guide states hourly
-billing, and `budget estimate --provider hetzner` prices whole server hours);
-reusing a server within its paid hour remains. P1 was
+0.5.0 shipped the documentation half of C3 (the Hetzner guide states hourly
+billing, and `budget estimate --provider hetzner` prices whole server hours)
+and, as previews beyond existing identifiers, host pools and a merge queue.
+Pools keep hosts that run several jobs at once, one per slot with its caches,
+on Hetzner servers, Fly Machines or prepared machines, tried in `placement`
+order with ephemeral workers as the overflow; Fly pools stop an idle host
+instead of deleting it and start it again in seconds, which covers the intent
+of C5 and P7 for pool hosts (per-job standby workers remain). Reusing a
+Hetzner server within its paid hour is what Hetzner pools do; per-job reuse
+remains. The merge queue (`merge-queue tick`, `merge-queue setup`) runs in a
+repository's own workflow with its own GitHub App. P1 was
 already done: the release has published and canaried `linux/amd64` and
 `linux/arm64` since #51. Next in line: C1, R10, R13, C4, P3, S3, O1, O3, O4,
 W1, W6, H5.
