@@ -229,6 +229,7 @@ func (c *Controller) Run(ctx context.Context) error {
 		reporter:          reporter,
 		logger:            cfg.Logger.WithGroup("scaler"),
 		startedAt:         time.Now(),
+		probeWake:         make(chan struct{}, 1),
 	}
 	return superviseSessions(ctx, open, scaler, cfg, scaleSet.ID, sessionRestartInitialBackoff, sessionRestartMaximumBackoff)
 }
@@ -319,7 +320,7 @@ func runSession(ctx context.Context, session messageSession, scaler *scaler, cfg
 	}
 	scaler.reporter.recovered()
 
-	queue, err := listener.New(session, listener.Config{
+	queue, err := listener.New(wakingSession{messageSession: session, wake: scaler.probeWake}, listener.Config{
 		ScaleSetID: scaleSetID,
 		MaxRunners: cfg.MaxWorkers,
 		Logger:     cfg.Logger.WithGroup("listener"),

@@ -57,8 +57,10 @@ replacement launches below that ceiling flowing, and suppresses launches
 above it. After one minute it admits one probe; repeated rejections double the
 delay up to fifteen minutes. A provider that says room is on its way, such as
 a pool creating or starting a host, sets an earlier probe (at least 5 s) and
-leaves the backoff as it was. A successful probe restores configured capacity.
-Status reports `provider_capacity_exhausted` with a stable rejection code,
+leaves the backoff as it was. The probe runs at its retry time: the controller
+ends its wait for GitHub's next message then, instead of probing only when a
+message arrives, which can be up to about 50 s later. A successful probe
+restores configured capacity. Status reports `provider_capacity_exhausted` with a stable rejection code,
 configured/effective capacity, rejection count, and `retry_at`. Lower
 `MAX_RUNNERS` to the confirmed provider ceiling or raise the provider quota;
 do not restart the controller or repeatedly resend desired-count events. On

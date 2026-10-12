@@ -46,7 +46,8 @@ next jobs once it is ready. While that host is on its way, the pool's refusal
 asks the controller to try again after one pool tick (10 s) rather than after
 the capacity backoff of one minute and more, so the queued jobs reach the new
 host as soon as it is ready; a pool full at `max_hosts` gets the usual
-backoff. Slots are packed: a job goes to the busiest host
+backoff. The controller wakes itself for that probe; it does not wait for
+GitHub's next message. Slots are packed: a job goes to the busiest host
 that still has room, so the least busy hosts empty first and can be returned.
 
 `MAX_RUNNERS` still caps the whole fleet, pools and ephemeral workers
@@ -330,10 +331,12 @@ Measured in the first real test (`cdg`, `performance` 8 vCPUs, 16 GB, a
   host can take a job.
 - A stopped host is ready 3 to 9 s after its start, with its images, build
   cache and slot caches as it left them.
-- With `min_hosts: 0`, the first job after a quiet period also waits for the
-  controller's next GitHub message, up to about 50 s: it started 62 s after it
-  was queued in the test. `min_hosts: 1` takes it at once, for the price of a
-  host running all month.
+- With `min_hosts: 0`, the first job after a quiet period starts a stopped
+  host and is placed on it at the controller's next probe, 10 s later. In the
+  test it started 62 s after it was queued, because the probe then waited for
+  the controller's next GitHub message (up to about 50 s); the controller now
+  wakes itself for the probe. `min_hosts: 1` takes it at once, for the price
+  of a host running all month.
 
 ### Organization Machine limit
 

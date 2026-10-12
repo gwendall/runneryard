@@ -146,6 +146,13 @@ type scaler struct {
 	capacityRetryAt   time.Time
 	capacityBackoff   time.Duration
 	capacityNow       func() time.Time
+	// probeWake receives one token when the launch gate's retry time comes,
+	// and probeTimer is the timer that sends it. The session hands the token
+	// to the listener as an empty poll, so a probe runs at its retry time
+	// instead of at GitHub's next message, which can be a long poll away.
+	// Nil when the scaler runs without a listener (tests).
+	probeWake  chan struct{}
+	probeTimer *time.Timer
 }
 
 type runnerScaleSetClient interface {
@@ -346,6 +353,7 @@ func (s *scaler) recordLaunchGate(kind, reason string, err error) {
 	s.capacityReason = reason
 	s.capacityRetryAt = now.Add(wait)
 	retryAt := s.capacityRetryAt
+	s.scheduleProbeLocked(wait)
 	s.capacityMu.Unlock()
 	if previousKind != "" && previousKind != kind {
 		s.releaseGateStatus(previousKind)
@@ -370,6 +378,37 @@ func (s *scaler) recordLaunchGate(kind, reason string, err error) {
 	}
 }
 
+// scheduleProbeLocked arms the timer that wakes the listener when the gate's
+// retry time comes, replacing any earlier one. The caller holds capacityMu.
+func (s *scaler) scheduleProbeLocked(wait time.Duration) {
+	if s.probeWake == nil {
+		return
+	}
+	s.stopProbeLocked()
+	wake := s.probeWake
+	s.probeTimer = time.AfterFunc(wait, func() {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	})
+}
+
+// stopProbeLocked cancels a pending wake-up and drops one not yet taken.
+// A timer already firing can still deliver a token afterwards; it only costs
+// one empty poll, since capacityAllowance decides whether to probe. The
+// caller holds capacityMu.
+func (s *scaler) stopProbeLocked() {
+	if s.probeTimer != nil {
+		s.probeTimer.Stop()
+		s.probeTimer = nil
+	}
+	select {
+	case <-s.probeWake:
+	default:
+	}
+}
+
 func (s *scaler) releaseGateStatus(kind string) {
 	switch kind {
 	case gateLaunch:
@@ -390,6 +429,7 @@ func (s *scaler) clearLaunchGate() {
 	s.capacityReason = ""
 	s.capacityRetryAt = time.Time{}
 	s.capacityBackoff = 0
+	s.stopProbeLocked()
 	s.capacityMu.Unlock()
 	if hadRejection {
 		s.releaseGateStatus(kind)

@@ -4,6 +4,17 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
+## Unreleased
+
+- A closed launch gate is probed at its `retry_at`, not at the next message from GitHub
+  after it: the controller ends its long poll for GitHub's next message at that time and
+  probes then. Why: with a Fly pool at `min_hosts: 0`, the first job after a quiet period
+  started a stopped host in 3 to 9 s but waited up to about 50 s more for that message,
+  62 s in all in the real test; it now waits for one pool tick (10 s). Backoffs after a
+  capacity ceiling or a launch rejection also end on time instead of at the next
+  message. Cutting a poll short loses no message: GitHub returns a message again until
+  the listener deletes it, which it does only after handling it.
+
 ## 0.5.0 (2026-10-12)
 
 - Preview: `runneryard merge-queue tick` runs one tick of a merge queue inside a GitHub
