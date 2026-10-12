@@ -4,6 +4,48 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
+## 0.5.6 (2026-10-12)
+
+- A pool slot start that answers late is kept. Why: a start that outlasted the
+  controller's 90 s timeout, or whose SSH session ended before the answer, was
+  counted as a failed launch and its slot torn down, although the host agent had
+  started the runner. The host agent now keeps a start running for up to two
+  minutes, and the controller lists the host again for up to 30 s: a slot that runs
+  a container with the same lease, runner name and controller ID is committed as a
+  normal launch and logged at INFO. Anything else, or a listing failure, keeps the
+  ambiguous-start path as it was.
+- Routine stop logs are quieter. Why: a runner exits after its one job, so its slot
+  is listed stopped before GitHub's completion arrives, and every pool job logged a
+  warning about a stopped worker and then one about an unknown runner. The
+  controller now logs that retirement at INFO, remembers the worker, and matches the
+  start and completion messages that follow. A stopped worker whose completion has
+  not arrived after five minutes is reported once at WARN, and a failed or unknown
+  stopped worker still warns at once.
+- The pool status reports occupancy and cost. Each host measures, from the moment
+  this controller process first sees it, its billed running time, its ready time,
+  and the slot time that held a runner; the pool adds them up, returned hosts
+  included, as `occupancy` (busy slot time over paid slot time) and
+  `ready_occupancy` (over the slot time of ready hosts only). `measured_cost` covers
+  the same time, and `ephemeral_equivalent` prices the busy slot time at the worker
+  price of the first tier that knows it, through a new optional `provider.Pricer`
+  that the Fly adapter implements. Why: an operator could not tell whether a second
+  host was busy enough to pay for itself. The figures live in memory and start again
+  at zero when the controller restarts (`measured_since`); `runneryard status` prints
+  one line per pool and one per host. A Hetzner ephemeral tier bills per started
+  hour and has no comparison.
+- The controller alerts on pool conditions. Why: a pool problem, such as a host
+  that stopped answering or a host source whose token was revoked, only showed in
+  the log, and a log watcher that dies on an expired token stays silent. The pools
+  now report nine conditions (`host_source_unavailable`, `image_tag_unresolved`,
+  `host_launch_failing`, `host_boot_failed`, `host_unreachable`, `host_not_serving`,
+  `host_refusing`, `foreign_slot`, `pool_overflowing`), read every five seconds. Each
+  one is logged when it appears and when it clears, listed under
+  `compute.pools[].conditions` in `status.json`, and with `ALERT_WEBHOOK_URL` sent as
+  one message when it appears, one when it clears, and a reminder at most hourly.
+  A message says what is wrong and what to do, and never carries provider error
+  text, addresses, tokens or JIT configuration. The normal life of a host raises
+  nothing. `docs/operations.md` lists when each condition is raised and cleared.
+
 ## 0.5.5 (2026-10-12)
 
 - A pool starts a speculative runner in a free slot for a job that already waits on

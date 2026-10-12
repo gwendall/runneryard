@@ -1,6 +1,6 @@
 {
   "name": "runneryard",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "description": "Run ephemeral GitHub Actions runners on infrastructure you control",
   "license": "MIT",
   "type": "module",
