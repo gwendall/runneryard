@@ -168,10 +168,10 @@ install -d -o runner -g runner -m 0755 "$marker_dir"
 rm -f "$marker_dir/job-started" "$marker_dir/idle-timeout"
 rm -f "$marker_dir/home-ownership-restored"
 
-# A pool slot keeps its caches and Docker data in volumes between jobs (never
-# its workspace), and a new volume's root is owned by root. Give the runner its
-# mount points before the ownership scan below, which would otherwise blame the
-# image.
+# A pool slot keeps its caches and Docker data in volumes between jobs, and
+# its workspace is a new, empty host directory for every job; a new volume's
+# root and that directory are owned by root. Give the runner its mount points
+# before the ownership scan below, which would otherwise blame the image.
 reused_slot=0
 if [[ "${RUNNERYARD_REUSED_SLOT:-}" == 1 ]]; then
   reused_slot=1

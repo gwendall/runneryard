@@ -33,6 +33,9 @@ const (
 	// BootPort is the agent's SSH port. Fly's init already serves its own
 	// SSH, for fly ssh console, on port 22 of the private address.
 	BootPort = "2222"
+	// bootWorkspaces holds the slots' work directories under BootDataRoot,
+	// on the same volume as Docker's data.
+	bootWorkspaces = "workspaces"
 
 	dockerdConfigPath  = "/etc/docker/daemon.json"
 	dockerdLogPath     = "/var/log/dockerd.log"
@@ -117,21 +120,34 @@ func Boot(ctx context.Context, options BootOptions) error {
 	if removed > 0 {
 		log.Info("removed slot containers left by the previous run", "containers", removed)
 	}
+	// Their work directories go too; the purger deletes them, and any an
+	// earlier run left retired, once the agent serves.
+	workRoot := filepath.Join(options.DataRoot, bootWorkspaces)
+	retired, err := RetireWorkspaces(workRoot)
+	if err != nil {
+		return fmt.Errorf("retire the work directories left by the previous run: %w", err)
+	}
+	if retired > 0 {
+		log.Info("retired work directories left by the previous run", "directories", retired)
+	}
+	purger := NewWorkspacePurger(workRoot, log)
 	listener, err := net.Listen("tcp", options.Listen)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", options.Listen, err)
 	}
 	var cachesFilled atomic.Bool
 	agent := &Agent{
-		Config:       cfg,
-		LocalImage:   LocalImageName(cfg.Image),
-		Docker:       docker,
-		FreeBytes:    FreeBytes,
-		Lock:         SlotLock(options.LockDir),
-		CPUs:         OnlineCPUs(),
-		CachesFilled: cachesFilled.Load,
-		Now:          time.Now,
-		Version:      options.Version,
+		Config:          cfg,
+		LocalImage:      LocalImageName(cfg.Image),
+		Docker:          docker,
+		FreeBytes:       FreeBytes,
+		Lock:            SlotLock(options.LockDir),
+		CPUs:            OnlineCPUs(),
+		CachesFilled:    cachesFilled.Load,
+		WorkRoot:        workRoot,
+		PurgeWorkspaces: purger.Wake,
+		Now:             time.Now,
+		Version:         options.Version,
 	}
 	if cfg.SlotCPUs > 0 && !agent.SlotsPinned() {
 		log.Warn("slots get a CPU quota but see every host CPU: pinning needs a whole slot_cpus and slots x slot_cpus host CPUs; tools that size their parallelism by the CPU count will oversubscribe",
@@ -142,6 +158,8 @@ func Boot(ctx context.Context, options BootOptions) error {
 	defer cancel()
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(serveCtx, listener) }()
+	go purger.Run(serveCtx)
+	purger.Wake()
 	log.Info("pool host agent listening", "address", listener.Addr().String(), "slots", cfg.Slots, "image", cfg.Image)
 	// The agent answers "not ready" until the image is present and the slot
 	// caches are filled, so the controller sees the host while the import or

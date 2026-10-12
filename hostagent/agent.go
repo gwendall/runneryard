@@ -163,8 +163,19 @@ type Agent struct {
 	// host install fills the caches before the controller can reach the host
 	// and leaves it nil.
 	CachesFilled func() bool
-	Now          func() time.Time
-	Version      string
+	// WorkRoot holds the slots' work directories on the host, one per lease
+	// (see workspace.go). Empty leaves a job's work directory in its
+	// container's writable layer, which docker rm then deletes.
+	WorkRoot string
+	// PurgeWorkspaces starts deleting the retired work directories and
+	// returns at once; host boot sets it to a WorkspacePurger. Nil deletes
+	// them with a helper container.
+	PurgeWorkspaces func()
+	Now             func() time.Time
+	Version         string
+	// purgeWait bounds how long a start low on disk waits for retired work
+	// directories to be deleted; zero means defaultPurgeWait.
+	purgeWait time.Duration
 }
 
 // Handle runs one command. It never returns the JIT configuration or any
@@ -274,8 +285,14 @@ func (a *Agent) start(ctx context.Context, slot int, stdin io.Reader) pool.Reply
 	if reply, ok := a.ensureDisk(ctx, slot); !ok {
 		return reply
 	}
+	var workspace string
+	if a.WorkRoot != "" {
+		if workspace, err = a.prepareWorkspace(ctx, slot, request.LeaseID); err != nil {
+			return refuse(pool.CodeNotReady, "prepare work directory: "+err.Error())
+		}
+	}
 	env := []string{"ACTIONS_RUNNER_INPUT_JITCONFIG=" + request.JITConfig}
-	if _, err := a.Docker.Run(ctx, env, a.runArgs(slot, request)...); err != nil {
+	if _, err := a.Docker.Run(ctx, env, a.runArgs(slot, request, workspace)...); err != nil {
 		// Remove a half-created container, but only one this request made.
 		if labels, found, inspectErr := a.containerLabels(context.WithoutCancel(ctx), name); inspectErr == nil && found && labels[labelLease] == request.LeaseID {
 			_, _ = a.Docker.Run(context.WithoutCancel(ctx), nil, "rm", "--force", name)
@@ -310,7 +327,8 @@ func (a *Agent) validate(request pool.StartRequest) error {
 	return nil
 }
 
-func (a *Agent) runArgs(slot int, request pool.StartRequest) []string {
+// runArgs mounts workspace, when set, as the slot's work directory.
+func (a *Agent) runArgs(slot int, request pool.StartRequest, workspace string) []string {
 	name := containerName(slot)
 	args := []string{
 		"run", "--detach",
@@ -343,6 +361,9 @@ func (a *Agent) runArgs(slot int, request pool.StartRequest) []string {
 	)
 	for _, volume := range a.volumes(slot) {
 		args = append(args, "--mount", "type=volume,source="+volume.name+",target="+volume.target)
+	}
+	if workspace != "" {
+		args = append(args, "--mount", "type=bind,source="+workspace+",target="+workspaceTarget)
 	}
 	// A slot never pulls: start refuses until the image is present.
 	return append(args,
@@ -435,10 +456,10 @@ type volume struct {
 
 // volumes are the slot's persistent paths: the nested Docker data (images
 // and build cache) and the configured caches. The runner work directory is
-// not one of them: it lives in the container and goes with it, so every job
-// checks out into an empty workspace, as on a disposable worker. A kept
-// checkout broke sparse checkouts: actions/checkout leaves the previous job's
-// files outside the new pattern in place, some of them from another commit.
+// not one of them: every job gets a new, empty one (see prepareWorkspace), as
+// on a disposable worker. A kept checkout broke sparse checkouts:
+// actions/checkout leaves the previous job's files outside the new pattern in
+// place, some of them from another commit.
 func (a *Agent) volumes(slot int) []volume {
 	prefix := containerName(slot)
 	volumes := []volume{
@@ -495,6 +516,11 @@ func (a *Agent) ensureDisk(ctx context.Context, slot int) (pool.Reply, bool) {
 	if err != nil || free >= required {
 		return pool.Reply{}, true
 	}
+	// Earlier jobs' work directories may still be on their way out: let their
+	// deletion free the disk before dropping caches it would have spared.
+	if free, err = a.awaitPurge(ctx, required, free); err != nil || free >= required {
+		return pool.Reply{}, true
+	}
 	// The slot has no container, so its volumes are unused: drop them and let
 	// this job start cold rather than fill the disk. The work directory volume
 	// an older agent kept goes too.
@@ -518,16 +544,21 @@ func (a *Agent) remove(ctx context.Context, slot int, leaseID string) pool.Reply
 	if err != nil {
 		return refuse(pool.CodeDockerFailed, err.Error())
 	}
-	if !found {
-		return succeed(map[string]bool{"removed": false})
-	}
-	if labels[labelLease] != leaseID {
+	if found && labels[labelLease] != leaseID {
 		return refuse(pool.CodeLeaseMismatch, "slot holds another lease")
 	}
-	if _, err := a.Docker.Run(ctx, nil, "rm", "--force", name); err != nil {
-		return refuse(pool.CodeDockerFailed, "docker rm: "+err.Error())
+	if found {
+		if _, err := a.Docker.Run(ctx, nil, "rm", "--force", name); err != nil {
+			return refuse(pool.CodeDockerFailed, "docker rm: "+err.Error())
+		}
 	}
-	return succeed(map[string]bool{"removed": true})
+	// The slot has no container now: its work directories go too, deleted in
+	// the background. One that cannot be retired fails the removal, which the
+	// controller retries.
+	if err := a.discardWorkspaces(ctx, slot); err != nil {
+		return refuse(pool.CodeDockerFailed, "retire work directory: "+err.Error())
+	}
+	return succeed(map[string]bool{"removed": found})
 }
 
 func (a *Agent) imagePresent(ctx context.Context) bool {
@@ -550,7 +581,17 @@ func (a *Agent) freeBytes() (uint64, error) {
 	if root == "" {
 		root = defaultDockerFS
 	}
-	return a.FreeBytes(root)
+	free, err := a.FreeBytes(root)
+	if err != nil || a.WorkRoot == "" {
+		return free, err
+	}
+	// A job fills its work directory as well as Docker's data: count the
+	// fuller of the two when they are on different filesystems. A work root
+	// not created yet holds nothing.
+	if work, err := a.FreeBytes(a.WorkRoot); err == nil && work < free {
+		free = work
+	}
+	return free, nil
 }
 
 type container struct {

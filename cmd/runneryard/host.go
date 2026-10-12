@@ -50,9 +50,13 @@ func runHost(args []string) error {
 		ConfigErr: cfgErr,
 		Docker:    hostagent.CLI{},
 		FreeBytes: hostagent.FreeBytes,
-		Lock:      hostagent.SlotLock(hostLockDirectory()),
+		Lock:      hostagent.SlotLock(filepath.Join(hostHome(), "locks")),
 		CPUs:      hostagent.OnlineCPUs(),
-		Version:   version,
+		// The agent account cannot delete what a job's root processes wrote:
+		// with no PurgeWorkspaces, a helper container deletes the retired
+		// work directories.
+		WorkRoot: filepath.Join(hostHome(), "workspaces"),
+		Version:  version,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), hostCommandTimeout)
 	defer cancel()
@@ -60,11 +64,13 @@ func runHost(args []string) error {
 	return json.NewEncoder(os.Stdout).Encode(reply)
 }
 
-func hostLockDirectory() string {
+// hostHome is the agent account's home, which holds the slot locks and the
+// slots' work directories.
+func hostHome() string {
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return filepath.Join(home, "locks")
+		return home
 	}
-	return filepath.Join(hostagent.AgentHome, "locks")
+	return hostagent.AgentHome
 }
 
 type cacheFlags []string

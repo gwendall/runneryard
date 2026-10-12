@@ -193,7 +193,7 @@ pools:
 | `runner_image` | all | Exact image every slot runs. Pin a digest. | `RUNNER_IMAGE` |
 | `slot_cpus`, `slot_memory_mb` | all | Docker limits per slot; `0` for none. A whole `slot_cpus` pins each slot to its own cores, see below. A Fly pool always limits memory, see `memory_mb`. | `0`; Fly `slot_memory_mb`: an equal share of `memory_mb` less 1024 MB |
 | `caches` | all | Runner paths kept between a slot's jobs. | `~/.cache`, `~/.npm`, `~/go` |
-| `min_free_disk_gb` | all | Free disk a start requires; below it the slot's caches are dropped first. | `20` |
+| `min_free_disk_gb` | all | Free disk a start requires, on Docker's data root and the work root; below it the slot's caches are dropped first. | `20` |
 | `speculative` | all | Start a second runner in a free slot for a job still waiting on a booting ephemeral worker, see [How placement works](#how-placement-works). Applies to pools placed before `ephemeral`. | `true` |
 | `hourly_price` | all | Host price for reporting. | Hetzner and Fly: the list price of known types and regions (required otherwise). Static: `0` |
 | `slots` | hetzner, fly | Slots per host, 1 to 64. | Required |
@@ -248,6 +248,57 @@ previous job's files outside its pattern, some of them from another commit
 keeps an unused `runneryard-slot-<n>-work` volume per slot until the disk runs
 low, when it is removed with the slot's caches.
 
+### Workspaces
+
+Each job's workspace is a host directory of its own, `slot-<n>-<lease>`,
+created empty when the job starts and bind-mounted into its slot. It lives in
+the host's work root: `/data/workspaces` on a Fly host, on the same volume as
+Docker's data, and `/var/lib/runneryard/workspaces` on Hetzner and static
+hosts. Only the agent's account can open the work root (`0700`); the slot's
+entrypoint gives the job's directory to the runner. A lease ID that is not a
+plain name is refused before anything is created, so a directory never lands
+outside the work root, and a start never reuses a directory that already
+exists.
+
+Removing a slot removes its container, renames the slot's directories to
+`deleting-<name>-<random>` in the same work root, and answers. Listing the
+host never touches them. They are deleted afterwards, outside Docker:
+
+- A Fly host's agent, which runs as root, deletes them itself, one at a time.
+- On Hetzner and static hosts the agent is not root and cannot delete what a
+  job's root processes wrote, so it starts a short-lived container of the
+  slot's image that deletes them and is removed when done. That container
+  sees the work root only, has no network, a read-only root filesystem and no
+  capabilities but the two `rm` needs to delete files it does not own, and
+  never pulls an image (`--pull never`).
+
+Neither follows links: a link a job left in its workspace is deleted, not what
+it points to. RunnerYard 0.5.4 and earlier kept the workspace in the
+container's writable layer, which `docker rm` deletes before it returns: a
+job that left 3.2 GB in 250,000 files took 12 s to remove on a Fly host, and
+a larger one could outlast the controller's 20 s call, which then retried a
+removal the first one still held the slot for. The same removal now answers
+in under half a second.
+
+The space a workspace held comes back seconds after the removal instead of
+before it answers. `min_free_disk_gb` counts the fuller of Docker's data root
+and the work root when they are on different filesystems, and a start that
+finds the disk below it while workspaces are still being deleted waits for
+them, up to 30 s, before dropping the slot's caches.
+
+What happens when a step fails:
+
+| Failure | Outcome |
+| --- | --- |
+| The job's directory cannot be created | The start is refused as not ready, and the job goes to another host. |
+| A directory cannot be renamed | The removal fails, and the controller retries it. |
+| A directory cannot be deleted | It stays `deleting-...` and is tried again whenever another workspace is retired, by a start that finds the disk low, and at a Fly host's next boot. A Fly host logs each failure; the helper container keeps no logs, so on other hosts look for `deleting-` directories in the work root. Until they go, the space they hold counts against `min_free_disk_gb`. |
+| The host stops mid-job | A Fly host's boot removes the slot containers left behind, then retires and deletes every workspace. On Hetzner and static hosts, a slot's directories are retired at its next start or removal. |
+
+Running `host install` again with fewer `--slots` leaves the dropped slots'
+directories in place: remove `/var/lib/runneryard/workspaces/slot-<n>-*` for
+those slots by hand once their containers are gone.
+
 ## Hetzner pools
 
 Pool hosts are Cloud Servers in the same project as `HCLOUD_TOKEN`, created
@@ -284,8 +335,9 @@ image itself, as root, with `runneryard host boot`:
 
 1. reads the host configuration, its derived host key and the controller's
    public key, written as Machine files at creation;
-2. starts `dockerd` with its data root on the volume, and removes any slot
-   container a previous run left behind. `dockerd`, `containerd` and the
+2. starts `dockerd` with its data root on the volume, removes any slot
+   container a previous run left behind, and deletes every workspace in the
+   background (see [Workspaces](#workspaces)). `dockerd`, `containerd` and the
    agent run with the out-of-memory score systemd gives Docker (`-500`), and
    every slot has a memory limit that leaves 1024 MB to them: a job that
    exhausts memory is killed in its own slot instead of taking the host's

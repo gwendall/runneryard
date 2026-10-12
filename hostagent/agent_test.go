@@ -476,6 +476,7 @@ func TestStartRunsTheSlotWithTheJITOnlyInItsEnvironment(t *testing.T) {
 	t.Parallel()
 	docker := newFakeDocker()
 	agent := newTestAgent(docker)
+	agent.WorkRoot = testWorkRoot(t)
 	locks := &lockRecorder{}
 	agent.Lock = locks.lock
 	request := validStartRequest()
@@ -530,6 +531,7 @@ func TestStartRunsTheSlotWithTheJITOnlyInItsEnvironment(t *testing.T) {
 		"--mount", "type=volume,source=runneryard-slot-1-docker,target=/var/lib/docker",
 		"--mount", "type=volume,source=runneryard-slot-1-cache-home-runner-.cache,target=/home/runner/.cache",
 		"--mount", "type=volume,source=runneryard-slot-1-cache-opt-hostedtoolcache,target=/opt/hostedtoolcache",
+		"--mount", "type=bind,source=" + filepath.Join(agent.WorkRoot, "slot-1-lease-0001") + ",target=/home/runner/_work",
 		"--pull", "never",
 		"--entrypoint", "/usr/bin/dumb-init",
 		agentTestImage, "--", "/usr/local/bin/runner-entrypoint",
@@ -546,17 +548,53 @@ func TestStartRunsTheSlotWithTheJITOnlyInItsEnvironment(t *testing.T) {
 // every job must start in an empty workspace, as on a disposable worker.
 func TestStartGivesEveryJobAnEmptyWorkspace(t *testing.T) {
 	t.Parallel()
-	docker := newFakeDocker()
-	decodeOK(t, newTestAgent(docker).Handle(context.Background(), "start 0", requestBody(t, validStartRequest())), nil)
-	run := docker.find("run --detach")[0]
-	for i, arg := range run.args {
-		if arg == "--mount" && strings.Contains(run.args[i+1], "/home/runner/_work") {
-			t.Fatalf("slot mounts %q: the workspace would outlive the job", run.args[i+1])
+	t.Run("in the container", func(t *testing.T) {
+		t.Parallel()
+		docker := newFakeDocker()
+		decodeOK(t, newTestAgent(docker).Handle(context.Background(), "start 0", requestBody(t, validStartRequest())), nil)
+		run := docker.find("run --detach")[0]
+		for i, arg := range run.args {
+			if arg == "--mount" && strings.Contains(run.args[i+1], "/home/runner/_work") {
+				t.Fatalf("slot mounts %q without a work root", run.args[i+1])
+			}
 		}
-	}
-	if keys := docker.keys(); slices.Contains(keys, "volume rm") {
-		t.Fatalf("docker calls = %q: a start with free disk removes no volume", keys)
-	}
+		if keys := docker.keys(); slices.Contains(keys, "volume rm") {
+			t.Fatalf("docker calls = %q: a start with free disk removes no volume", keys)
+		}
+	})
+	t.Run("on the host", func(t *testing.T) {
+		t.Parallel()
+		docker := newFakeDocker()
+		agent := newTestAgent(docker)
+		agent.WorkRoot = testWorkRoot(t)
+		purges := 0
+		agent.PurgeWorkspaces = func() { purges++ }
+		// What a crash left: this slot's directory of an earlier lease, and
+		// one of this very lease, both with files. Slot 1's is in use.
+		for _, name := range []string{"slot-0-lease-0000", "slot-0-lease-0001", "slot-1-lease-0009"} {
+			writeTree(t, filepath.Join(agent.WorkRoot, name))
+		}
+		decodeOK(t, agent.Handle(context.Background(), "start 0", requestBody(t, validStartRequest())), nil)
+
+		workspace := filepath.Join(agent.WorkRoot, "slot-0-lease-0001")
+		run := docker.find("run --detach")[0]
+		if !hasPair(run.args, "--mount", "type=bind,source="+workspace+",target=/home/runner/_work") {
+			t.Fatalf("run args %q do not mount %s", run.args, workspace)
+		}
+		if entries, err := os.ReadDir(workspace); err != nil || len(entries) != 0 {
+			t.Fatalf("workspace holds %v (%v), want a new empty directory", entries, err)
+		}
+		retired, live := workspaceNames(t, agent.WorkRoot)
+		if len(retired) != 2 || !strings.HasPrefix(retired[0], "deleting-slot-0-lease-0000-") || !strings.HasPrefix(retired[1], "deleting-slot-0-lease-0001-") {
+			t.Fatalf("retired = %q, want both of slot 0's earlier directories", retired)
+		}
+		if !slices.Equal(live, []string{"slot-0-lease-0001", "slot-1-lease-0009"}) {
+			t.Fatalf("live = %q, want the new directory and slot 1's untouched", live)
+		}
+		if purges != 1 {
+			t.Fatalf("purges = %d, want one for the retired directories", purges)
+		}
+	})
 }
 
 func TestStartRunsTheLocalImageAndLabelsTheConfiguredOne(t *testing.T) {
@@ -1059,10 +1097,12 @@ func TestRemoveIsLeaseScoped(t *testing.T) {
 		removed  *bool
 		wantRm   bool
 		keepsJob bool
+		// retires is whether slot 1's work directory is retired.
+		retires bool
 	}{
-		{name: "empty slot", removed: ptr(false)},
+		{name: "empty slot", removed: ptr(false), retires: true},
 		{name: "slot of another lease", holder: "lease-other", code: pool.CodeLeaseMismatch, keepsJob: true},
-		{name: "slot of this lease", holder: "lease-0001", removed: ptr(true), wantRm: true},
+		{name: "slot of this lease", holder: "lease-0001", removed: ptr(true), wantRm: true, retires: true},
 		{
 			name: "docker rm fails", holder: "lease-0001", fail: map[string]error{"rm --force": errors.New("removal in progress")},
 			code: pool.CodeDockerFailed, wantRm: true, keepsJob: true,
@@ -1083,6 +1123,9 @@ func TestRemoveIsLeaseScoped(t *testing.T) {
 				docker.fail[key] = err
 			}
 			agent := newTestAgent(docker)
+			agent.WorkRoot = testWorkRoot(t)
+			writeTree(t, filepath.Join(agent.WorkRoot, "slot-1-lease-0001"))
+			writeTree(t, filepath.Join(agent.WorkRoot, "slot-0-lease-0002"))
 			locks := &lockRecorder{}
 			agent.Lock = locks.lock
 			reply := agent.Handle(context.Background(), "remove 1 lease-0001", strings.NewReader(""))
@@ -1104,6 +1147,17 @@ func TestRemoveIsLeaseScoped(t *testing.T) {
 			docker.mu.Unlock()
 			if remaining != tc.keepsJob {
 				t.Fatalf("container remaining = %v, want %v", remaining, tc.keepsJob)
+			}
+			retired, live := workspaceNames(t, agent.WorkRoot)
+			wantRetired, wantLive := 0, []string{"slot-0-lease-0002", "slot-1-lease-0001"}
+			if tc.retires {
+				wantRetired, wantLive = 1, wantLive[:1]
+			}
+			if len(retired) != wantRetired || !slices.Equal(live, wantLive) {
+				t.Fatalf("retired %q, live %q: want slot 1's directory retired %v and slot 0's kept", retired, live, tc.retires)
+			}
+			if helpers := len(docker.find("run --rm")); helpers != len(retired) {
+				t.Fatalf("purge helpers = %d, want one per removal that retired a directory", helpers)
 			}
 			if !slices.Equal(locks.locked, []int{1}) || locks.released != 1 {
 				t.Fatalf("locks = %v released %d, want slot 1 locked and released once", locks.locked, locks.released)
