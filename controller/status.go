@@ -149,6 +149,9 @@ type statusReporter struct {
 	done     chan struct{}
 	alerter  *alerter
 	compute  provider.StatusReporter
+	// conditions logs and alerts on the compute's conditions, when it
+	// reports any.
+	conditions *conditionWatch
 }
 
 // computeStatusInterval paces how often the compute's own state is sampled.
@@ -184,6 +187,7 @@ func newStatusReporter(cfg Config, budget BudgetStatus) (*statusReporter, error)
 		return nil, err
 	}
 	reporter.alerter = alerts
+	reporter.conditions = &conditionWatch{logger: logger, alerter: alerts}
 	if err := writeStatusFile(reporter.file, reporter.status); err != nil {
 		return nil, fmt.Errorf("initialize fleet status: %w", err)
 	}
@@ -380,6 +384,9 @@ func (reporter *statusReporter) sampleCompute() {
 	reporter.mu.Unlock()
 	if source == nil {
 		return
+	}
+	if conditions, ok := source.(provider.ConditionReporter); ok {
+		reporter.conditions.observe(conditions.Conditions(), reporter.now())
 	}
 	encoded, err := json.Marshal(source.ComputeStatus())
 	if err != nil {

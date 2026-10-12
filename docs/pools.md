@@ -586,6 +586,8 @@ workers do:
   the digest the tag names, with one `HEAD` request for the manifest, and
   creates new hosts from `<name>@<digest>`. A failed read is retried a minute
   later; hosts keep their image meanwhile, and `status.json` shows the error.
+  Reads failing for 15 minutes raise the
+  [`image_tag_unresolved`](operations.md#pool-alerts) condition.
   Until the first read succeeds, new hosts are created from the tag itself,
   as before.
 - **Which digest.** It is the digest the registry stores for the tag: for an
@@ -719,6 +721,14 @@ start them.
 from the host's start or creation, so a host adopted at startup brings the
 hours it ran before. `cost` is `billed_hours` times `hourly_price`, without a
 stopped host's storage.
+
+`conditions`, present only while a pool has a problem, lists each one with
+its `key`, `summary`, `action` and `since`: a host that stopped answering,
+host launches or boots that keep failing, a host source the controller cannot
+list, a followed image tag it cannot resolve, sustained overflow at the
+pool's ceiling. The controller logs each condition and, with
+`ALERT_WEBHOOK_URL`, alerts on it. See [Pool alerts](operations.md#pool-alerts)
+for every condition and what to do.
 
 ### Occupancy and cost
 

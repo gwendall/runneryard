@@ -62,6 +62,24 @@ type Pricer interface {
 	WorkerHourlyPrice() (price float64, currency string, ok bool)
 }
 
+// Condition is a problem the compute reports for the operator, such as a pool
+// host that stopped answering. Key names the problem and stays the same while
+// it lasts. Summary says what is wrong and Action what to do; neither carries
+// provider error text, addresses, or credentials.
+type Condition struct {
+	Key     string    `json:"key"`
+	Summary string    `json:"summary"`
+	Action  string    `json:"action,omitempty"`
+	Since   time.Time `json:"since"`
+}
+
+// ConditionReporter is implemented by a StatusReporter whose problems the
+// controller logs and alerts on. Conditions returns the problems present now:
+// one that is no longer returned has cleared.
+type ConditionReporter interface {
+	Conditions() []Condition
+}
+
 // Speculator is implemented by compute that holds spare room where a worker
 // starts in seconds, such as the free slots of a pool's ready hosts, next to
 // tiers that boot a machine per worker. The core starts a second runner there

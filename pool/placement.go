@@ -285,11 +285,25 @@ func (p *Placement) workerPrice() (string, float64, string, bool) {
 	return "", 0, "", false
 }
 
+// Conditions reports the conditions of every tier that has some, in tier
+// order.
+func (p *Placement) Conditions() []provider.Condition {
+	conditions := make([]provider.Condition, 0)
+	for _, tier := range p.tiers {
+		if reporter, ok := tier.Compute.(provider.ConditionReporter); ok {
+			conditions = append(conditions, reporter.Conditions()...)
+		}
+	}
+	return conditions
+}
+
 var (
-	_ provider.Compute        = (*Placement)(nil)
-	_ provider.Maintainer     = (*Placement)(nil)
-	_ provider.StatusReporter = (*Placement)(nil)
-	_ provider.Speculator     = (*Placement)(nil)
-	_ spareTier               = (*Pool)(nil)
-	_ provider.Maintainer     = (*Pool)(nil)
+	_ provider.Compute           = (*Placement)(nil)
+	_ provider.Maintainer        = (*Placement)(nil)
+	_ provider.StatusReporter    = (*Placement)(nil)
+	_ provider.ConditionReporter = (*Placement)(nil)
+	_ provider.Speculator        = (*Placement)(nil)
+	_ spareTier                  = (*Pool)(nil)
+	_ provider.Maintainer        = (*Pool)(nil)
+	_ provider.ConditionReporter = (*Pool)(nil)
 )

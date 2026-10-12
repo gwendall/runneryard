@@ -319,6 +319,43 @@ failed POST is logged and the next transition sends again. Pair it with
 `runneryard status` for the detail; the message itself only carries the
 reason, aggregate capacity and worker counts, and the budget horizon.
 
+### Pool alerts
+
+With [host pools](pools.md), the controller also alerts on pool conditions,
+read from the pools every five seconds. A condition sends one message when it
+appears, one when it clears (`cleared after <duration>: ...`), and a reminder
+at most hourly while it lasts (`(still, for <duration>)`). The changes of one
+reading go out in a single message of at most ten lines. A message names the
+pool and the host, says what is wrong and what to do; it never carries
+provider error text, addresses, tokens or JIT configuration. The controller
+log has the error behind each condition.
+
+Without `ALERT_WEBHOOK_URL`, each condition is only logged: a `compute
+condition` warning when it appears and a `compute condition cleared` line
+when it clears. The current conditions are also in `status.json`, under
+`compute.pools[].conditions`.
+
+The normal life of a host raises nothing: its creation and boot, an idle stop
+or return, a start of a stopped host, a host drained and replaced after a
+runner image change or a move of the followed image tag, a burst that
+overflows while a host boots, a slot start that answers late, a removal that
+fails once.
+
+| Condition | Raised when | Clears when | What to do |
+| --- | --- | --- | --- |
+| `host_source_unavailable` | The pool's host source (the Hetzner or Fly API) has failed to list hosts for five minutes. The pool keeps using the hosts it knows. | A listing succeeds. | Check the provider token (a revoked or expired token fails here first) and the provider's status page. |
+| `image_tag_unresolved` | A pool that follows a runner image tag (`runner_image` set to a tag on a Fly pool) has failed to resolve it for fifteen minutes. Hosts keep their image. | The tag resolves. | Check the registry token and that the tag still exists in the repository. New hosts use the last digest resolved meanwhile. |
+| `host_launch_failing` | Three host launches in a row failed: a creation round (one per backoff step), a start of a stopped host, or a started host stopping before it is ready. The message names the last failure's capacity reason, or `provider_error`. | A creation succeeds or a host becomes ready. | Check the provider quota, capacity in the region, and the token. Jobs go to the next tier meanwhile. |
+| `host_boot_failed` | A host the pool created or started was not ready within its boot timeout (ten minutes) and was deleted, or a host the pool just created runs a runner image the pool does not accept. | A host of the pool becomes ready, or the pool stops retrying: no host on its way and no job finding the pool full for 30 minutes. The next failed boot raises it again. | Read the host's boot log (cloud-init, or the Fly Machine's logs) and check the pool's `runner_image`. Until fixed, each demand creates a host billed while it boots. |
+| `host_unreachable` | A ready or draining host has not answered for longer than the unreachable grace (two minutes). | The host answers, is stopped, or is deleted. A Hetzner or Fly pool deletes it once silent for longer than the maximum worker lifetime. | Check the host and the network from the controller to it. Jobs running there fail if it does not come back. |
+| `host_not_serving` | A host the pool did not see boot (found at startup, or started by hand) has not become ready for ten minutes, or a static host has been draining for ten minutes, such as after a runner image change. | The host becomes ready or goes away. | Check the host's agent. Update a static host to the pool's runner image, then restart the controller: a static host is never replaced. |
+| `host_refusing` | A ready host failed three slot starts in a row: `disk_full`, `not_ready`, `unreachable`, or a start it could not confirm even by reading the slot back (`start_unconfirmed`, `docker_failed`). A start that answers late but runs its runner counts as a launch. | A slot starts there, or the host becomes ready again after a stop. | Check the host's agent; for `disk_full`, free its disk. The pool tries its other hosts first meanwhile. |
+| `foreign_slot` | A host's slot has held a container this controller did not start for five minutes. | The container is gone. | Look for a second controller using the host, or a container started by hand or under an old `CONTROLLER_ID`, and remove it. |
+| `pool_overflowing` | Over the last hour, at least 20 launches found the pool full, no fewer than it took, while it could not add a host (at `max_hosts`, or a static pool). | Fewer than 10 launches overflow in the last hour, or under a quarter of them. | Jobs went to the next tier, or waited if the pool is the last one. If the load lasts, raise `max_hosts` or `slots`, or add static hosts. |
+
+A condition still present when the controller restarts is alerted again once
+it is detected after the restart.
+
 ## Doctor reads the fleet as it runs
 
 Two `doctor` checks read the live fleet, not only its configuration, because both were
