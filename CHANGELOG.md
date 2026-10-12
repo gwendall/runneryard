@@ -4,7 +4,7 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
-## Unreleased
+## 0.5.4 (2026-10-12)
 
 - A pool host fills every slot's cache volumes from the runner image before it reports
   ready (`host boot` once the image is present, `host install` after its pull), instead
