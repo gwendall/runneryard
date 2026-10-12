@@ -133,7 +133,10 @@ version and commit, and rerun the canary. Do not regenerate the budget ledger.
 
 The adapter creates one Machine with:
 
-- `auto_destroy=true`
+- `auto_destroy=true`: Fly destroys the worker when it exits, and the
+  controller deletes it after its job completes; whichever comes second finds
+  the Machine gone or refuses with `412` while Fly destroys it, and the adapter
+  accepts both
 - restart policy `no`
 - a 30-second SIGTERM window
 - 2 performance CPUs, 8 GB RAM, and 30 GB ephemeral rootfs by default
