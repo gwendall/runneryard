@@ -48,6 +48,16 @@ const (
 // MinimumSlotMemoryMB is the smallest memory limit a slot accepts.
 const MinimumSlotMemoryMB = 512
 
+// defaultExitWait is how long a removal lets a running slot container exit on
+// its own before forcing it. A runner exits after its one job, and the
+// controller asks for the removal as soon as the job completes, so the
+// container is often exiting already. Forcing it then races the exit: dockerd
+// can miss the exit event, wait 10 s for the kill to take, and SIGKILL again,
+// and a removal that took 41 s on a production pool host also held up every
+// "docker inspect" of that container, so the host's listing timed out. The
+// wait stays well inside the controller's 20 s call timeout.
+const defaultExitWait = 5 * time.Second
+
 var (
 	safeLabelValue = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
 	safeHostname   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,62}$`)
@@ -176,6 +186,9 @@ type Agent struct {
 	// purgeWait bounds how long a start low on disk waits for retired work
 	// directories to be deleted; zero means defaultPurgeWait.
 	purgeWait time.Duration
+	// exitWait bounds how long a removal waits for a running slot container
+	// to exit on its own; zero means defaultExitWait.
+	exitWait time.Duration
 }
 
 // Handle runs one command. It never returns the JIT configuration or any
@@ -540,14 +553,17 @@ func (a *Agent) ensureDisk(ctx context.Context, slot int) (pool.Reply, bool) {
 
 func (a *Agent) remove(ctx context.Context, slot int, leaseID string) pool.Reply {
 	name := containerName(slot)
-	labels, found, err := a.containerLabels(ctx, name)
+	item, found, err := a.inspectContainer(ctx, name)
 	if err != nil {
 		return refuse(pool.CodeDockerFailed, err.Error())
 	}
-	if found && labels[labelLease] != leaseID {
+	if found && item.Config.Labels[labelLease] != leaseID {
 		return refuse(pool.CodeLeaseMismatch, "slot holds another lease")
 	}
 	if found {
+		if item.State.Status == "running" {
+			a.awaitExit(ctx, name)
+		}
 		if _, err := a.Docker.Run(ctx, nil, "rm", "--force", name); err != nil {
 			return refuse(pool.CodeDockerFailed, "docker rm: "+err.Error())
 		}
@@ -650,18 +666,36 @@ func (a *Agent) slotByName(ctx context.Context, name string) (pool.Slot, error) 
 }
 
 func (a *Agent) containerLabels(ctx context.Context, name string) (map[string]string, bool, error) {
+	item, found, err := a.inspectContainer(ctx, name)
+	return item.Config.Labels, found, err
+}
+
+func (a *Agent) inspectContainer(ctx context.Context, name string) (container, bool, error) {
 	output, err := a.Docker.Run(ctx, nil, "inspect", "--type", "container", name)
 	if err != nil {
 		if notFound(err) {
-			return nil, false, nil
+			return container{}, false, nil
 		}
-		return nil, false, fmt.Errorf("docker inspect: %w", err)
+		return container{}, false, fmt.Errorf("docker inspect: %w", err)
 	}
 	var containers []container
 	if err := json.Unmarshal(output, &containers); err != nil || len(containers) != 1 {
-		return nil, false, errors.New("unexpected docker inspect output")
+		return container{}, false, errors.New("unexpected docker inspect output")
 	}
-	return containers[0].Config.Labels, true, nil
+	return containers[0], true, nil
+}
+
+// awaitExit gives a running container up to exitWait to exit on its own, so
+// that the removal which follows does not race its exit (see
+// defaultExitWait). Whatever the wait ends on, the removal forces what is left.
+func (a *Agent) awaitExit(ctx context.Context, name string) {
+	wait := a.exitWait
+	if wait <= 0 {
+		wait = defaultExitWait
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	_, _ = a.Docker.Run(waitCtx, nil, "wait", name)
 }
 
 func toSlot(item container) (pool.Slot, bool) {
