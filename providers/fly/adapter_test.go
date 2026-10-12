@@ -91,6 +91,23 @@ func TestNewNormalizesExplicitDockerDNS(t *testing.T) {
 	}
 }
 
+func TestWorkerHourlyPriceIsTheListedMachinePrice(t *testing.T) {
+	for region, listed := range map[string]bool{"cdg": true, "nrt": false} {
+		adapter, err := New(Config{
+			APIBaseURL: "https://api.example.test", APIToken: "fly-token", App: "ci-runners", Region: region,
+			Image: "registry.fly.io/ci-runners:test", ControllerID: "test-controller",
+			CPUKind: "performance", CPUs: 2, MemoryMB: 8192, RootFSGB: 30,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, _ := HourlyPriceUSD("performance", 2, 8192, region)
+		if price, currency, ok := adapter.WorkerHourlyPrice(); ok != listed || price != want || currency != "USD" {
+			t.Fatalf("%s worker price = %v %s, %v; want %v USD, %v", region, price, currency, ok, want, listed)
+		}
+	}
+}
+
 func TestNewRejectsUnsafeDockerDNS(t *testing.T) {
 	for _, value := range []string{
 		"resolver.internal",

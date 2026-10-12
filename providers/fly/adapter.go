@@ -503,4 +503,14 @@ func capacityReason(status int, message string) string {
 	return ""
 }
 
-var _ provider.Compute = (*Adapter)(nil)
+// WorkerHourlyPrice returns the listed price of one worker Machine hour, for
+// regions with a listed multiplier.
+func (a *Adapter) WorkerHourlyPrice() (float64, string, bool) {
+	price, ok := HourlyPriceUSD(a.cpuKind, a.cpus, a.memoryMB, a.region)
+	return price, "USD", ok
+}
+
+var (
+	_ provider.Compute = (*Adapter)(nil)
+	_ provider.Pricer  = (*Adapter)(nil)
+)

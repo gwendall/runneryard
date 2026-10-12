@@ -678,10 +678,23 @@ every five seconds (abridged):
   "tiers": ["warm", "ephemeral"],
   "speculative": ["warm"],
   "pools": [{
-    "name": "warm", "billing": "per_started_hour", "hourly_price": 0.1114,
+    "name": "warm", "billing": "per_second", "hourly_price": 0.4, "currency": "USD",
     "slots_total": 4, "slots_busy": 1, "launched": 212, "overflowed": 3,
-    "returned_hosts": 2, "speculated": 2, "billed_hours": 31, "cost": 3.45,
-    "hosts": [{"id": "hetzner-123", "phase": "ready", "slots": 4, "busy": 1, "reachable": true}]
+    "returned_hosts": 0, "speculated": 2, "host_stops": 2, "host_starts": 2,
+    "billed_hours": 16.5, "cost": 6.6,
+    "measured_since": "2026-10-12T08:00:00Z",
+    "running_seconds": 50400, "ready_seconds": 49680,
+    "slot_seconds": 201600, "busy_slot_seconds": 99360,
+    "occupancy": 0.493, "ready_occupancy": 0.5, "measured_cost": 5.6,
+    "ephemeral_equivalent": {"tier": "ephemeral", "hourly_price": 0.25, "currency": "USD", "cost": 6.9},
+    "hosts": [
+      {"id": "host-1", "phase": "ready", "slots": 4, "busy": 1, "reachable": true,
+       "running_seconds": 36000, "ready_seconds": 35880, "slot_seconds": 144000,
+       "busy_slot_seconds": 79200, "occupancy": 0.55, "ready_occupancy": 0.552},
+      {"id": "host-2", "phase": "stopped", "slots": 4, "busy": 0, "reachable": false,
+       "stopped_at": "2026-10-12T17:40:00Z", "running_seconds": 14400, "ready_seconds": 13800,
+       "slot_seconds": 57600, "busy_slot_seconds": 20160, "occupancy": 0.35, "ready_occupancy": 0.365}
+    ]
   }]
 }
 ```
@@ -702,8 +715,85 @@ means the pool is too small for the load: raise `slots` or `max_hosts`.
 `speculated` counts, within `launched`, the second runners started for jobs
 waiting on a booting ephemeral worker; `speculative` lists the pools that
 start them.
-`billed_hours` and `cost` cover what this controller process has seen since
-it started.
+`billed_hours` and `cost` count every host this controller process has seen,
+from the host's start or creation, so a host adopted at startup brings the
+hours it ran before. `cost` is `billed_hours` times `hourly_price`, without a
+stopped host's storage.
+
+### Occupancy and cost
+
+`runneryard status` prints one line per pool and one per host from the same
+fields:
+
+```text
+Pool        warm  2 host(s)  occupancy 49.3% (ready 50.0%)  cost USD 5.60  as ephemeral USD 6.90  since 2026-10-12T08:00:00Z
+  host-1  ready  4 slot(s)  running 10h0m0s  occupancy 55.0% (ready 55.2%)
+  host-2  stopped  4 slot(s)  running 4h0m0s  occupancy 35.0% (ready 36.5%)
+```
+
+Every host, and every pool as the sum of its hosts, returned ones included,
+reports:
+
+- `running_seconds`: time the host was billed, from its start or creation to
+  its stop or deletion. A stopped host adds nothing.
+- `ready_seconds`: the part of it the host took jobs. The rest is boots,
+  draining, and stopping.
+- `slot_seconds`: `running_seconds` times the host's slots, the slot time paid
+  for.
+- `busy_slot_seconds`: slot time that held a runner, from its start to its
+  removal, including a runner still waiting for its job. That is the time an
+  ephemeral worker would have run for the same job.
+- `occupancy`: `busy_slot_seconds / slot_seconds`, the share of the paid slot
+  time that held a runner.
+- `ready_occupancy`: the same share of the slot time of ready hosts only, so
+  boots and stops do not count against it.
+
+The pool also reports `measured_cost`: `cost` without the hours its hosts had
+run before this process first saw them, so it covers the same time as the
+usage. `ephemeral_equivalent` prices `busy_slot_seconds` at the hourly price
+of the first tier that knows its worker price: an ephemeral Fly tier in a
+region with a listed multiplier. It is absent otherwise, and for an ephemeral
+Hetzner tier, which bills each worker per started hour. RunnerYard does not
+convert currencies; compare `measured_cost` and `ephemeral_equivalent.cost`
+only when they share one.
+
+These figures are kept in memory: `measured_since` is when this controller
+process started, and a restart starts them again at zero. Read them over a
+period of steady load, not right after a deploy.
+
+`ephemeral_equivalent` is a lower bound. Each ephemeral worker also pays its
+Machine's boot, starts without the host's image and caches, and makes its job
+wait longer. A pool host whose occupancy sits a little under the break-even
+below can still be worth it for its start times.
+
+A host pays for itself when its jobs would have cost more as ephemeral
+workers, that is when its `occupancy` is at least:
+
+```text
+break-even occupancy = pool hourly_price / (slots x ephemeral hourly_price)
+```
+
+Worked example, with made-up prices: hosts at USD 0.40 an hour with 4 slots,
+and ephemeral workers at USD 0.25 an hour. The break-even is
+0.40 / (4 x 0.25) = 0.40, so a host must hold a runner in 40% of its paid slot
+time.
+
+Over the 10 hours of the status above, `host-1` ran all 10 hours and
+`host-2` ran 4 hours for bursts:
+
+| | Running | Busy slot time | Occupancy | Host cost | As ephemeral workers |
+| --- | --- | --- | --- | --- | --- |
+| `host-1` | 10 h | 22 h | 22 / 40 = 0.55 | USD 4.00 | 22 x 0.25 = USD 5.50 |
+| `host-2` | 4 h | 5.6 h | 5.6 / 16 = 0.35 | USD 1.60 | 5.6 x 0.25 = USD 1.40 |
+| pool | 14 h | 27.6 h | 27.6 / 56 = 0.493 | USD 5.60 | USD 6.90 |
+
+The pool as a whole costs less than ephemeral workers would have
+(`measured_cost` 5.60 against `ephemeral_equivalent.cost` 6.90), but the
+second host runs under the break-even: its bursts would have cost USD 0.20
+less as ephemeral workers. If that holds over a week of normal load, set
+`max_hosts` back to 1 and let bursts overflow to the ephemeral tier. A host's
+own cost is its `running_seconds` / 3600 times `hourly_price` for a per-second
+pool; a per-started-hour pool rounds each run up to whole hours.
 
 ## Removing a pool
 
