@@ -16,6 +16,11 @@ controller and worker apps. The CLI doctor treats any worker-app secret as a
 failure. Every worker process also sets `ignore_app_secrets=true`, so a future
 operator mistake cannot inject worker-app secrets into job code.
 
+Job code receives the environment the worker started with: the image's `ENV`,
+the lease variables and the provider's own (Fly's `FLY_*`). Never put a secret
+in a runner image or a worker's environment. A job could read it anyway, since
+`runner` has passwordless `sudo` like a GitHub-hosted runner.
+
 On Hetzner Cloud, use a dedicated project and attach a firewall with no inbound
 rules to every worker. The project token stays on the controller. Cloud-init
 receives only the short-lived JIT configuration and deadline, encoded into a

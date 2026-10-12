@@ -2,7 +2,31 @@
 set -Eeuo pipefail
 
 if [[ "$(id -u)" -ne 0 ]]; then
-  exec sudo --preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE,RUNNERYARD_DOCKER_DNS,RUNNERYARD_DIAG_HOLD,RUNNERYARD_IDLE_TIMEOUT,RUNNERYARD_REUSED_SLOT /usr/local/bin/runner-entrypoint "$@"
+  # sudo resets the environment, which drops the variables the image sets: a
+  # derived image's PATH, npm_config_store_dir or PLAYWRIGHT_BROWSERS_PATH.
+  # Carry the whole environment across for the runner; the root steps below
+  # keep sudo's.
+  RUNNERYARD_RUNNER_ENVIRONMENT="$(env -0 | base64 --wrap=0)"
+  export RUNNERYARD_RUNNER_ENVIRONMENT
+  exec sudo --preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE,RUNNERYARD_DOCKER_DNS,RUNNERYARD_DIAG_HOLD,RUNNERYARD_IDLE_TIMEOUT,RUNNERYARD_REUSED_SLOT,RUNNERYARD_RUNNER_ENVIRONMENT /usr/local/bin/runner-entrypoint "$@"
+fi
+
+# The runner gets the environment the entrypoint started with. Started as
+# root, that is this process's own; after sudo, the one carried across.
+runner_environment=(env)
+if [[ -n "${RUNNERYARD_RUNNER_ENVIRONMENT:-}" ]]; then
+  carried_environment="$(mktemp)"
+  base64 --decode <<<"$RUNNERYARD_RUNNER_ENVIRONMENT" >"$carried_environment"
+  mapfile -d '' carried <"$carried_environment"
+  rm -f "$carried_environment"
+  for entry in "${carried[@]}"; do
+    if [[ "$entry" != [A-Za-z_]*=* ]]; then
+      echo "the environment carried across sudo is malformed" >&2
+      exit 64
+    fi
+  done
+  runner_environment=(env --ignore-environment "${carried[@]}")
+  unset RUNNERYARD_RUNNER_ENVIRONMENT carried carried_environment
 fi
 
 if [[ -z "${ACTIONS_RUNNER_INPUT_JITCONFIG:-}" ]]; then
@@ -233,7 +257,7 @@ fi
 set +e
 timeout --signal=TERM --kill-after=30s "${remaining_seconds}s" \
   setpriv --reuid=runner --regid=runner --init-groups \
-  env HOME=/home/runner USER=runner LOGNAME=runner \
+  "${runner_environment[@]}" HOME=/home/runner USER=runner LOGNAME=runner \
   RUNNER_TOOL_CACHE=/opt/hostedtoolcache ImageOS=ubuntu24 \
   DOCKER_BUILDKIT=1 \
   ACTIONS_RUNNER_HOOK_JOB_STARTED="$job_started_hook" \
