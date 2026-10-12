@@ -4,6 +4,52 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
+## 0.5.5 (2026-10-12)
+
+- A pool starts a speculative runner in a free slot for a job that already waits on
+  a booting ephemeral worker, and GitHub gives the job to whichever runner comes
+  online first, usually the slot's. Why: a job sent to `ephemeral` while the pool was
+  full waited about a minute for its Machine, several after an image change, even
+  when a slot freed seconds later. The controller looks for such jobs on every
+  GitHub message and as soon as a pool host becomes ready, starts at most one runner
+  per waiting job, never more than the free slots of ready hosts and `MAX_RUNNERS`
+  allow, and never creates or starts a host for it. The runner left over releases
+  itself after `RUNNER_IDLE_TIMEOUT`. This is on by default for every pool placed
+  before `ephemeral`; set `speculative: false` on a pool to keep plain placement.
+  Status reports `speculated` per pool and `speculative` in the placement.
+- `EPHEMERAL_SCALE_SET_NAME` registers a second scale set, served by the same
+  controller, whose jobs always get their own ephemeral worker: a workflow opts a
+  job out of the pools with `runs-on: <that name>` without taking the pools out of
+  placement. Both scale sets share `MAX_RUNNERS`, the usage budget, the retirement
+  journal, the launch gate and the status file. Drain the second scale set's workers
+  before unsetting it: a worker of a scale set the controller no longer serves stops
+  the controller, as any unknown runner registration does.
+- A pool slot's workspace is a host directory of its own for every job, bind-mounted
+  at `/home/runner/_work` from the host's work root (`/data/workspaces` on Fly,
+  `/var/lib/runneryard/workspaces` on Hetzner and static hosts, both `0700`).
+  Removing a slot removes its container, renames the directory aside and answers;
+  the directory is deleted afterwards, outside Docker. Why: `docker rm` deleted the
+  workspace from the container's writable layer before it returned, 12 s for a job
+  that left 3.2 GB in 250,000 files and more for larger ones, which held the host
+  agent's lock past the controller's 20 s call timeout and showed as "pool host did
+  not answer". The same removal now answers in under half a second. On Hetzner and
+  static hosts the agent is not root, so a short-lived container of the slot's image
+  deletes the directories: it sees the work root only, has no network, a read-only
+  root filesystem, only the `DAC_OVERRIDE` and `FOWNER` capabilities, and never
+  pulls. Neither deletion follows links. `min_free_disk_gb` now also counts the work
+  root, and a start low on disk waits up to 30 s for pending deletions before it
+  drops the slot's caches.
+- A Fly pool can follow a runner image tag such as `:current` instead of a pinned
+  digest. The controller resolves the tag every 5 minutes, creates new hosts pinned
+  to the digest it read, and replaces hosts on an earlier digest one at a time
+  through the usual drain, so no job is interrupted; a digest whose host fails to
+  create or boot stops further replacements until a host on it is ready. Trust
+  boundary: to read the tag, the controller sends the pool's Fly token to
+  `registry.fly.io` only, over HTTPS, with no redirect followed; every other
+  registry is read anonymously, and hosts still never hold a registry credential.
+  A pool with a pinned digest behaves exactly as before. Hetzner and static pools
+  still require an exact image.
+
 ## 0.5.4 (2026-10-12)
 
 - A pool host fills every slot's cache volumes from the runner image before it reports
