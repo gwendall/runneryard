@@ -558,7 +558,7 @@ func TestAmbiguousLaunchInventoryFailureSurvivesRestart(t *testing.T) {
 			Runner: &scaleset.RunnerReference{ID: 42}, EncodedJITConfig: "jit-secret",
 		},
 	}
-	if started, err := scaler.startWorker(context.Background()); err == nil || started {
+	if started, err := scaler.startWorker(context.Background(), nil); err == nil || started {
 		t.Fatal("expected ambiguous launch cleanup to fail closed")
 	}
 	entries := queue.all()

@@ -73,6 +73,11 @@ type Config struct {
 	IdleStop           time.Duration
 	KeepStopped        int
 	DeleteStoppedAfter time.Duration
+
+	// Speculative lets the controller start a second runner in a free slot
+	// for a job that already waits on a later tier's booting worker. See
+	// Placement.LaunchSpare.
+	Speculative bool
 }
 
 type phase string
@@ -170,12 +175,16 @@ type Pool struct {
 	createBackoff   time.Duration
 	launched        uint64
 	overflowed      uint64
+	speculated      uint64
 	returnedHosts   int
 	returnedHours   float64
 	hostStarts      int
 	hostStops       int
 	creations       sync.WaitGroup
 	wake            chan struct{}
+	// roomReady, when set, is called when a host becomes ready, so the
+	// controller can use its slots before its next GitHub message.
+	roomReady func()
 }
 
 // New validates the configuration and returns an idle pool.
@@ -259,6 +268,47 @@ func (p *Pool) Name() string { return p.cfg.Name }
 // Launch starts the lease in a free slot. A full pool returns a capacity error
 // with reason pool_full and creates nothing.
 func (p *Pool) Launch(ctx context.Context, lease provider.Lease) (provider.Worker, error) {
+	return p.launch(ctx, lease, true)
+}
+
+// launchSpare starts a speculative lease in a free slot. A full pool returns
+// the same capacity error as Launch but asks for no host: the job already has
+// a worker on its way.
+func (p *Pool) launchSpare(ctx context.Context, lease provider.Lease) (provider.Worker, error) {
+	worker, err := p.launch(ctx, lease, false)
+	if err == nil {
+		p.mu.Lock()
+		p.speculated++
+		p.mu.Unlock()
+	}
+	return worker, err
+}
+
+// speculative reports whether the pool takes speculative leases.
+func (p *Pool) speculative() bool { return p.cfg.Speculative }
+
+// onRoomReady sets the function called when a host becomes ready.
+func (p *Pool) onRoomReady(notify func()) {
+	p.mu.Lock()
+	p.roomReady = notify
+	p.mu.Unlock()
+}
+
+// freeSlots counts the slots a launch could take now, on ready hosts only.
+func (p *Pool) freeSlots() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.cfg.Now()
+	free := 0
+	for _, h := range p.hosts {
+		if p.takesLeases(h, now) {
+			free += h.freeCount()
+		}
+	}
+	return free
+}
+
+func (p *Pool) launch(ctx context.Context, lease provider.Lease, grow bool) (provider.Worker, error) {
 	if lease.ID == "" || lease.RunnerName == "" || lease.JITConfig == "" || strings.Contains(lease.ID, "/") {
 		return provider.Worker{}, errors.New("pool launch requires a lease ID, a runner name, and a JIT configuration")
 	}
@@ -305,6 +355,9 @@ func (p *Pool) Launch(ctx context.Context, lease provider.Lease) (provider.Worke
 			p.holdSuspect(host.ID, slot, lease)
 			return provider.Worker{}, &provider.PartialLaunchError{Worker: worker, Err: fmt.Errorf("start slot %d on %s: %w", slot, host.ID, err)}
 		}
+	}
+	if !grow {
+		return provider.Worker{}, &provider.CapacityError{Reason: CapacityReasonFull, Err: fmt.Errorf("pool %s: %w", p.cfg.Name, ErrFull)}
 	}
 	retryAfter := p.noteFull()
 	return provider.Worker{}, &provider.CapacityError{Reason: CapacityReasonFull, RetryAfter: retryAfter, Err: fmt.Errorf("pool %s: %w", p.cfg.Name, ErrFull)}
@@ -608,6 +661,10 @@ func (p *Pool) probe(ctx context.Context) {
 			h.startedByPool = false
 			h.startFailures = 0
 			p.log.Info("pool host ready", "host", host.ID, "slots", info.Slots, "boot", now.Sub(firstNonZero(h.bootSince, host.CreatedAt, h.firstSeen)).Round(time.Second))
+			if p.roomReady != nil {
+				// A non-blocking signal, safe under p.mu.
+				p.roomReady()
+			}
 		}
 	}
 }
@@ -682,7 +739,7 @@ func (p *Pool) reserve(leaseID string) (Host, int, bool) {
 	bestFree := 0
 	for _, id := range p.sortedIDs() {
 		h := p.hosts[id]
-		if h.phase != phaseReady || now.Before(h.notBefore) || h.lastContact.IsZero() || now.Sub(h.lastContact) > p.cfg.UnreachableGrace {
+		if !p.takesLeases(h, now) {
 			continue
 		}
 		free := h.freeCount()
@@ -700,6 +757,12 @@ func (p *Pool) reserve(leaseID string) (Host, int, bool) {
 	best.reserved[slot] = leaseID
 	best.emptySince = time.Time{}
 	return best.host, slot, true
+}
+
+// takesLeases reports whether a host may receive a lease now: ready, not
+// backing off after a refusal, and heard from recently. Callers hold p.mu.
+func (p *Pool) takesLeases(h *hostState, now time.Time) bool {
+	return h.phase == phaseReady && !now.Before(h.notBefore) && !h.lastContact.IsZero() && now.Sub(h.lastContact) <= p.cfg.UnreachableGrace
 }
 
 func (p *Pool) release(hostID string, slot int) {
@@ -1232,6 +1295,9 @@ type Status struct {
 	Launched      uint64  `json:"launched"`
 	Overflowed    uint64  `json:"overflowed"`
 	ReturnedHosts int     `json:"returned_hosts"`
+	// Speculated counts the launches, within Launched, of a second runner
+	// for a job already waiting on a later tier's booting worker.
+	Speculated uint64 `json:"speculated"`
 	// HostStops and HostStarts count idle hosts stopped and stopped hosts
 	// started again, for sources that stop hosts.
 	HostStops  int `json:"host_stops,omitempty"`
@@ -1263,7 +1329,7 @@ func (p *Pool) Status() Status {
 	status := Status{
 		Name: p.cfg.Name, Billing: p.facts.Billing, HourlyPrice: p.facts.HourlyPrice, Currency: p.facts.Currency,
 		MinHosts: p.cfg.MinHosts, MaxHosts: p.cfg.MaxHosts, Launched: p.launched, Overflowed: p.overflowed,
-		ReturnedHosts: p.returnedHosts, HostStops: p.hostStops, HostStarts: p.hostStarts,
+		ReturnedHosts: p.returnedHosts, HostStops: p.hostStops, HostStarts: p.hostStarts, Speculated: p.speculated,
 		BilledHours: p.returnedHours, Hosts: make([]HostStatus, 0, len(p.hosts)),
 	}
 	for _, id := range p.sortedIDs() {

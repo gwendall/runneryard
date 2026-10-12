@@ -27,6 +27,19 @@ type Tier struct {
 type Placement struct {
 	tiers  []Tier
 	byName map[string]provider.Compute
+	// spare lists the pools that take speculative runners, in order; room
+	// receives a token when one of them gets a ready host.
+	spare []Tier
+	room  chan struct{}
+}
+
+// spareTier is a pool's side of a speculative launch: free slots used as they
+// are, without creating or starting a host.
+type spareTier interface {
+	freeSlots() int
+	launchSpare(context.Context, provider.Lease) (provider.Worker, error)
+	speculative() bool
+	onRoomReady(func())
 }
 
 // NewPlacement validates the tiers.
@@ -51,7 +64,33 @@ func NewPlacement(tiers ...Tier) (*Placement, error) {
 	if launching == 0 {
 		return nil, errors.New("placement requires at least one tier that starts workers")
 	}
-	return &Placement{tiers: append([]Tier(nil), tiers...), byName: byName}, nil
+	placement := &Placement{tiers: append([]Tier(nil), tiers...), byName: byName, room: make(chan struct{}, 1)}
+	// A pool takes speculative runners for jobs waiting on a later tier that
+	// boots a machine per worker. A pool placed after such a tier is the
+	// operator's overflow for it, and keeps only that role.
+	bootsBefore := false
+	for _, tier := range placement.tiers {
+		if tier.Drain {
+			continue
+		}
+		pool, ok := tier.Compute.(spareTier)
+		if !ok {
+			bootsBefore = true
+			continue
+		}
+		if pool.speculative() && !bootsBefore {
+			placement.spare = append(placement.spare, tier)
+			pool.onRoomReady(placement.signalRoom)
+		}
+	}
+	return placement, nil
+}
+
+func (p *Placement) signalRoom() {
+	select {
+	case p.room <- struct{}{}:
+	default:
+	}
 }
 
 // Launch starts the lease on the first tier with room. A partial launch is
@@ -85,6 +124,55 @@ func (p *Placement) Launch(ctx context.Context, lease provider.Lease) (provider.
 	}
 	return provider.Worker{}, lastErr
 }
+
+// SpareRoom counts the free slots of the speculative pools' ready hosts.
+func (p *Placement) SpareRoom() int {
+	room := 0
+	for _, tier := range p.spare {
+		room += tier.Compute.(spareTier).freeSlots()
+	}
+	return room
+}
+
+// LaunchSpare starts the lease in a free slot of the first speculative pool
+// with one. It never reaches a tier that boots a machine, and a full pool asks
+// for no new host: the job it is for already has a worker on its way.
+func (p *Placement) LaunchSpare(ctx context.Context, lease provider.Lease) (provider.Worker, error) {
+	var lastErr error = &provider.CapacityError{Reason: CapacityReasonFull, Err: fmt.Errorf("no speculative pool: %w", ErrFull)}
+	for _, tier := range p.spare {
+		worker, err := tier.Compute.(spareTier).launchSpare(ctx, lease)
+		if err == nil {
+			worker.ID = tier.Name + ":" + worker.ID
+			return worker, nil
+		}
+		var partial *provider.PartialLaunchError
+		if errors.As(err, &partial) {
+			if partial.Worker.ID != "" {
+				partial.Worker.ID = tier.Name + ":" + partial.Worker.ID
+			}
+			return provider.Worker{}, err
+		}
+		if !provider.IsCapacity(err) {
+			return provider.Worker{}, err
+		}
+		lastErr = err
+	}
+	return provider.Worker{}, lastErr
+}
+
+// Fast reports whether the worker runs in a pool slot, whose runner comes
+// online seconds after its launch, draining or not.
+func (p *Placement) Fast(workerID string) bool {
+	name, _, ok := strings.Cut(workerID, ":")
+	if !ok {
+		return false
+	}
+	_, pool := p.byName[name].(spareTier)
+	return pool
+}
+
+// RoomReady receives a token when a speculative pool gets a ready host.
+func (p *Placement) RoomReady() <-chan struct{} { return p.room }
 
 // Inventory joins every tier's workers. One failing tier fails the whole
 // inventory: a partial list would make the other tier's running workers look
@@ -154,7 +242,9 @@ type PlacementStatus struct {
 	// Tiers is the launch order; Draining lists tiers that start nothing.
 	Tiers    []string `json:"tiers"`
 	Draining []string `json:"draining,omitempty"`
-	Pools    []Status `json:"pools"`
+	// Speculative lists the pools that take speculative runners.
+	Speculative []string `json:"speculative,omitempty"`
+	Pools       []Status `json:"pools"`
 }
 
 // ComputeStatus reports the tier order and every pool tier.
@@ -170,6 +260,9 @@ func (p *Placement) ComputeStatus() any {
 			status.Pools = append(status.Pools, pool.Status())
 		}
 	}
+	for _, tier := range p.spare {
+		status.Speculative = append(status.Speculative, tier.Name)
+	}
 	return status
 }
 
@@ -177,5 +270,7 @@ var (
 	_ provider.Compute        = (*Placement)(nil)
 	_ provider.Maintainer     = (*Placement)(nil)
 	_ provider.StatusReporter = (*Placement)(nil)
+	_ provider.Speculator     = (*Placement)(nil)
+	_ spareTier               = (*Pool)(nil)
 	_ provider.Maintainer     = (*Pool)(nil)
 )
