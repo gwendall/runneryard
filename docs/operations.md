@@ -306,9 +306,11 @@ exhaustion, and MAX_RUNNERS had exceeded the organization's Machine limit two da
   the remaining budget lasts under 14 days at the trailing day's burn rate, or when the
   fleet reports itself degraded. Warns (does not fail) when the controller is unreachable.
 - `fleet capacity margin`: with `--fly-machine-limit <n>` (Fly does not expose the
-  organization's limit; the operator passes it), counts every app's Machines, stopped
-  ones included, and fails when MAX_RUNNERS exceeds the room left. Without the flag it
-  is a hint.
+  organization's limit; the operator passes it), counts the Machines of every app in
+  the worker app's organization, stopped ones and pool hosts included, and fails when
+  MAX_RUNNERS exceeds the room left. Apps of the operator's other organizations do not
+  count: the limit is per organization. It warns instead of passing when an app's
+  Machines cannot be listed. Without the flag it is a hint.
 
 ## Start a repository with the right shape
 

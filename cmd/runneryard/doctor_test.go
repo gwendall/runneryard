@@ -211,6 +211,15 @@ func hasDoctorStatus(checks []doctorCheck, name, status string) bool {
 	return false
 }
 
+func doctorCheckDetails(checks []doctorCheck, name string) string {
+	for _, check := range checks {
+		if check.Name == name {
+			return check.Details
+		}
+	}
+	return ""
+}
+
 func TestDoctorRequiresAlertWebhook(t *testing.T) {
 	for name, tc := range map[string]struct {
 		secrets  string
@@ -238,6 +247,12 @@ func TestDoctorRequiresAlertWebhook(t *testing.T) {
 }
 
 func fleetRunner(statusJSON string, machinesByApp map[string]int) commandRunner {
+	return fleetRunnerInOrganizations(statusJSON, machinesByApp, nil)
+}
+
+// fleetRunnerInOrganizations puts every app in organization "acme" unless
+// organizationByApp names another one.
+func fleetRunnerInOrganizations(statusJSON string, machinesByApp map[string]int, organizationByApp map[string]string) commandRunner {
 	return func(command string, args ...string) ([]byte, error) {
 		if command != "fly" {
 			return []byte("ready"), nil
@@ -262,7 +277,11 @@ func fleetRunner(statusJSON string, machinesByApp map[string]int) commandRunner 
 					out += ","
 				}
 				first = false
-				out += `{"Name":"` + name + `"}`
+				organization := "acme"
+				if other, ok := organizationByApp[name]; ok {
+					organization = other
+				}
+				out += `{"Name":"` + name + `","Organization":{"Slug":"` + organization + `"}}`
 			}
 			return []byte(out + "]"), nil
 		case len(args) > 1 && args[0] == "machines" && args[1] == "list":
@@ -317,5 +336,53 @@ func TestDoctorComparesMaxRunnersWithTheOrganizationMargin(t *testing.T) {
 	checks = doctor("fly", "control", "workers", "", ".runneryard/fly.controller.toml", fleetRunner(status, map[string]int{"workers": 4, "other-a": 36, "other-b": 26}))
 	if !hasDoctorStatus(checks, "fleet capacity margin", "fail") {
 		t.Fatalf("40 over a margin of 38 must fail: %#v", checks)
+	}
+}
+
+func TestDoctorCountsOnlyTheWorkerOrganizationMachines(t *testing.T) {
+	status := `{"health":"ready","budget":{"horizon_seconds":2030000}}`
+	doctorFlyMachineLimit = 100
+	defer func() { doctorFlyMachineLimit = 0 }()
+	// Fly's limit is per organization. 56 Machines in the fleet's organization leave
+	// room for 44; the 22 of another organization the operator belongs to do not count,
+	// although `fly apps list` returns them too.
+	machines := map[string]int{"workers": 4, "other-a": 30, "other-b": 26, "elsewhere": 22}
+	checks := doctor("fly", "control", "workers", "", ".runneryard/fly.controller.toml", fleetRunnerInOrganizations(status, machines, map[string]string{"elsewhere": "side-project"}))
+	if !hasDoctorStatus(checks, "fleet capacity margin", "pass") {
+		t.Fatalf("another organization's Machines must not count: %#v", checks)
+	}
+	if detail := doctorCheckDetails(checks, "fleet capacity margin"); !strings.Contains(detail, "56 Machines belong to other apps of organization acme") {
+		t.Fatalf("detail = %q", detail)
+	}
+	// The worker app in the other organization: only that organization counts.
+	checks = doctor("fly", "control", "workers", "", ".runneryard/fly.controller.toml", fleetRunnerInOrganizations(status, machines, map[string]string{"workers": "side-project", "elsewhere": "side-project"}))
+	if detail := doctorCheckDetails(checks, "fleet capacity margin"); !strings.Contains(detail, "22 Machines belong to other apps of organization side-project") {
+		t.Fatalf("detail = %q", detail)
+	}
+}
+
+func TestDoctorMarginWarnsWhenItCannotCount(t *testing.T) {
+	status := `{"health":"ready","budget":{"horizon_seconds":2030000}}`
+	doctorFlyMachineLimit = 100
+	defer func() { doctorFlyMachineLimit = 0 }()
+	// A worker app missing from the list would leave its organization unknown.
+	checks := doctor("fly", "control", "workers", "", ".runneryard/fly.controller.toml", fleetRunner(status, map[string]int{"other-a": 30}))
+	if !hasDoctorStatus(checks, "fleet capacity margin", "warn") {
+		t.Fatalf("an unknown worker app must warn: %#v", checks)
+	}
+	// An app whose Machines cannot be listed would be counted as empty: warn, never pass.
+	base := fleetRunner(status, map[string]int{"workers": 4, "other-a": 30})
+	failing := func(command string, args ...string) ([]byte, error) {
+		if command == "fly" && len(args) > 3 && args[0] == "machines" && args[1] == "list" && args[3] == "other-a" {
+			return []byte("Error: unauthorized"), errors.New("exit status 1")
+		}
+		return base(command, args...)
+	}
+	checks = doctor("fly", "control", "workers", "", ".runneryard/fly.controller.toml", failing)
+	if !hasDoctorStatus(checks, "fleet capacity margin", "warn") {
+		t.Fatalf("an unreadable app must warn: %#v", checks)
+	}
+	if detail := doctorCheckDetails(checks, "fleet capacity margin"); !strings.Contains(detail, "other-a") {
+		t.Fatalf("detail = %q", detail)
 	}
 }
