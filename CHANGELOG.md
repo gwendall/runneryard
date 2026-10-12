@@ -10,9 +10,9 @@ operator-facing schema or a trust boundary is called out here first.
   out into an empty workspace, as on a disposable worker. Why: `actions/checkout`
   reuses a workspace it finds, and a sparse checkout left the previous job's files
   outside its pattern in place, some of them from another commit; tests that read
-  the tree then failed on a production pool trial. Checkouts in a slot now fetch
-  as on a disposable worker. The unused `runneryard-slot-<n>-work` volumes of an
-  older host are removed with the slot's caches when its disk runs low.
+  the tree then failed on a production pool trial. The unused
+  `runneryard-slot-<n>-work` volumes of an older host are removed with the slot's
+  caches when its disk runs low.
 - `runneryard doctor`'s `fleet capacity margin` counts only the apps of the worker app's
   Fly organization. Why: `fly apps list` returns the apps of every organization the
   operator belongs to, while Fly's Machine limit is per organization, so the Machines
