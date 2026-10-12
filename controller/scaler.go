@@ -547,7 +547,8 @@ func (s *scaler) reconcile(ctx context.Context) error {
 				return fmt.Errorf("retire stopped worker %s: %w", worker.RunnerName, err)
 			}
 			retired[worker.RunnerName] = struct{}{}
-			s.logger.Warn("retired stopped worker", "runner", worker.RunnerName, "worker_id", worker.ID, "state", worker.State)
+			record, known := local[worker.RunnerName]
+			s.logStopped(worker, record, known && record.Worker.ID == worker.ID, time.Now())
 			continue
 		}
 		if record, known := local[worker.RunnerName]; known && s.danglingTimeout > 0 && record.Observed && !record.Busy &&
@@ -576,6 +577,10 @@ func (s *scaler) reconcile(ctx context.Context) error {
 	}
 	now := time.Now()
 	s.state.pruneDeparted(now.Add(-departureMemory))
+	for _, stopped := range s.state.takeOverdue(now.Add(-stoppedCompletionGrace)) {
+		s.logger.Warn("stopped worker never reported its job completion", "runner", stopped.Worker.RunnerName, "worker_id", stopped.Worker.ID,
+			"job_started", stopped.Busy, "stopped_for", now.Sub(stopped.At).Round(time.Second))
+	}
 	for name, record := range local {
 		if _, retiredNow := retired[name]; retiredNow {
 			continue
@@ -632,6 +637,12 @@ func (s *scaler) HandleJobStarted(ctx context.Context, job *scaleset.JobStarted)
 func (s *scaler) handleJobStarted(ctx context.Context, job *scaleset.JobStarted) error {
 	s.reporter.githubActivity("job_started")
 	if !s.state.markBusy(job.RunnerName) {
+		if departed, known := s.state.markDepartedBusy(job.RunnerName); known {
+			// A short job can finish, and its worker be retired, before
+			// GitHub's start message is read.
+			s.logger.Info("job started after its worker was retired", "runner", job.RunnerName, "job_id", job.JobID, "worker_id", departed.Worker.ID)
+			return nil
+		}
 		s.logger.Log(ctx, s.unknownRunnerLevel(), "job started on worker not present in local state", "runner", job.RunnerName, "job_id", job.JobID)
 		return nil
 	}
@@ -668,6 +679,12 @@ const departureMemory = time.Hour
 // continuous for this window before it is considered a departure.
 const inventoryAbsenceGrace = 30 * time.Second
 
+// stoppedCompletionGrace is how long a worker retired as stopped may wait for
+// GitHub's completion message before its stop is reported as a fault. A
+// runner that exits after its job is listed stopped seconds to a minute
+// before the message arrives.
+const stoppedCompletionGrace = 5 * time.Minute
+
 // logDeparture explains why a worker left inventory before its completion
 // message. A busy worker finishing its job and self-destroying is the normal
 // order of events on providers that destroy the Machine on exit, and an idle
@@ -690,16 +707,48 @@ func (s *scaler) logDeparture(record workerRecord, now time.Time) {
 	}
 }
 
+// logStopped explains a worker retired because the provider reported it
+// stopped. A runner exits after its one job, so a pool slot shows stopped, and
+// a VM powers off, before GitHub's completion message arrives: that is the
+// normal order of events, logged at INFO while the completion is awaited. A
+// completion that never comes is reported by reconcile. A failed or otherwise
+// abnormal state, or a worker this controller does not know, stays a warning.
+func (s *scaler) logStopped(worker provider.Worker, record workerRecord, known bool, now time.Time) {
+	age := time.Duration(0)
+	if !worker.CreatedAt.IsZero() {
+		age = now.Sub(worker.CreatedAt).Round(time.Second)
+	}
+	switch state := strings.ToLower(strings.TrimSpace(worker.State)); {
+	case !known || (state != "stopped" && state != "off"):
+		s.logger.Warn("retired stopped worker", "runner", worker.RunnerName, "worker_id", worker.ID, "state", worker.State)
+	case !record.Observed:
+		s.state.markStopped(record, now, false)
+		s.logger.Info("retired stopped adopted worker", "runner", worker.RunnerName, "worker_id", worker.ID, "state", worker.State, "age", age)
+	case !record.Busy && s.idleTimeout > 0 && age >= s.idleTimeout:
+		s.state.markStopped(record, now, false)
+		s.logger.Info("idle worker stopped itself", "runner", worker.RunnerName, "worker_id", worker.ID, "age", age, "idle_timeout", s.idleTimeout)
+	default:
+		s.state.markStopped(record, now, true)
+		s.logger.Info("retired stopped worker; awaiting its job completion", "runner", worker.RunnerName, "worker_id", worker.ID,
+			"state", worker.State, "job_started", record.Busy, "age", age)
+	}
+}
+
 func (s *scaler) HandleJobCompleted(ctx context.Context, job *scaleset.JobCompleted) error {
 	return failClosed(s.handleJobCompleted(ctx, job))
 }
 
 func (s *scaler) handleJobCompleted(ctx context.Context, job *scaleset.JobCompleted) error {
 	s.reporter.githubActivity("job_completed")
+	departed, wasDeparted := s.state.takeDeparted(job.RunnerName)
 	record, ok := s.state.get(job.RunnerName)
 	if !ok {
-		if departed, known := s.state.takeDeparted(job.RunnerName); known {
-			s.logger.Info("job completed after its worker left inventory", "runner", job.RunnerName, "job_id", job.JobID, "result", job.Result, "worker_id", departed.Worker.ID)
+		if wasDeparted {
+			message := "job completed after its worker left inventory"
+			if departed.Stopped {
+				message = "job completed after its worker stopped"
+			}
+			s.logger.Info(message, "runner", job.RunnerName, "job_id", job.JobID, "result", job.Result, "worker_id", departed.Worker.ID)
 			return nil
 		}
 		s.logger.Log(ctx, s.unknownRunnerLevel(), "job completed on worker not present in local state", "runner", job.RunnerName, "job_id", job.JobID, "result", job.Result)

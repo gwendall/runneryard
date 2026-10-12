@@ -122,12 +122,20 @@ type fakeAgent struct {
 	removeErr   error
 	starts      []startCall
 	removes     []string
+	// late, when set for a host, is the slot a failed start leaves behind:
+	// the container the agent created although its answer was lost.
+	late map[string]func(slot int, request StartRequest) Slot
+	// listErr fails every listing; onList runs before each one.
+	listErr error
+	onList  func(slots map[int]Slot)
+	lists   int
 }
 
 func newFakeAgent() *fakeAgent {
 	return &fakeAgent{
 		info: map[string]HostInfo{}, slots: map[string]map[int]Slot{},
 		unreachable: map[string]bool{}, startErr: map[string]error{},
+		late: map[string]func(int, StartRequest) Slot{},
 	}
 }
 
@@ -183,6 +191,13 @@ func (a *fakeAgent) List(_ context.Context, host Host) ([]Slot, error) {
 	if _, ok := a.info[host.ID]; !ok {
 		return nil, fmt.Errorf("%w: %s still booting", ErrUnreachable, host.ID)
 	}
+	a.lists++
+	if a.listErr != nil {
+		return nil, a.listErr
+	}
+	if a.onList != nil {
+		a.onList(a.slots[host.ID])
+	}
 	slots := make([]Slot, 0, len(a.slots[host.ID]))
 	for _, index := range sortedSlots(a.slots[host.ID]) {
 		slots = append(slots, a.slots[host.ID][index])
@@ -198,6 +213,9 @@ func (a *fakeAgent) Start(_ context.Context, host Host, slot int, request StartR
 		return Slot{}, fmt.Errorf("%w: %s", ErrUnreachable, host.ID)
 	}
 	if err := a.startErr[host.ID]; err != nil {
+		if late := a.late[host.ID]; late != nil {
+			a.slots[host.ID][slot] = late(slot, request)
+		}
 		return Slot{}, err
 	}
 	if _, busy := a.slots[host.ID][slot]; busy {
@@ -232,6 +250,12 @@ func (a *fakeAgent) Remove(_ context.Context, host Host, slot int, leaseID strin
 	return nil
 }
 
+func (a *fakeAgent) listCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lists
+}
+
 func (a *fakeAgent) startCalls() []startCall {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -259,6 +283,7 @@ func newHarness(t *testing.T, facts Facts, minHosts, maxHosts int) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
+	created.lateStartWait, created.lateStartPoll = 200*time.Millisecond, 10*time.Millisecond
 	return &harness{pool: created, source: source, agent: agent, clock: clock}
 }
 

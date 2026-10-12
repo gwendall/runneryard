@@ -36,6 +36,12 @@ const (
 	// full.
 	maxStartFailures = 2
 	maxParallelCalls = 8
+	// defaultLateStartWait is how long a start whose answer was lost or late
+	// is read back before it counts as failed: the host agent's own two-minute
+	// limit on a command, less the 90 s StartTimeout. After that the agent has
+	// started the container or given up on it.
+	defaultLateStartWait = 30 * time.Second
+	defaultLateStartPoll = 2 * time.Second
 	// CapacityReasonFull is the stable reason a full pool reports to the core.
 	CapacityReasonFull = "pool_full"
 )
@@ -217,6 +223,10 @@ type Pool struct {
 	replaceNotBefore time.Time
 	imageFailed      bool
 	imageReplaced    int
+	// lateStartWait and lateStartPoll bound the read-back of a late start;
+	// tests shorten them.
+	lateStartWait time.Duration
+	lateStartPoll time.Duration
 }
 
 // New validates the configuration and returns an idle pool.
@@ -296,6 +306,9 @@ func New(cfg Config) (*Pool, error) {
 		hosts:   make(map[string]*hostState),
 		wake:    make(chan struct{}, 1),
 		image:   cfg.Image,
+
+		lateStartWait: defaultLateStartWait,
+		lateStartPoll: defaultLateStartPoll,
 	}, nil
 }
 
@@ -368,6 +381,7 @@ func (p *Pool) launch(ctx context.Context, lease provider.Lease, grow bool) (pro
 		// replacement, an earlier digest of the followed tag.
 		request.Image = image
 		startCtx, cancel := context.WithTimeout(ctx, p.cfg.StartTimeout)
+		began := time.Now()
 		started, err := p.cfg.Agent.Start(startCtx, host, slot, request)
 		cancel()
 		if err == nil {
@@ -388,8 +402,15 @@ func (p *Pool) launch(ctx context.Context, lease provider.Lease, grow bool) (pro
 			return provider.Worker{}, fmt.Errorf("pool %s host %s rejected the lease: %w", p.cfg.Name, host.ID, err)
 		default:
 			// The agent may have created the container: docker reported a
-			// failure, or the session ended before the answer. Keep the slot
-			// taken and hand the worker to the core, which removes it by lease.
+			// failure, or the session ended before the answer. A container
+			// that runs this lease is the start, only late: keep it.
+			// Otherwise keep the slot taken and hand the worker to the core,
+			// which removes it by lease.
+			if late, ok := p.readLateStart(ctx, host, slot, lease, err); ok {
+				p.log.Info("pool slot answered late; keeping its runner", "host", host.ID, "slot", slot, "lease", lease.ID,
+					"after", time.Since(began).Round(time.Second).String(), "error", err)
+				return p.commit(host.ID, slot, late, lease), nil
+			}
 			worker := slotWorker(host.ID, slot, Slot{Index: slot, ControllerID: p.cfg.ControllerID, State: "starting", CreatedAt: p.cfg.Now()}, lease)
 			p.holdSuspect(host.ID, slot, lease)
 			return provider.Worker{}, &provider.PartialLaunchError{Worker: worker, Err: fmt.Errorf("start slot %d on %s: %w", slot, host.ID, err)}
@@ -955,6 +976,49 @@ func (p *Pool) commit(hostID string, slot int, started Slot, lease provider.Leas
 	}
 	p.launched++
 	return slotWorker(hostID, slot, started, lease)
+}
+
+// readLateStart reads a slot back after a start that failed without a clear
+// refusal, while the slot is still reserved for the lease. It returns the slot
+// once the host lists it running this lease's runner for this controller. A
+// slot that holds anything else, or stops, is never adopted, and a host that
+// cannot tell within lateStartWait leaves the start failed. An agent that
+// answered has finished its start, so one listing tells; a lost answer may
+// come before the container, so the slot is read again until the wait ends.
+func (p *Pool) readLateStart(ctx context.Context, host Host, slot int, lease provider.Lease, startErr error) (Slot, bool) {
+	var refusal *AgentError
+	answered := errors.As(startErr, &refusal)
+	deadline := time.Now().Add(p.lateStartWait)
+	for ctx.Err() == nil {
+		callCtx, cancel := context.WithTimeout(ctx, min(p.cfg.CallTimeout, max(time.Until(deadline), time.Millisecond)))
+		slots, err := p.cfg.Agent.List(callCtx, host)
+		cancel()
+		if err == nil {
+			for _, listed := range slots {
+				if listed.Index != slot {
+					continue
+				}
+				if listed.ControllerID != p.cfg.ControllerID || listed.LeaseID != lease.ID || listed.RunnerName != lease.RunnerName {
+					return Slot{}, false
+				}
+				switch listed.State {
+				case "started":
+					return listed, true
+				case "starting":
+				default:
+					return Slot{}, false
+				}
+			}
+		}
+		if answered || !time.Now().Add(p.lateStartPoll).Before(deadline) {
+			return Slot{}, false
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(p.lateStartPoll):
+		}
+	}
+	return Slot{}, false
 }
 
 // holdSuspect keeps a slot whose start is ambiguous taken until the core

@@ -14,13 +14,18 @@ type workerRecord struct {
 	MissingSince time.Time
 }
 
-// departure remembers a worker that left provider inventory before GitHub
-// reported its job finished, so the completion message that follows can be
-// matched to it instead of being reported as an unknown runner.
+// departure remembers a worker that left provider inventory, or was retired
+// as stopped, before GitHub reported its job finished, so the messages that
+// follow can be matched to it instead of being reported as an unknown runner.
 type departure struct {
 	Worker provider.Worker
 	Busy   bool
 	At     time.Time
+	// Stopped marks a worker retired because the provider reported it
+	// stopped. Awaiting marks one whose completion is expected: if it never
+	// comes, the stop was a fault and is reported once.
+	Stopped  bool
+	Awaiting bool
 }
 
 type workerState struct {
@@ -35,8 +40,54 @@ func newWorkerState() *workerState {
 
 func (s *workerState) markDeparted(record workerRecord, at time.Time) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if known, ok := s.departed[record.Worker.RunnerName]; ok && known.Stopped {
+		// Retired as stopped already; the wait for its completion goes on.
+		return
+	}
 	s.departed[record.Worker.RunnerName] = departure{Worker: record.Worker, Busy: record.Busy, At: at}
-	s.mu.Unlock()
+}
+
+// markStopped remembers a worker retired as stopped. A worker already
+// remembered keeps its first stop, so a retirement that is retried does not
+// push back the wait for its completion.
+func (s *workerState) markStopped(record workerRecord, at time.Time, awaiting bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if known, ok := s.departed[record.Worker.RunnerName]; ok && known.Stopped {
+		return
+	}
+	s.departed[record.Worker.RunnerName] = departure{Worker: record.Worker, Busy: record.Busy, At: at, Stopped: true, Awaiting: awaiting}
+}
+
+// markDepartedBusy records that the job of a remembered worker started; its
+// completion is still to come, so the departure is kept.
+func (s *workerState) markDepartedBusy(name string) (departure, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.departed[name]
+	if ok {
+		record.Busy = true
+		s.departed[name] = record
+	}
+	return record, ok
+}
+
+// takeOverdue returns, once each, the stopped workers whose completion has
+// been awaited since before the given time. They stay remembered, so a late
+// completion is still matched.
+func (s *workerState) takeOverdue(before time.Time) []departure {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var overdue []departure
+	for name, record := range s.departed {
+		if record.Awaiting && record.At.Before(before) {
+			record.Awaiting = false
+			s.departed[name] = record
+			overdue = append(overdue, record)
+		}
+	}
+	return overdue
 }
 
 func (s *workerState) takeDeparted(name string) (departure, bool) {

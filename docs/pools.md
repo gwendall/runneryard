@@ -50,6 +50,19 @@ backoff. The controller wakes itself for that probe; it does not wait for
 GitHub's next message. Slots are packed: a job goes to the busiest host
 that still has room, so the least busy hosts empty first and can be returned.
 
+A slot start that has not answered within the controller's 90 s start
+timeout, or whose SSH session ended before the answer, is not counted as
+failed at once. The host agent keeps a start running for up to two minutes,
+so the controller lists that host again for up to 30 s more, each listing
+bounded by the 20 s call timeout. A slot that now runs a container with this
+launch's lease, runner name and controller ID is kept as a normal launch,
+logged once at INFO as `pool slot answered late; keeping its runner` with the
+delay. Anything else leaves the start ambiguous, as before: a container of
+another lease or controller, a stopped container, a slot still empty when the
+wait ends, or a host that cannot be listed. The slot then stays held, the host
+takes no new start for a minute, and the controller removes the worker by its
+lease. When the agent did answer, with a failure, a single listing decides.
+
 A job sent to `ephemeral` while the pool was full waits for its Machine to
 boot: about a minute, and several minutes after an image change. If a slot
 frees meanwhile, a speculative pool (the default) gives that job a second
