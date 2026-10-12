@@ -360,7 +360,7 @@ func (s *HostSource) Create(ctx context.Context) (pool.Host, error) {
 			Processes: []poolProcess{{
 				Entrypoint:       []string{hostBootEntrypoint, "host", "boot"},
 				User:             "root",
-				Env:              map[string]string{"RUNNERYARD_DOCKER_DNS": s.dockerDNS},
+				Env:              map[string]string{hostagent.BootDNSVariable: s.dockerDNS},
 				IgnoreAppSecrets: true,
 			}},
 			Metadata: map[string]string{

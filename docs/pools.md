@@ -235,7 +235,9 @@ image itself, as root, with `runneryard host boot`:
 3. serves the host agent over SSH on the Machine's private address, port
    2222 (Fly's own SSH server, used by `fly ssh console`, holds port 22); it
    refuses to start when `FLY_PRIVATE_IP` is missing or is not an IP address;
-4. pulls the runner image when the volume does not have it yet.
+4. imports the runner image into the host's Docker from the Machine's own
+   root filesystem when the volume does not have it yet, and pulls it
+   instead if the import fails (see [Runner image](#runner-image)).
 
 Every step is safe to repeat, because a stopped Machine runs them again on its
 next start: the root filesystem is reset, the volume is not. There is no
@@ -326,13 +328,13 @@ for a region without a listed multiplier.
 
 ### Start times
 
-Measured in the first real test (`cdg`, `performance` 8 vCPUs, 16 GB, a
-900 MB runner image):
+Measured in real tests (`cdg`, `performance` 8 vCPUs, 16 GB, a 900 MB
+runner image):
 
-- A new host is ready 60 to 100 s after its creation: Fly pulls the image for
-  the root filesystem (about 30 s), then the host's Docker pulls it again for
-  the slots (about 45 s). A burst shorter than that is over before the new
-  host can take a job.
+- A new host is ready 59 to 72 s after its creation: Fly pulls the image for
+  the root filesystem (about 30 s), then host boot imports it from there into
+  the host's Docker (23 to 28 s). A burst shorter than that is over before the
+  new host can take a job.
 - A stopped host is ready 3 to 9 s after its start, with its images, build
   cache and slot caches as it left them.
 - With `min_hosts: 0`, the first job after a quiet period starts a stopped
@@ -350,11 +352,28 @@ Machines, so keep `max_hosts` within what the limit leaves to the other apps.
 
 ### Runner image
 
-The Machine boots the runner image through Fly, but the slots run on the
-host's own Docker, which pulls the image without credentials. The image must
-therefore be public, such as the release image on GHCR. See
-[Private runner images](security.md#private-runner-images) for why no
-registry credential is placed on a host.
+The Machine boots the runner image through Fly, which pulls it with the
+organization's own access: the image may be private, such as the worker
+app's repository `registry.fly.io/<worker-app>`, and no host holds a registry
+credential. Host boot then imports that same filesystem into the host's
+Docker for the slots, from a read-only mount of the image layer under the
+Machine's root, with the image's environment and `USER runner`. It does not
+read the files Fly writes at boot, the host key among them; see
+[Private runner images](security.md#private-runner-images).
+
+- The imported image has the configured name, or `<name>:sha256-<hex>` for an
+  image pinned by digest, since Docker cannot tag a digest. Slots start with
+  `--pull never` from that name.
+- The import keeps no entrypoint, command, working directory or labels of the
+  image (slots set their own entrypoint), and sets `USER runner`: a derived
+  image must end with `USER runner`, as the
+  [derived image guide](derived-images.md#build-rules) requires.
+- The host's Docker keeps images on `overlay2`, not on the containerd image
+  store that Docker 29 uses by default: the same import took 21 s on the
+  first and 116 s on the second.
+- If the import fails, the host logs why and pulls the image instead, which
+  works only for a public image. A private image then leaves the host not
+  ready, with both errors in its log (`fly logs --machine <id>`).
 
 ## Static hosts
 

@@ -248,15 +248,70 @@ func TestEnsureImagePullsUntilThePullSucceeds(t *testing.T) {
 		return nil, errUnscripted
 	}
 	var waits []time.Duration
-	EnsureImage(context.Background(), docker, agentTestImage, slog.New(slog.DiscardHandler), func(d time.Duration) { waits = append(waits, d) })
+	EnsureImage(context.Background(), docker, agentTestImage, agentTestImage, nil, slog.New(slog.DiscardHandler), func(d time.Duration) { waits = append(waits, d) })
 	if pulls != 3 || !slices.Equal(waits, []time.Duration{5 * time.Second, 10 * time.Second}) {
 		t.Fatalf("pulls = %d, waits = %v", pulls, waits)
 	}
+	if tags := docker.find("tag"); len(tags) != 0 {
+		t.Fatalf("tagged %q, want no tag when the local name is the image", tags[0].args)
+	}
 
 	present := newFakeDocker()
-	EnsureImage(context.Background(), present, agentTestImage, slog.New(slog.DiscardHandler), func(time.Duration) {})
+	EnsureImage(context.Background(), present, agentTestImage, agentTestImage, failingImport(t), slog.New(slog.DiscardHandler), func(time.Duration) {})
 	if len(present.find("pull --quiet")) != 0 {
 		t.Fatal("pulled an image that was present")
+	}
+}
+
+func TestEnsureImageImportsTheRootFilesystemBeforePulling(t *testing.T) {
+	local := LocalImageName(agentTestImage)
+	docker := newFakeDocker()
+	docker.image = ""
+	var imported []string
+	EnsureImage(context.Background(), docker, agentTestImage, local, func(_ context.Context, name string) error {
+		imported = append(imported, name)
+		return nil
+	}, slog.New(slog.DiscardHandler), func(time.Duration) { t.Fatal("waited after a successful import") })
+	if !slices.Equal(imported, []string{local}) {
+		t.Fatalf("imported %q, want the local name %q", imported, local)
+	}
+	if keys := docker.keys(); !slices.Equal(keys, []string{"image inspect"}) {
+		t.Fatalf("docker calls = %q, want only the presence check", keys)
+	}
+	if name := docker.snapshot()[0].args[4]; name != local {
+		t.Fatalf("checked presence of %q, want the local name %q", name, local)
+	}
+}
+
+func TestEnsureImagePullsAndTagsWhenTheImportFails(t *testing.T) {
+	local := LocalImageName(agentTestImage)
+	docker := newFakeDocker()
+	docker.script = func(args []string) ([]byte, error) {
+		switch commandKey(args) {
+		case "image inspect":
+			return nil, errors.New("No such image")
+		case "pull --quiet", "tag " + agentTestImage:
+			return nil, nil
+		}
+		return nil, errUnscripted
+	}
+	EnsureImage(context.Background(), docker, agentTestImage, local, func(context.Context, string) error {
+		return errors.New("the root filesystem is not an overlay over a block device")
+	}, slog.New(slog.DiscardHandler), func(time.Duration) {})
+	pulls, tags := docker.find("pull --quiet"), docker.find("tag "+agentTestImage)
+	if len(pulls) != 1 || pulls[0].args[2] != agentTestImage {
+		t.Fatalf("pulls = %v, want one pull of the configured image", pulls)
+	}
+	if len(tags) != 1 || !slices.Equal(tags[0].args, []string{"tag", agentTestImage, local}) {
+		t.Fatalf("tags = %v, want the pulled image tagged with the local name", tags)
+	}
+}
+
+func failingImport(t *testing.T) func(context.Context, string) error {
+	return func(context.Context, string) error {
+		t.Helper()
+		t.Fatal("imported an image that was present")
+		return nil
 	}
 }
 
@@ -265,7 +320,7 @@ func TestDockerDaemonConfigKeepsDataOnTheVolume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(config), `{"data-root":"/data/docker","dns":["1.1.1.1","8.8.8.8"],"features":{"buildkit":true}}`+"\n"; got != want {
+	if got, want := string(config), `{"data-root":"/data/docker","dns":["1.1.1.1","8.8.8.8"],"features":{"buildkit":true,"containerd-snapshotter":false}}`+"\n"; got != want {
 		t.Fatalf("daemon.json = %s, want %s", got, want)
 	}
 	for _, dns := range [][]string{{"1.1.1.1", "1.1.1.1"}, {"resolver"}, {"1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4"}} {

@@ -143,6 +143,9 @@ type Docker interface {
 // Agent answers one verb per invocation.
 type Agent struct {
 	Config Config
+	// LocalImage is the name the host's Docker knows the runner image by,
+	// when it differs from Config.Image: see LocalImageName.
+	LocalImage string
 	// ConfigErr is set when the host configuration could not be loaded; every
 	// verb but info then refuses with not_ready.
 	ConfigErr error
@@ -326,9 +329,11 @@ func (a *Agent) runArgs(slot int, request pool.StartRequest) []string {
 	for _, volume := range a.volumes(slot) {
 		args = append(args, "--mount", "type=volume,source="+volume.name+",target="+volume.target)
 	}
+	// A slot never pulls: start refuses until the image is present.
 	return append(args,
+		"--pull", "never",
 		"--entrypoint", "/usr/bin/dumb-init",
-		request.Image, "--", "/usr/local/bin/runner-entrypoint",
+		a.image(), "--", slotEntrypoint,
 	)
 }
 
@@ -398,8 +403,15 @@ func (a *Agent) remove(ctx context.Context, slot int, leaseID string) pool.Reply
 }
 
 func (a *Agent) imagePresent(ctx context.Context) bool {
-	_, err := a.Docker.Run(ctx, nil, "image", "inspect", "--format", "{{.Id}}", a.Config.Image)
+	_, err := a.Docker.Run(ctx, nil, "image", "inspect", "--format", "{{.Id}}", a.image())
 	return err == nil
+}
+
+func (a *Agent) image() string {
+	if a.LocalImage != "" {
+		return a.LocalImage
+	}
+	return a.Config.Image
 }
 
 func (a *Agent) freeBytes() (uint64, error) {

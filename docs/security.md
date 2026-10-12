@@ -156,14 +156,32 @@ who can run `fly ssh console` gets a root shell on a pool host.
 
 ### Private runner images
 
-Pool hosts pull the runner image with their own Docker, so a private image
-would need a registry credential on every host, readable by any job that
-escapes its slot. RunnerYard places no registry credential on a host: pool
-images must be public, such as the release image on GHCR. The options
-considered on 2026-10-12:
+No pool host holds a registry credential: one would be readable by any job
+that escapes its slot.
 
-- **Public image (current).** No credential anywhere. The image holds no
-  secret, as for ephemeral workers.
+**Fly pool hosts take the slots' image from their own root filesystem.** Fly
+pulls the Machine image with the organization's own access, private or not,
+and `runneryard host boot` imports it into the host's Docker. A private image
+on Fly therefore needs nothing on the host, as for ephemeral workers.
+
+- The import reads a read-only mount of the image layer, the block device Fly
+  mounts as the topmost lower layer of the Machine's overlay root. What Fly
+  writes at boot, among it `/etc/hosts`, `resolv.conf` and the Machine files
+  in `/etc/runneryard` (the host key and the host configuration), lives in
+  the overlay's upper layer, which the import never reads. The import refuses
+  a layer without `/usr/local/bin/runner-entrypoint`.
+- The image's environment is the boot process's own, less the `FLY_`
+  variables, the Machine configuration's `RUNNERYARD_DOCKER_DNS`, and what
+  Fly's init passes on unchanged. The host source sets no secret in it, and
+  the Machine ignores the app's secrets, so a slot image holds what the
+  registry image holds.
+- The image is tagged only after `tar` read the whole layer; a failed read
+  removes the untagged image.
+
+**Hetzner and static hosts pull the image with their own Docker, without
+credentials**, so their image must be public, such as the release image on
+GHCR. The options considered on 2026-10-12 for them:
+
 - **GHCR token with `read:packages`: rejected.** GHCR packages are only
   reachable with a classic personal access token, which reads every package
   its owner can read, in every organization, until it is revoked.
@@ -175,11 +193,6 @@ considered on 2026-10-12:
   host pull from that app's registry and do nothing else, briefly. It needs
   the controller to mint macaroons (a new dependency) and a check that Fly's
   registry honors every caveat; not implemented.
-- **Slot image from the Machine's root filesystem, possible later.** Fly pulls
-  the Machine image with the organization's own access, private or not, so a
-  Fly host already runs the runner image as its root filesystem. Importing it
-  into Docker would need no credential, but must leave out the host's key
-  files and repeat the image's configuration; not implemented.
 
 ## Supply chain
 

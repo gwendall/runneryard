@@ -63,7 +63,9 @@ the derived image from the new release and moving `[build] image` and
   store when the lockfile moved since the build.
 - Keep the image on a registry the workers can pull without a credential:
   on Fly, the worker app's own repository `registry.fly.io/<worker-app>` is
-  private to the organization and needs nothing on the Machine.
+  private to the organization and needs nothing on the Machine. Fly pool
+  hosts use it the same way; Hetzner and static pool hosts pull with their
+  own Docker and need a public image.
 - Rebuild on a schedule and when the lockfile changes, but build the image
   on a remote builder, not on a fleet worker: `docker build` on a worker's
   layered filesystem ran past a 60-minute budget on 2026-09-05, while the
