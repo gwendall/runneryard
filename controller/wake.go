@@ -7,20 +7,22 @@ import (
 )
 
 // wakingSession ends the listener's long poll early when the scaler's launch
-// gate reaches its retry time, and reports it as an empty poll. The listener
-// answers an empty poll with HandleDesiredRunnerCount on its own goroutine,
-// so the probe runs then instead of at GitHub's next message: with a pool
-// host starting, the first job no longer waits up to a minute after the host
-// is ready. Nothing is lost by cutting a poll short: GitHub returns a message
-// again until it is deleted, and only the listener deletes one, after
+// gate reaches its retry time, or when spare room appears (a pool host became
+// ready), and reports it as an empty poll. The listener answers an empty poll
+// with HandleDesiredRunnerCount on its own goroutine, so the probe or the
+// speculative launch runs then instead of at GitHub's next message: with a
+// pool host starting, the first job no longer waits up to a minute after the
+// host is ready. Nothing is lost by cutting a poll short: GitHub returns a
+// message again until it is deleted, and only the listener deletes one, after
 // handling it.
 type wakingSession struct {
 	messageSession
 	wake <-chan struct{}
+	room <-chan struct{}
 }
 
 func (s wakingSession) GetMessage(ctx context.Context, lastMessageID, maxCapacity int) (*scaleset.RunnerScaleSetMessage, error) {
-	if s.wake == nil {
+	if s.wake == nil && s.room == nil {
 		return s.messageSession.GetMessage(ctx, lastMessageID, maxCapacity)
 	}
 	pollCtx, cancel := context.WithCancel(ctx)
@@ -38,6 +40,7 @@ func (s wakingSession) GetMessage(ctx context.Context, lastMessageID, maxCapacit
 	case result := <-done:
 		return result.message, result.err
 	case <-s.wake:
+	case <-s.room:
 	}
 	cancel()
 	result := <-done

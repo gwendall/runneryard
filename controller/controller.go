@@ -320,7 +320,7 @@ func runSession(ctx context.Context, session messageSession, scaler *scaler, cfg
 	}
 	scaler.reporter.recovered()
 
-	queue, err := listener.New(wakingSession{messageSession: session, wake: scaler.probeWake}, listener.Config{
+	queue, err := listener.New(wakingSession{messageSession: session, wake: scaler.probeWake, room: scaler.roomReady()}, listener.Config{
 		ScaleSetID: scaleSetID,
 		MaxRunners: cfg.MaxWorkers,
 		Logger:     cfg.Logger.WithGroup("listener"),

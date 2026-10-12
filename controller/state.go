@@ -91,6 +91,25 @@ func (s *workerState) summary() (actual, busy, idle, unknown int) {
 	return actual, busy, idle, unknown
 }
 
+// idleByStart counts the workers that run a job or may run one (adopted and
+// never observed), and the observed idle workers split by whether fast says
+// their runner comes online in seconds.
+func (s *workerState) idleByStart(fast func(workerID string) bool) (busy, fastIdle, slowIdle int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, record := range s.workers {
+		switch {
+		case record.Busy || !record.Observed:
+			busy++
+		case fast(record.Worker.ID):
+			fastIdle++
+		default:
+			slowIdle++
+		}
+	}
+	return busy, fastIdle, slowIdle
+}
+
 func (s *workerState) all() map[string]workerRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()

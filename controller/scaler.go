@@ -185,31 +185,82 @@ func (s *scaler) handleDesiredRunnerCount(ctx context.Context, assignedJobs int)
 		return s.state.count(), err
 	}
 	current := s.state.count()
-	if target == current {
-		return current, nil
-	}
-
 	if target > current {
 		needed, probing := s.capacityAllowance(current, target)
-		if needed == 0 {
-			return current, nil
+		if needed > 0 {
+			s.logger.Info("scaling up", "current", current, "target", target, "count", needed)
+			if err := s.launchWorkers(ctx, needed, nil); err != nil {
+				return s.state.count(), err
+			}
+			if probing && s.state.count() > current {
+				s.clearLaunchGate()
+			}
 		}
-		s.logger.Info("scaling up", "current", current, "target", target, "count", needed)
-		if err := s.launchWorkers(ctx, needed); err != nil {
-			return s.state.count(), err
-		}
-		if probing && s.state.count() > current {
-			s.clearLaunchGate()
-		}
-		return s.state.count(), nil
 	}
 
 	// Do not scale down from a desired-count update. GitHub can assign a job to
 	// an apparently idle JIT runner immediately before the JobStarted message is
 	// delivered. Destroying that runner here strands the assigned job until
 	// GitHub's timeout. JobCompleted removes one-job runners synchronously; a
-	// runner that never receives a job is bounded by its provider lease.
-	return current, nil
+	// runner that never receives a job is bounded by its provider lease. For
+	// the same reason, a job that a speculative runner takes leaves the worker
+	// it was waiting on running.
+	if err := s.speculate(ctx, assignedJobs); err != nil {
+		return s.state.count(), err
+	}
+	return s.state.count(), nil
+}
+
+// speculate starts a runner in a free pool slot for each job still waiting on
+// a worker that boots a machine of its own, such as an ephemeral worker
+// launched while the pool was full. Any runner of the scale set takes any
+// assigned job, so the job goes to whichever runner comes online first; the
+// other one takes the next job or releases itself after its idle timeout.
+// Neither is destroyed here: either may just have been assigned the job.
+//
+// The count is bounded by the jobs not started yet, less the idle runners
+// already in slots, by the idle workers elsewhere those jobs wait on, by the
+// free slots, and by MAX_RUNNERS. Adopted workers count as busy. Every launch
+// passes the budget admission and the retirement journal like any other; a
+// closed launch gate skips speculation, and a slot lost meanwhile does not
+// close the gate, since it is no provider ceiling. Each runner started here
+// is an idle runner in a slot on the next pass, so the next pass starts none
+// for the same job.
+func (s *scaler) speculate(ctx context.Context, assignedJobs int) error {
+	spare, ok := s.compute.(provider.Speculator)
+	if !ok || !s.launchGateOpen() {
+		return nil
+	}
+	room := spare.SpareRoom()
+	if room < 1 {
+		return nil
+	}
+	busy, fastIdle, slowIdle := s.state.idleByStart(spare.Fast)
+	waiting := max(0, assignedJobs-busy)
+	count := min(waiting-fastIdle, slowIdle, room, s.maxWorkers-s.state.count())
+	if count < 1 {
+		return nil
+	}
+	s.logger.Info("starting runners in free pool slots for jobs waiting on booting workers",
+		"waiting_jobs", waiting, "idle_in_slots", fastIdle, "idle_elsewhere", slowIdle, "free_slots", room, "count", count)
+	return s.launchWorkers(ctx, count, spare)
+}
+
+// launchGateOpen reports whether no capacity ceiling or launch rejection is
+// holding launches back.
+func (s *scaler) launchGateOpen() bool {
+	s.capacityMu.Lock()
+	defer s.capacityMu.Unlock()
+	return s.capacityReason == ""
+}
+
+// roomReady returns the compute's signal that spare room appeared on its own,
+// or nil when the compute has none.
+func (s *scaler) roomReady() <-chan struct{} {
+	if spare, ok := s.compute.(provider.Speculator); ok {
+		return spare.RoomReady()
+	}
+	return nil
 }
 
 // launchWorkers starts up to needed workers with at most launchConcurrency
@@ -221,8 +272,9 @@ func (s *scaler) handleDesiredRunnerCount(ctx context.Context, assignedJobs int)
 // The first refusal (exhausted budget), transient provider failure, capacity
 // ceiling, or launch rejection stops further launches; workers already in
 // flight finish normally. Only a fail-closed error is returned, after every
-// in-flight launch has settled.
-func (s *scaler) launchWorkers(ctx context.Context, needed int) error {
+// in-flight launch has settled. A non-nil spare starts speculative runners in
+// its spare room instead, and its capacity refusals leave the gate open.
+func (s *scaler) launchWorkers(ctx context.Context, needed int, spare provider.Speculator) error {
 	limit := max(1, s.launchConcurrency)
 	slots := make(chan struct{}, limit)
 	var wait sync.WaitGroup
@@ -247,7 +299,7 @@ func (s *scaler) launchWorkers(ctx context.Context, needed int) error {
 		go func() {
 			defer wait.Done()
 			defer func() { <-slots }()
-			started, err := s.startWorker(ctx)
+			started, err := s.startWorker(ctx, spare)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -281,6 +333,8 @@ func (s *scaler) launchWorkers(ctx context.Context, needed int) error {
 	}
 	wait.Wait()
 	switch {
+	case capacityErr != nil && spare != nil:
+		s.logger.Info("free pool slot taken before a speculative runner started; the job keeps its booting worker", "error", capacityErr)
 	case capacityErr != nil:
 		s.recordLaunchGate(gateCapacity, provider.CapacityReason(capacityErr), capacityErr)
 	case rejectedErr != nil:
@@ -646,7 +700,13 @@ func (s *scaler) handleJobCompleted(ctx context.Context, job *scaleset.JobComple
 	return nil
 }
 
-func (s *scaler) startWorker(ctx context.Context) (bool, error) {
+// startWorker launches one worker through compute, or, with a non-nil spare,
+// one speculative runner in its spare room.
+func (s *scaler) startWorker(ctx context.Context, spare provider.Speculator) (bool, error) {
+	launch := s.compute.Launch
+	if spare != nil {
+		launch = spare.LaunchSpare
+	}
 	leaseID := uuid.NewString()
 	name := "runner-" + leaseID
 	allowed, next, err := s.budget.reserve(leaseID, time.Now(), s.maxLifetime)
@@ -709,7 +769,7 @@ func (s *scaler) startWorker(ctx context.Context) (bool, error) {
 	}
 	s.reporter.starting(1)
 	launchStarted := time.Now()
-	worker, err := s.compute.Launch(ctx, provider.Lease{
+	worker, err := launch(ctx, provider.Lease{
 		ID: leaseID, RunnerName: name, RunnerID: retirement.RunnerID, RunnerScaleSetID: s.scaleSetID,
 		JITConfig: jit.EncodedJITConfig, Deadline: time.Now().Add(s.maxLifetime - 30*time.Second),
 		IdleTimeout: s.idleTimeout,
@@ -762,7 +822,11 @@ func (s *scaler) startWorker(ctx context.Context) (bool, error) {
 	s.reportState()
 	s.reporter.budget(s.budget.snapshot(time.Now()))
 	s.reporter.recovered()
-	s.logger.Info("worker created", "runner", name, "worker_id", worker.ID)
+	if spare != nil {
+		s.logger.Info("speculative worker created", "runner", name, "worker_id", worker.ID)
+	} else {
+		s.logger.Info("worker created", "runner", name, "worker_id", worker.ID)
+	}
 	return true, nil
 }
 

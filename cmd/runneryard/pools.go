@@ -68,6 +68,8 @@ type poolConfig struct {
 	SlotMemoryMB  int      `yaml:"slot_memory_mb"`
 	MinFreeDiskGB *int     `yaml:"min_free_disk_gb"`
 	Caches        []string `yaml:"caches"`
+	// Speculative defaults to true: see pool.Config.Speculative.
+	Speculative *bool `yaml:"speculative"`
 
 	// Hetzner
 	ServerType  string `yaml:"server_type"`
@@ -384,6 +386,7 @@ func (c appConfig) withPools(ephemeral provider.Compute, logger *slog.Logger) (p
 			Name: p.Name, ControllerID: c.ControllerID, Image: p.RunnerImage,
 			MinHosts: p.MinHosts, MaxHosts: p.MaxHosts, Source: source, Agent: agent,
 			MaxLifetime: c.RunnerMaxLifetime, Logger: logger.WithGroup("pool"),
+			Speculative: p.Speculative == nil || *p.Speculative,
 		}
 		if p.Source == poolSourceFly {
 			poolCfg.IdleStop, poolCfg.KeepStopped, poolCfg.DeleteStoppedAfter = p.IdleStopAfter, *p.KeepStopped, p.DeleteStoppedAfter

@@ -507,6 +507,47 @@ func TestWithPoolsFollowsThePlacementOrder(t *testing.T) {
 	}
 }
 
+func TestWithPoolsMakesPoolsSpeculativeUnlessTheyOptOut(t *testing.T) {
+	t.Setenv(poolSSHKeyFileEnv, "")
+	keyFile := writePoolKey(t)
+	hostKey := staticHostKey(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for name, test := range map[string]struct {
+		placement string
+		lab       []string
+		want      []string
+	}{
+		"on by default":            {want: []string{"fast", "lab"}},
+		"opted out":                {lab: []string{"speculative: false"}, want: []string{"fast"}},
+		"explicitly on":            {lab: []string{"speculative: true"}, want: []string{"fast", "lab"}},
+		"pools after ephemeral":    {placement: "[fast, ephemeral, lab]", want: []string{"fast"}},
+		"ephemeral first, no pool": {placement: "[ephemeral, fast, lab]"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			top := "trust: private\nssh_key_file: " + keyFile + "\n"
+			if test.placement != "" {
+				top += "placement: " + test.placement + "\n"
+			}
+			parsed, err := loadPoolsYAML(t, poolsYAML(top, hetznerPool("fast"), staticPool("lab", hostKey, test.lab...)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := poolsAppConfig()
+			if err := parsed.validate(cfg); err != nil {
+				t.Fatal(err)
+			}
+			cfg.Pools = parsed
+			compute, err := cfg.withPools(poolTestCompute{}, logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := placementStatus(t, compute).Speculative; !slices.Equal(got, test.want) {
+				t.Fatalf("speculative pools = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestWithPoolsRefusesABadControllerKey(t *testing.T) {
 	t.Setenv(poolSSHKeyFileEnv, "")
 	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

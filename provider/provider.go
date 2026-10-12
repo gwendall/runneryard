@@ -52,6 +52,26 @@ type StatusReporter interface {
 	ComputeStatus() any
 }
 
+// Speculator is implemented by compute that holds spare room where a worker
+// starts in seconds, such as the free slots of a pool's ready hosts, next to
+// tiers that boot a machine per worker. The core starts a second runner there
+// for a job still waiting on a booting worker: the first runner online takes
+// the job, and the other one takes the next job or releases itself after its
+// idle timeout. The core never destroys either one for it.
+type Speculator interface {
+	// SpareRoom returns how many workers LaunchSpare can start now.
+	SpareRoom() int
+	// LaunchSpare starts the lease in spare room only. Without room it returns
+	// a CapacityError, creates nothing, and asks for no new machine.
+	LaunchSpare(context.Context, Lease) (Worker, error)
+	// Fast reports whether the worker runs where a runner comes online in
+	// seconds, so a job waiting for it does not wait on a machine's boot.
+	Fast(workerID string) bool
+	// RoomReady receives a token when spare room appears on its own, such as
+	// a pool host becoming ready, rather than through the core's own calls.
+	RoomReady() <-chan struct{}
+}
+
 // PartialLaunchError reports that a provider created a worker but could not
 // confirm the complete response. The core immediately schedules its cleanup.
 type PartialLaunchError struct {

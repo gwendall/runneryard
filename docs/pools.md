@@ -50,6 +50,30 @@ backoff. The controller wakes itself for that probe; it does not wait for
 GitHub's next message. Slots are packed: a job goes to the busiest host
 that still has room, so the least busy hosts empty first and can be returned.
 
+A job sent to `ephemeral` while the pool was full waits for its Machine to
+boot: about a minute, and several minutes after an image change. If a slot
+frees meanwhile, a speculative pool (the default) gives that job a second
+runner: the controller starts one in the free slot, and GitHub hands the job
+to whichever runner comes online first, usually the slot's. The controller
+looks for such jobs on every message from GitHub, including the job
+completion that frees the slot, and as soon as a pool host becomes ready. It
+starts at most one runner per job not started yet, less the runners already
+idle in slots, and no more than the idle workers those jobs wait on on other
+tiers, the free slots of ready hosts, and `MAX_RUNNERS` allow. It never
+creates or starts a host for it. Every such launch passes the usage budget and
+the retirement journal like any other, and none is attempted while the
+controller backs off after a capacity refusal.
+
+Neither runner is destroyed when the other takes the job, since GitHub may
+just have assigned it one too. The runner left over, usually the ephemeral
+worker, takes the next queued job or releases itself after
+`RUNNER_IDLE_TIMEOUT` (`10m` by default), with `RUNNER_DANGLING_TIMEOUT` as the
+controller's backstop. That is the cost of a speculation: an ephemeral worker
+billed for up to the idle timeout, or a slot held as long, which can delay
+the host's idle stop or return. Set `speculative: false` on a pool to keep it
+to plain placement. Only the pools placed before the first `ephemeral` tier
+speculate: a pool placed after it is that tier's overflow and keeps that role.
+
 `MAX_RUNNERS` still caps the whole fleet, pools and ephemeral workers
 together, and `RUNNER_USAGE_BUDGET` still reserves `RUNNER_MAX_LIFETIME` per
 launch. A pool with more slots than `MAX_RUNNERS` leaves the rest idle.
@@ -170,6 +194,7 @@ pools:
 | `slot_cpus`, `slot_memory_mb` | all | Docker limits per slot; `0` for none. A whole `slot_cpus` pins each slot to its own cores, see below. A Fly pool always limits memory, see `memory_mb`. | `0`; Fly `slot_memory_mb`: an equal share of `memory_mb` less 1024 MB |
 | `caches` | all | Runner paths kept between a slot's jobs. | `~/.cache`, `~/.npm`, `~/go` |
 | `min_free_disk_gb` | all | Free disk a start requires; below it the slot's caches are dropped first. | `20` |
+| `speculative` | all | Start a second runner in a free slot for a job still waiting on a booting ephemeral worker, see [How placement works](#how-placement-works). Applies to pools placed before `ephemeral`. | `true` |
 | `hourly_price` | all | Host price for reporting. | Hetzner and Fly: the list price of known types and regions (required otherwise). Static: `0` |
 | `slots` | hetzner, fly | Slots per host, 1 to 64. | Required |
 | `min_hosts`, `max_hosts` | hetzner, fly | Hosts kept running, and the ceiling (at most 100). On Fly, stopped hosts count toward `max_hosts`. | `0`, required |
@@ -448,10 +473,11 @@ every five seconds (abridged):
 ```json
 "compute": {
   "tiers": ["warm", "ephemeral"],
+  "speculative": ["warm"],
   "pools": [{
     "name": "warm", "billing": "per_started_hour", "hourly_price": 0.1114,
     "slots_total": 4, "slots_busy": 1, "launched": 212, "overflowed": 3,
-    "returned_hosts": 2, "billed_hours": 31, "cost": 3.45,
+    "returned_hosts": 2, "speculated": 2, "billed_hours": 31, "cost": 3.45,
     "hosts": [{"id": "hetzner-123", "phase": "ready", "slots": 4, "busy": 1, "reachable": true}]
   }]
 }
@@ -464,6 +490,9 @@ neither reachable nor billed.
 
 `overflowed` counts launches the pool sent to the next tier. A steady rise
 means the pool is too small for the load: raise `slots` or `max_hosts`.
+`speculated` counts, within `launched`, the second runners started for jobs
+waiting on a booting ephemeral worker; `speculative` lists the pools that
+start them.
 `billed_hours` and `cost` cover what this controller process has seen since
 it started.
 
