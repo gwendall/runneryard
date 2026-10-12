@@ -23,6 +23,19 @@ operator-facing schema or a trust boundary is called out here first.
   killed, ending every slot on the host at once. A 0.5.0 configuration with four slots
   of 4096 MB on 16384 MB is now refused; 3584 MB, as in the documented example, fits.
   Hosts created before keep their limits until they are replaced.
+- A Fly pool can use a private runner image, such as one in the worker app's
+  `registry.fly.io` repository. `runneryard host boot` no longer pulls the image into the
+  host's Docker: it imports it from the image layer the Machine booted from, mounted
+  read-only, so the host holds no registry credential and nothing Fly wrote at boot enters
+  the image. It refuses a layer without `runner-entrypoint`, keeps the image's
+  environment and `USER runner`, and pulls the image as before if the import fails.
+  Slots run the imported image with `--pull never`. The host's Docker now keeps images on
+  `overlay2` rather than the containerd image store, which took 116 s instead of 21 s to
+  import the same image. Why: the host's Docker pulled the image a second time, about
+  45 s of a new host's start, and could not pull a private one at all. A new host was
+  ready 59 and 72 s after its creation in the real test, against 60 to 100 s before.
+  Hosts created before keep their Docker storage and pull until they are replaced;
+  Hetzner and static pools still need a public image.
 
 ## 0.5.0 (2026-10-12)
 

@@ -328,13 +328,13 @@ for a region without a listed multiplier.
 
 ### Start times
 
-Measured in the first real test (`cdg`, `performance` 8 vCPUs, 16 GB, a
-900 MB runner image):
+Measured in real tests (`cdg`, `performance` 8 vCPUs, 16 GB, a 900 MB
+runner image):
 
-- A new host is ready 60 to 100 s after its creation: Fly pulls the image for
-  the root filesystem (about 30 s), then the host's Docker pulls it again for
-  the slots (about 45 s). A burst shorter than that is over before the new
-  host can take a job.
+- A new host is ready 59 to 72 s after its creation: Fly pulls the image for
+  the root filesystem (about 30 s), then host boot imports it from there into
+  the host's Docker (23 to 28 s). A burst shorter than that is over before the
+  new host can take a job.
 - A stopped host is ready 3 to 9 s after its start, with its images, build
   cache and slot caches as it left them.
 - With `min_hosts: 0`, the first job after a quiet period starts a stopped
@@ -368,6 +368,9 @@ read the files Fly writes at boot, the host key among them; see
   image (slots set their own entrypoint), and sets `USER runner`: a derived
   image must end with `USER runner`, as the
   [derived image guide](derived-images.md#build-rules) requires.
+- The host's Docker keeps images on `overlay2`, not on the containerd image
+  store that Docker 29 uses by default: the same import took 21 s on the
+  first and 116 s on the second.
 - If the import fails, the host logs why and pulls the image instead, which
   works only for a public image. A private image then leaves the host not
   ready, with both errors in its log (`fly logs --machine <id>`).
