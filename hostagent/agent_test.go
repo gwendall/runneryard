@@ -94,6 +94,8 @@ func (d *fakeDocker) Run(_ context.Context, env []string, args ...string) ([]byt
 	case key == "rm --force":
 		delete(d.containers, name)
 		return []byte(name + "\n"), nil
+	case key == "run --rm":
+		return nil, nil
 	case key == "volume rm":
 		if d.onVolumeRemove != nil {
 			d.onVolumeRemove()
@@ -782,6 +784,83 @@ func TestStartAcceptsBoundaryValues(t *testing.T) {
 			decodeOK(t, newTestAgent(newFakeDocker()).Handle(context.Background(), "start 0", requestBody(t, request)), nil)
 		})
 	}
+}
+
+func TestPrefillCachesMountsEverySlotsVolumes(t *testing.T) {
+	t.Parallel()
+	docker := newFakeDocker()
+	agent := newTestAgent(docker)
+	agent.LocalImage = "ghcr.io/acme/runner:sha256-2222"
+	if err := agent.PrefillCaches(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	calls := docker.find("run --rm")
+	if len(calls) != 2 {
+		t.Fatalf("prefill runs = %d, want one per slot", len(calls))
+	}
+	var got [][]string
+	for _, call := range calls {
+		got = append(got, call.args)
+	}
+	slices.SortFunc(got, func(a, b []string) int { return strings.Compare(strings.Join(a, " "), strings.Join(b, " ")) })
+	for slot, args := range got {
+		prefix := "type=volume,source=runneryard-slot-" + strconv.Itoa(slot)
+		want := []string{
+			"run", "--rm", "--network", "none", "--pull", "never", "--entrypoint", "/usr/bin/true",
+			"--mount", prefix + "-docker,target=/var/lib/docker",
+			"--mount", prefix + "-cache-home-runner-.cache,target=/home/runner/.cache",
+			"--mount", prefix + "-cache-opt-hostedtoolcache,target=/opt/hostedtoolcache",
+			"ghcr.io/acme/runner:sha256-2222",
+		}
+		if !slices.Equal(args, want) {
+			t.Fatalf("slot %d prefill = %q, want the volumes start mounts, %q", slot, args, want)
+		}
+	}
+}
+
+func TestPrefillCachesReportsEveryFailedSlot(t *testing.T) {
+	t.Parallel()
+	docker := newFakeDocker()
+	docker.script = func(args []string) ([]byte, error) {
+		if commandKey(args) == "run --rm" && slices.Contains(args, "type=volume,source=runneryard-slot-1-docker,target=/var/lib/docker") {
+			return nil, errors.New("no space left on device")
+		}
+		return nil, errUnscripted
+	}
+	err := newTestAgent(docker).PrefillCaches(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "slot 1: no space left on device") || strings.Contains(err.Error(), "slot 0") {
+		t.Fatalf("PrefillCaches error = %v, want slot 1's failure only", err)
+	}
+	if runs := len(docker.find("run --rm")); runs != 2 {
+		t.Fatalf("prefill runs = %d, want both slots tried", runs)
+	}
+}
+
+func TestHostIsNotReadyUntilItsCachesAreFilled(t *testing.T) {
+	t.Parallel()
+	docker := newFakeDocker()
+	agent := newTestAgent(docker)
+	filled := false
+	agent.CachesFilled = func() bool { return filled }
+	var info pool.HostInfo
+	decodeOK(t, agent.Handle(context.Background(), "info", strings.NewReader("")), &info)
+	if info.Ready {
+		t.Fatalf("info = %+v, want not ready while the caches fill", info)
+	}
+	reply := agent.Handle(context.Background(), "start 0", requestBody(t, validStartRequest()))
+	requireRefusal(t, reply, pool.CodeNotReady)
+	if !strings.Contains(reply.Error.Message, "caches") {
+		t.Fatalf("refusal = %q, want it to name the caches", reply.Error.Message)
+	}
+	if runs := docker.find("run --detach"); len(runs) != 0 {
+		t.Fatalf("start ran %d containers before the caches were filled", len(runs))
+	}
+	filled = true
+	decodeOK(t, agent.Handle(context.Background(), "info", strings.NewReader("")), &info)
+	if !info.Ready {
+		t.Fatalf("info = %+v, want ready once the caches are filled", info)
+	}
+	decodeOK(t, agent.Handle(context.Background(), "start 0", requestBody(t, validStartRequest())), nil)
 }
 
 func TestStartRefusesABusyOrUnreadySlot(t *testing.T) {

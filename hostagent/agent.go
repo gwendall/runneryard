@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gwendall/runneryard/pool"
@@ -156,9 +157,14 @@ type Agent struct {
 	// CPUs are the host's online CPUs, from OnlineCPUs. Slots are pinned to
 	// their own cores when they fit (see slotCPUSet); nil leaves them a CPU
 	// quota only.
-	CPUs    []int
-	Now     func() time.Time
-	Version string
+	CPUs []int
+	// CachesFilled, when set, reports whether PrefillCaches has run; until
+	// then info answers not ready and start refuses. Host boot sets it. A
+	// host install fills the caches before the controller can reach the host
+	// and leaves it nil.
+	CachesFilled func() bool
+	Now          func() time.Time
+	Version      string
 }
 
 // Handle runs one command. It never returns the JIT configuration or any
@@ -222,7 +228,7 @@ func (a *Agent) info(ctx context.Context) pool.Reply {
 	if a.ConfigErr == nil {
 		info.Slots = a.Config.Slots
 		info.Image = a.Config.Image
-		info.Ready = a.imagePresent(ctx)
+		info.Ready = a.cachesFilled() && a.imagePresent(ctx)
 		if free, err := a.freeBytes(); err == nil {
 			info.DiskFreeBytes = free
 		}
@@ -261,6 +267,9 @@ func (a *Agent) start(ctx context.Context, slot int, stdin io.Reader) pool.Reply
 	}
 	if !a.imagePresent(ctx) {
 		return refuse(pool.CodeNotReady, "runner image is not present")
+	}
+	if !a.cachesFilled() {
+		return refuse(pool.CodeNotReady, "slot caches are still being filled")
 	}
 	if reply, ok := a.ensureDisk(ctx, slot); !ok {
 		return reply
@@ -440,6 +449,34 @@ func (a *Agent) volumes(slot int) []volume {
 	}
 	return volumes
 }
+
+// PrefillCaches fills every slot's volumes before the host takes a job.
+// Docker copies the image's files at a volume's target into the volume the
+// first time a container mounts it, and a runner image can ship gigabytes
+// there, such as a pnpm store or Playwright's browsers. Left to a slot's
+// first start, the copy outlasted the controller's start timeout: 3.2 GB took
+// 50 s for one slot and 99 s for three at once. The slots fill in parallel. A
+// volume that already has files is left as it is, so a restarted host pays
+// only for one short container per slot.
+func (a *Agent) PrefillCaches(ctx context.Context) error {
+	errs := make([]error, a.Config.Slots)
+	var wait sync.WaitGroup
+	for slot := range a.Config.Slots {
+		wait.Go(func() {
+			args := []string{"run", "--rm", "--network", "none", "--pull", "never", "--entrypoint", "/usr/bin/true"}
+			for _, volume := range a.volumes(slot) {
+				args = append(args, "--mount", "type=volume,source="+volume.name+",target="+volume.target)
+			}
+			if _, err := a.Docker.Run(ctx, nil, append(args, a.image())...); err != nil {
+				errs[slot] = fmt.Errorf("slot %d: %w", slot, err)
+			}
+		})
+	}
+	wait.Wait()
+	return errors.Join(errs...)
+}
+
+func (a *Agent) cachesFilled() bool { return a.CachesFilled == nil || a.CachesFilled() }
 
 // retiredWorkVolume is the work directory volume RunnerYard 0.5.1 and earlier
 // kept for a slot. Nothing mounts it any more.

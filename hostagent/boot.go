@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -120,15 +121,17 @@ func Boot(ctx context.Context, options BootOptions) error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", options.Listen, err)
 	}
+	var cachesFilled atomic.Bool
 	agent := &Agent{
-		Config:     cfg,
-		LocalImage: LocalImageName(cfg.Image),
-		Docker:     docker,
-		FreeBytes:  FreeBytes,
-		Lock:       SlotLock(options.LockDir),
-		CPUs:       OnlineCPUs(),
-		Now:        time.Now,
-		Version:    options.Version,
+		Config:       cfg,
+		LocalImage:   LocalImageName(cfg.Image),
+		Docker:       docker,
+		FreeBytes:    FreeBytes,
+		Lock:         SlotLock(options.LockDir),
+		CPUs:         OnlineCPUs(),
+		CachesFilled: cachesFilled.Load,
+		Now:          time.Now,
+		Version:      options.Version,
 	}
 	if cfg.SlotCPUs > 0 && !agent.SlotsPinned() {
 		log.Warn("slots get a CPU quota but see every host CPU: pinning needs a whole slot_cpus and slots x slot_cpus host CPUs; tools that size their parallelism by the CPU count will oversubscribe",
@@ -140,14 +143,30 @@ func Boot(ctx context.Context, options BootOptions) error {
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(serveCtx, listener) }()
 	log.Info("pool host agent listening", "address", listener.Addr().String(), "slots", cfg.Slots, "image", cfg.Image)
-	// The agent answers "not ready" until the image is present, so the
-	// controller sees the host while the import or the first pull runs.
-	go EnsureImage(serveCtx, docker, cfg.Image, agent.LocalImage, ImportRootfsImage, log, func(d time.Duration) {
-		select {
-		case <-serveCtx.Done():
-		case <-time.After(d):
+	// The agent answers "not ready" until the image is present and the slot
+	// caches are filled, so the controller sees the host while the import or
+	// the first pull runs.
+	go func() {
+		EnsureImage(serveCtx, docker, cfg.Image, agent.LocalImage, ImportRootfsImage, log, func(d time.Duration) {
+			select {
+			case <-serveCtx.Done():
+			case <-time.After(d):
+			}
+		})
+		if serveCtx.Err() != nil {
+			return
 		}
-	})
+		started := time.Now()
+		if err := agent.PrefillCaches(serveCtx); err != nil {
+			if serveCtx.Err() != nil {
+				return
+			}
+			log.Warn("could not fill the slot caches; a slot's first start fills its own and may outlast the controller's start timeout", "error", err)
+		} else {
+			log.Info("filled the slot caches", "slots", cfg.Slots, "duration", time.Since(started).Round(time.Second).String())
+		}
+		cachesFilled.Store(true)
+	}()
 	select {
 	case err := <-served:
 		return err
