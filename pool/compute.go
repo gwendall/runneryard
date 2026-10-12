@@ -156,6 +156,8 @@ type hostState struct {
 	// had been billed when this process first saw it running.
 	meter        meter
 	billedBefore float64
+
+	health hostHealth
 }
 
 func (h *hostState) occupied() int { return len(h.slots) }
@@ -240,6 +242,8 @@ type Pool struct {
 	retired       usage
 	retiredBefore float64
 	slotsSeen     int
+
+	health poolHealth
 }
 
 // New validates the configuration and returns an idle pool.
@@ -426,7 +430,7 @@ func (p *Pool) launch(ctx context.Context, lease provider.Lease, grow bool) (pro
 				return p.commit(host.ID, slot, late, lease), nil
 			}
 			worker := slotWorker(host.ID, slot, Slot{Index: slot, ControllerID: p.cfg.ControllerID, State: "starting", CreatedAt: p.cfg.Now()}, lease)
-			p.holdSuspect(host.ID, slot, lease)
+			p.holdSuspect(host.ID, slot, lease, firstNonEmpty(refusalCode(err), "start_unconfirmed"))
 			return provider.Worker{}, &provider.PartialLaunchError{Worker: worker, Err: fmt.Errorf("start slot %d on %s: %w", slot, host.ID, err)}
 		}
 	}
@@ -538,6 +542,7 @@ func (p *Pool) maintain(ctx context.Context) {
 	p.replaceStale()
 	p.returnHosts(ctx)
 	p.grow(ctx)
+	p.checkHealth()
 }
 
 // followTag resolves the followed tag when it is due. Until the first
@@ -565,12 +570,16 @@ func (p *Pool) followTag(ctx context.Context) {
 	if err != nil {
 		p.imageCheckAt = now.Add(imageRetry)
 		p.imageError = err.Error()
+		if p.health.imageFailingSince.IsZero() {
+			p.health.imageFailingSince = now
+		}
 		p.log.Warn("could not resolve the runner image tag; hosts keep their image", "tag", p.cfg.Image, "image", p.image, "retry_after", imageRetry, "error", err)
 		return
 	}
 	p.imageCheckAt = now.Add(p.cfg.ImageRefresh)
 	p.imageCheckedAt = now
 	p.imageError = ""
+	p.health.imageFailingSince = time.Time{}
 	if image == p.image {
 		return
 	}
@@ -715,11 +724,17 @@ func (p *Pool) refreshHosts(ctx context.Context, force bool) error {
 	started := p.cfg.Now()
 	listed, err := p.cfg.Source.List(ctx)
 	if err != nil {
+		p.mu.Lock()
+		if p.health.sourceFailingSince.IsZero() {
+			p.health.sourceFailingSince = p.cfg.Now()
+		}
+		p.mu.Unlock()
 		return err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.cfg.Now()
+	p.health.sourceFailingSince = time.Time{}
 	seen := make(map[string]struct{}, len(listed))
 	for _, host := range listed {
 		if host.ID == "" || strings.ContainsAny(host.ID, "/:") {
@@ -785,6 +800,7 @@ func (p *Pool) reconcile(h *hostState, now time.Time) {
 		if h.startedByPool {
 			h.startFailures++
 			h.notBefore = now.Add(hostRefusalBackoff)
+			p.health.launchFailed(now, "stopped_while_starting")
 		}
 		p.markStopped(h, earliest(h.host.StateSince, now))
 	case !stopped && h.phase == phaseStopped:
@@ -844,12 +860,17 @@ func (p *Pool) probe(ctx context.Context) {
 		case !p.accepts(info.Image):
 			h.phase = phaseDraining
 			h.drainReason = "image_mismatch"
+			h.health.drainedAt = now
+			if h.createdImage != "" {
+				p.health.bootFailed(now, "host "+host.ID+", created for this pool, runs another runner image")
+			}
 			p.log.Warn("pool host runs another runner image; draining it", "host", host.ID, "host_image", info.Image, "image", p.image)
 		case info.Ready && info.Slots > 0:
 			h.phase = phaseReady
 			h.everReady = true
 			h.startedByPool = false
 			h.startFailures = 0
+			p.health.hostReady(h)
 			p.log.Info("pool host ready", "host", host.ID, "slots", info.Slots, "boot", now.Sub(firstNonZero(h.bootSince, host.CreatedAt, h.firstSeen)).Round(time.Second))
 			if p.roomReady != nil {
 				// A non-blocking signal, safe under p.mu.
@@ -892,6 +913,7 @@ func (p *Pool) listSlots(ctx context.Context, hosts []Host) {
 		h.slots = slots
 		h.lastContact = now
 		h.lastListed = now
+		p.trackForeign(h, now)
 		if len(slots) == 0 && len(h.reserved) == 0 {
 			if h.emptySince.IsZero() {
 				h.emptySince = now
@@ -995,9 +1017,11 @@ func (p *Pool) commit(hostID string, slot int, started Slot, lease provider.Leas
 		h.slots[slot] = started
 		h.lastContact = now
 		h.emptySince = time.Time{}
+		h.health.slotFailures = 0
 	}
 	p.launched++
 	p.accrue(now)
+	p.health.count(now, false)
 	return slotWorker(hostID, slot, started, lease)
 }
 
@@ -1046,10 +1070,11 @@ func (p *Pool) readLateStart(ctx context.Context, host Host, slot int, lease pro
 
 // holdSuspect keeps a slot whose start is ambiguous taken until the core
 // removes the worker or a listing shows the slot's real content.
-func (p *Pool) holdSuspect(hostID string, slot int, lease provider.Lease) {
+func (p *Pool) holdSuspect(hostID string, slot int, lease provider.Lease, reason string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if h, ok := p.hosts[hostID]; ok {
+		h.health.slotFailed(p.cfg.Now(), reason)
 		delete(h.reserved, slot)
 		h.slots[slot] = Slot{
 			Index: slot, ControllerID: p.cfg.ControllerID, LeaseID: lease.ID, RunnerName: lease.RunnerName,
@@ -1067,6 +1092,7 @@ func (p *Pool) markForeign(hostID string, slot int) {
 		if _, known := h.slots[slot]; !known {
 			h.slots[slot] = Slot{Index: slot, State: "unknown"}
 		}
+		p.trackForeign(h, p.cfg.Now())
 	}
 	p.accrue(p.cfg.Now())
 }
@@ -1075,10 +1101,15 @@ func (p *Pool) refuseHost(hostID, reason string, err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if h, ok := p.hosts[hostID]; ok {
-		h.notBefore = p.cfg.Now().Add(hostRefusalBackoff)
-		if reason == CodeImageMismatch && h.phase == phaseReady {
+		now := p.cfg.Now()
+		h.notBefore = now.Add(hostRefusalBackoff)
+		switch {
+		case reason == CodeImageMismatch && h.phase == phaseReady:
 			h.phase = phaseDraining
 			h.drainReason = "image_mismatch"
+			h.health.drainedAt = now
+		case reason != CodeImageMismatch:
+			h.health.slotFailed(now, reason)
 		}
 	}
 	p.accrue(p.cfg.Now())
@@ -1106,9 +1137,11 @@ func (p *Pool) cleared(hostID string, slot int, leaseID string) {
 // be ready instead of after its capacity backoff, and zero otherwise.
 func (p *Pool) noteFull() time.Duration {
 	p.mu.Lock()
+	now := p.cfg.Now()
 	p.demand++
 	p.overflowed++
-	coming := p.roomComing(p.cfg.Now())
+	p.health.count(now, true)
+	coming := p.roomComing(now)
 	p.mu.Unlock()
 	p.signal()
 	if coming {
@@ -1225,6 +1258,7 @@ func (p *Pool) returnCandidates() []returnCandidate {
 			if h.createdImage != "" && h.createdImage == p.image {
 				p.imageFailed = true
 			}
+			p.health.bootFailed(now, "host "+id+" did not become ready within "+roughly(p.cfg.BootTimeout))
 		case (h.phase == phaseReady || h.phase == phaseDraining || h.phase == phaseBooting) && now.Sub(latest(h.lastContact, h.firstSeen, h.bootSince)) > p.cfg.MaxLifetime+p.cfg.UnreachableGrace:
 			// Every slot container has a deadline within the maximum lifetime,
 			// so nothing on a host silent for longer can still be a job.
@@ -1461,6 +1495,7 @@ func (p *Pool) start(ctx context.Context, id string) {
 			h.startFailures = maxStartFailures
 		}
 		h.notBefore = now.Add(hostRefusalBackoff)
+		p.health.launchFailed(now, launchFailureReason(err))
 		// The demand that asked for the start still waits: the next pass
 		// starts another stopped host or creates one.
 		p.demand++
@@ -1496,6 +1531,7 @@ func (p *Pool) create(ctx context.Context, placeholder, image string) {
 		if !now.Before(p.createNotBefore) {
 			p.createBackoff = min(max(p.createBackoff*2, initialCreateBackoff), maximumCreateBackoff)
 			p.createNotBefore = now.Add(p.createBackoff)
+			p.health.launchFailed(now, launchFailureReason(err))
 		}
 		if image == p.image {
 			p.imageFailed = true
@@ -1504,6 +1540,7 @@ func (p *Pool) create(ctx context.Context, placeholder, image string) {
 		return
 	}
 	p.createBackoff = 0
+	p.health.launchSucceeded()
 	if host.ID == "" || strings.ContainsAny(host.ID, "/:") {
 		p.log.Error("host source returned an invalid host ID", "host", host.ID)
 		return
@@ -1594,6 +1631,10 @@ type Status struct {
 	// EphemeralEquivalent prices BusySlotSeconds as ephemeral workers, when
 	// the ephemeral tier knows its own hourly price.
 	EphemeralEquivalent *EphemeralEquivalent `json:"ephemeral_equivalent,omitempty"`
+
+	// Conditions lists the problems the controller alerts on, see
+	// Pool.Conditions.
+	Conditions []provider.Condition `json:"conditions,omitempty"`
 }
 
 // HostStatus describes one host.
@@ -1656,6 +1697,9 @@ func (p *Pool) Status() Status {
 	status.Usage = used.report()
 	status.Cost = priceHours(status.BilledHours, p.facts.HourlyPrice)
 	status.MeasuredCost = priceHours(max(0, status.BilledHours-billedBefore), p.facts.HourlyPrice)
+	if conditions := p.conditions(now); len(conditions) > 0 {
+		status.Conditions = conditions
+	}
 	return status
 }
 
