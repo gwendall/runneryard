@@ -151,6 +151,11 @@ type hostState struct {
 	changedAt time.Time
 	// createdImage is the image this process created the host from.
 	createdImage string
+
+	// meter measures the host since firstSeen; billedBefore is the hours it
+	// had been billed when this process first saw it running.
+	meter        meter
+	billedBefore float64
 }
 
 func (h *hostState) occupied() int { return len(h.slots) }
@@ -227,6 +232,14 @@ type Pool struct {
 	// tests shorten them.
 	lateStartWait time.Duration
 	lateStartPoll time.Duration
+
+	// measuredSince starts the usage figures; retired holds the usage of
+	// hosts no longer in hosts, retiredBefore the billedBefore of returned
+	// ones; slotsSeen is the most slots a host has reported.
+	measuredSince time.Time
+	retired       usage
+	retiredBefore float64
+	slotsSeen     int
 }
 
 // New validates the configuration and returns an idle pool.
@@ -309,6 +322,7 @@ func New(cfg Config) (*Pool, error) {
 
 		lateStartWait: defaultLateStartWait,
 		lateStartPoll: defaultLateStartPoll,
+		measuredSince: cfg.Now(),
 	}, nil
 }
 
@@ -629,6 +643,7 @@ func (p *Pool) replaceStale() {
 	}
 	candidate.phase = phaseDraining
 	candidate.drainReason = "image_stale"
+	p.accrue(now)
 	p.replaceNotBefore = now.Add(replaceInterval)
 	p.imageReplaced++
 	p.log.Info("replacing pool host on an earlier runner image; it takes no new job and is deleted once empty",
@@ -732,6 +747,7 @@ func (p *Pool) refreshHosts(ctx context.Context, force bool) error {
 			h.stoppedSince = earliest(host.StateSince, now)
 		} else {
 			h.runningSince = firstNonZero(host.StateSince, host.CreatedAt, now)
+			h.billedBefore = p.billedHours(h.runningSince, now)
 		}
 		p.hosts[host.ID] = h
 		p.log.Info("found pool host", "host", host.ID, "created_at", host.CreatedAt, "phase", h.phase)
@@ -744,8 +760,9 @@ func (p *Pool) refreshHosts(ctx context.Context, force bool) error {
 		if h.occupied() > 0 {
 			p.log.Warn("pool host disappeared from its source with slots in use", "host", id, "slots", h.occupied())
 		}
-		delete(p.hosts, id)
+		p.forget(id, now)
 	}
+	p.accrue(now)
 	p.hostsListedAt = now
 	p.hostsKnown = true
 	return nil
@@ -810,6 +827,7 @@ func (p *Pool) probe(ctx context.Context) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.cfg.Now()
+	defer p.accrue(now)
 	for i, host := range booting {
 		h, ok := p.hosts[host.ID]
 		if !ok || h.phase != phaseBooting {
@@ -821,6 +839,7 @@ func (p *Pool) probe(ctx context.Context) {
 		info := results[i]
 		h.lastContact = now
 		h.info = info
+		p.slotsSeen = max(p.slotsSeen, info.Slots)
 		switch {
 		case !p.accepts(info.Image):
 			h.phase = phaseDraining
@@ -851,6 +870,7 @@ func (p *Pool) listSlots(ctx context.Context, hosts []Host) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.cfg.Now()
+	defer p.accrue(now)
 	for i, host := range hosts {
 		h, ok := p.hosts[host.ID]
 		if !ok {
@@ -931,6 +951,7 @@ func (p *Pool) reserve(leaseID string) (Host, int, string, bool) {
 	slot, _ := best.freeSlot()
 	best.reserved[slot] = leaseID
 	best.emptySince = time.Time{}
+	p.accrue(now)
 	return best.host, slot, best.info.Image, true
 }
 
@@ -946,6 +967,7 @@ func (p *Pool) release(hostID string, slot int) {
 	if h, ok := p.hosts[hostID]; ok {
 		delete(h.reserved, slot)
 	}
+	p.accrue(p.cfg.Now())
 }
 
 func (p *Pool) commit(hostID string, slot int, started Slot, lease provider.Lease) provider.Worker {
@@ -975,6 +997,7 @@ func (p *Pool) commit(hostID string, slot int, started Slot, lease provider.Leas
 		h.emptySince = time.Time{}
 	}
 	p.launched++
+	p.accrue(now)
 	return slotWorker(hostID, slot, started, lease)
 }
 
@@ -1034,6 +1057,7 @@ func (p *Pool) holdSuspect(hostID string, slot int, lease provider.Lease) {
 		}
 		h.notBefore = p.cfg.Now().Add(hostRefusalBackoff)
 	}
+	p.accrue(p.cfg.Now())
 }
 
 func (p *Pool) markForeign(hostID string, slot int) {
@@ -1044,6 +1068,7 @@ func (p *Pool) markForeign(hostID string, slot int) {
 			h.slots[slot] = Slot{Index: slot, State: "unknown"}
 		}
 	}
+	p.accrue(p.cfg.Now())
 }
 
 func (p *Pool) refuseHost(hostID, reason string, err error) {
@@ -1056,6 +1081,7 @@ func (p *Pool) refuseHost(hostID, reason string, err error) {
 			h.drainReason = "image_mismatch"
 		}
 	}
+	p.accrue(p.cfg.Now())
 	p.log.Warn("pool host refused a slot; trying another", "host", hostID, "reason", reason, "error", err)
 }
 
@@ -1072,6 +1098,7 @@ func (p *Pool) cleared(hostID string, slot int, leaseID string) {
 	if len(h.slots) == 0 && len(h.reserved) == 0 && h.emptySince.IsZero() {
 		h.emptySince = p.cfg.Now()
 	}
+	p.accrue(p.cfg.Now())
 }
 
 // noteFull records an overflow for the next growth pass. It returns one tick
@@ -1151,7 +1178,8 @@ func (p *Pool) returnHosts(ctx context.Context) {
 		now := p.cfg.Now()
 		if h, ok := p.hosts[candidate.host.ID]; ok {
 			p.returnedHours += p.hostBilled(h, now)
-			delete(p.hosts, candidate.host.ID)
+			p.retiredBefore += h.billedBefore
+			p.forget(candidate.host.ID, now)
 		}
 		p.returnedHosts++
 		p.mu.Unlock()
@@ -1173,6 +1201,7 @@ func (p *Pool) stopHost(ctx context.Context, candidate returnCandidate) {
 		p.markStopped(h, now)
 		h.changedAt = now
 	}
+	p.accrue(now)
 	p.hostStops++
 	p.mu.Unlock()
 	p.log.Info("stopped idle pool host", "host", candidate.host.ID, "reason", candidate.reason)
@@ -1182,6 +1211,7 @@ func (p *Pool) returnCandidates() []returnCandidate {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.cfg.Now()
+	defer p.accrue(now)
 	base := p.baseHosts()
 	candidates := make([]returnCandidate, 0)
 	for _, id := range p.sortedIDs() {
@@ -1318,6 +1348,7 @@ func (p *Pool) restorePhase(hostID string, previous phase) {
 	if h, ok := p.hosts[hostID]; ok && (h.phase == phaseDeleting || h.phase == phaseStopping) {
 		h.phase = previous
 	}
+	p.accrue(p.cfg.Now())
 }
 
 func (p *Pool) warnStuckStaticHosts() {
@@ -1421,6 +1452,7 @@ func (p *Pool) start(ctx context.Context, id string) {
 	now := p.cfg.Now()
 	h.changedAt = now
 	defer p.signal()
+	defer p.accrue(now)
 	if err != nil {
 		h.phase = phaseStopped
 		h.startFailures++
@@ -1455,8 +1487,9 @@ func (p *Pool) create(ctx context.Context, placeholder, image string) {
 	host, err := p.cfg.Source.Create(ctx, image)
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	delete(p.hosts, placeholder)
 	now := p.cfg.Now()
+	p.forget(placeholder, now)
+	defer p.accrue(now)
 	if err != nil {
 		// Creations started in the same pass fail together; only the first
 		// failure of a round lengthens the backoff.
@@ -1548,6 +1581,19 @@ type Status struct {
 	BilledHours float64      `json:"billed_hours"`
 	Cost        float64      `json:"cost"`
 	Hosts       []HostStatus `json:"hosts"`
+
+	// MeasuredSince is when this process started measuring the pool: the
+	// usage below, MeasuredCost and EphemeralEquivalent cover the time
+	// since, and start again at zero when the controller restarts.
+	MeasuredSince time.Time `json:"measured_since"`
+	// Usage adds up every host's usage, returned hosts included.
+	Usage
+	// MeasuredCost is Cost without the hours hosts had been billed before
+	// this process first saw them, so it covers the same time as Usage.
+	MeasuredCost float64 `json:"measured_cost"`
+	// EphemeralEquivalent prices BusySlotSeconds as ephemeral workers, when
+	// the ephemeral tier knows its own hourly price.
+	EphemeralEquivalent *EphemeralEquivalent `json:"ephemeral_equivalent,omitempty"`
 }
 
 // HostStatus describes one host.
@@ -1564,6 +1610,7 @@ type HostStatus struct {
 	// earlier digest of a followed tag: the host is due for replacement.
 	Image string `json:"image,omitempty"`
 	Stale bool   `json:"stale,omitempty"`
+	Usage
 }
 
 // Status reports the pool's hosts, slots, and billed hours.
@@ -1571,16 +1618,18 @@ func (p *Pool) Status() Status {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.cfg.Now()
+	p.accrue(now)
 	status := Status{
 		Name: p.cfg.Name, Billing: p.facts.Billing, HourlyPrice: p.facts.HourlyPrice, Currency: p.facts.Currency,
 		MinHosts: p.cfg.MinHosts, MaxHosts: p.cfg.MaxHosts, Launched: p.launched, Overflowed: p.overflowed,
 		ReturnedHosts: p.returnedHosts, HostStops: p.hostStops, HostStarts: p.hostStarts, Speculated: p.speculated,
 		BilledHours: p.returnedHours, Hosts: make([]HostStatus, 0, len(p.hosts)),
-		Image: p.image, ImageReplacements: p.imageReplaced,
+		Image: p.image, ImageReplacements: p.imageReplaced, MeasuredSince: p.measuredSince,
 	}
 	if p.cfg.Follow != nil {
 		status.Follows, status.ImageCheckedAt, status.ImageError = p.cfg.Image, p.imageCheckedAt, p.imageError
 	}
+	used, billedBefore := p.retired, p.retiredBefore
 	for _, id := range p.sortedIDs() {
 		h := p.hosts[id]
 		busy := h.occupied() + len(h.reserved)
@@ -1588,19 +1637,25 @@ func (p *Pool) Status() Status {
 		if !h.running() {
 			image = firstNonEmpty(h.host.Image, h.info.Image)
 		}
+		hostUsage := p.usageOf(h)
 		host := HostStatus{
 			ID: id, Phase: string(h.phase), Slots: h.info.Slots, Busy: busy, CreatedAt: h.host.CreatedAt,
 			Reachable: h.running() && !h.lastContact.IsZero() && now.Sub(h.lastContact) <= p.cfg.UnreachableGrace,
 			StoppedAt: h.stoppedSince, Image: image, Stale: image != "" && p.accepts(image) && p.stale(image),
+			Usage: hostUsage.report(),
 		}
 		if h.phase == phaseReady {
 			status.SlotsTotal += h.info.Slots
 			status.SlotsBusy += min(busy, h.info.Slots)
 		}
 		status.BilledHours += p.hostBilled(h, now)
+		billedBefore += h.billedBefore
+		used = used.add(hostUsage)
 		status.Hosts = append(status.Hosts, host)
 	}
-	status.Cost = math.Round(status.BilledHours*p.facts.HourlyPrice*100) / 100
+	status.Usage = used.report()
+	status.Cost = priceHours(status.BilledHours, p.facts.HourlyPrice)
+	status.MeasuredCost = priceHours(max(0, status.BilledHours-billedBefore), p.facts.HourlyPrice)
 	return status
 }
 

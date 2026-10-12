@@ -52,6 +52,16 @@ type StatusReporter interface {
 	ComputeStatus() any
 }
 
+// Pricer is implemented by compute that bills each worker per second of
+// running time at a known hourly price. Status reports use it to price a
+// pool's busy slot time as ephemeral workers; a provider that bills by any
+// other unit does not implement it.
+type Pricer interface {
+	// WorkerHourlyPrice returns the price of one worker hour; ok is false
+	// when the price is not known.
+	WorkerHourlyPrice() (price float64, currency string, ok bool)
+}
+
 // Speculator is implemented by compute that holds spare room where a worker
 // starts in seconds, such as the free slots of a pool's ready hosts, next to
 // tiers that boot a machine per worker. The core starts a second runner there

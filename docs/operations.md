@@ -300,6 +300,10 @@ Healthy interpretation:
   set's assigned jobs, desired workers and workers, and the top-level GitHub
   figures are their sums. Without it the field is absent. See
   [Jobs that skip the pools](pools.md#jobs-that-skip-the-pools).
+- with pools, a `Pool` line per pool and one line per host give each one's
+  occupancy and cost since the controller started, next to what the same
+  runners would have cost as ephemeral workers. See
+  [Occupancy and cost](pools.md#occupancy-and-cost).
 
 The schema contains aggregate counters only. It never writes job IDs,
 repository payloads, runner names, JIT configuration, tokens, or secrets. The

@@ -247,9 +247,11 @@ type PlacementStatus struct {
 	Pools       []Status `json:"pools"`
 }
 
-// ComputeStatus reports the tier order and every pool tier.
+// ComputeStatus reports the tier order and every pool tier. A pool's
+// ephemeral equivalent uses the first tier that knows its worker price.
 func (p *Placement) ComputeStatus() any {
 	status := PlacementStatus{Tiers: make([]string, 0, len(p.tiers)), Pools: make([]Status, 0)}
+	pricedTier, price, currency, priced := p.workerPrice()
 	for _, tier := range p.tiers {
 		if tier.Drain {
 			status.Draining = append(status.Draining, tier.Name)
@@ -257,13 +259,30 @@ func (p *Placement) ComputeStatus() any {
 			status.Tiers = append(status.Tiers, tier.Name)
 		}
 		if pool, ok := tier.Compute.(interface{ Status() Status }); ok {
-			status.Pools = append(status.Pools, pool.Status())
+			poolStatus := pool.Status()
+			if priced {
+				poolStatus.EphemeralEquivalent = ephemeralEquivalent(poolStatus.BusySlotSeconds, pricedTier, price, currency)
+			}
+			status.Pools = append(status.Pools, poolStatus)
 		}
 	}
 	for _, tier := range p.spare {
 		status.Speculative = append(status.Speculative, tier.Name)
 	}
 	return status
+}
+
+// workerPrice returns the first tier that knows its worker price, and the
+// price.
+func (p *Placement) workerPrice() (string, float64, string, bool) {
+	for _, tier := range p.tiers {
+		if pricer, ok := tier.Compute.(provider.Pricer); ok {
+			if price, currency, known := pricer.WorkerHourlyPrice(); known {
+				return tier.Name, price, currency, true
+			}
+		}
+	}
+	return "", 0, "", false
 }
 
 var (
