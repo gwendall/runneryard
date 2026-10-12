@@ -394,11 +394,18 @@ func (s *scaler) scheduleProbeLocked(wait time.Duration) {
 	})
 }
 
-// stopProbeLocked cancels a pending wake-up. The caller holds capacityMu.
+// stopProbeLocked cancels a pending wake-up and drops one not yet taken.
+// A timer already firing can still deliver a token afterwards; it only costs
+// one empty poll, since capacityAllowance decides whether to probe. The
+// caller holds capacityMu.
 func (s *scaler) stopProbeLocked() {
 	if s.probeTimer != nil {
 		s.probeTimer.Stop()
 		s.probeTimer = nil
+	}
+	select {
+	case <-s.probeWake:
+	default:
 	}
 }
 

@@ -73,7 +73,7 @@ func TestWakingSessionEndsAPollEarlyAsAnEmptyPoll(t *testing.T) {
 	}
 }
 
-func TestProbeTimerWakesOnceAndStopsWithTheGate(t *testing.T) {
+func TestProbeTimerWakesAndStopsWithTheGate(t *testing.T) {
 	scaler := testScaler(t, newWorkerState(), &fakeCompute{})
 	scaler.probeWake = make(chan struct{}, 1)
 
@@ -85,10 +85,10 @@ func TestProbeTimerWakesOnceAndStopsWithTheGate(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the probe timer did not wake the listener")
 	}
-
 	scaler.capacityMu.Lock()
-	scaler.scheduleProbeLocked(time.Hour)
+	scaler.stopProbeLocked()
 	scaler.capacityMu.Unlock()
+
 	scaler.recordLaunchGate(gateCapacity, "pool_full", &provider.CapacityError{Reason: "pool_full", RetryAfter: 10 * time.Second, Err: errors.New("no free slot")})
 	scaler.capacityMu.Lock()
 	timer := scaler.probeTimer
@@ -96,9 +96,15 @@ func TestProbeTimerWakesOnceAndStopsWithTheGate(t *testing.T) {
 	if timer == nil {
 		t.Fatal("a closed gate must arm the probe timer")
 	}
+	scaler.probeWake <- struct{}{}
 	scaler.clearLaunchGate()
 	if scaler.probeTimer != nil {
 		t.Fatal("a cleared gate must stop the probe timer")
+	}
+	select {
+	case <-scaler.probeWake:
+		t.Fatal("a cleared gate must drop a pending wake-up")
+	default:
 	}
 }
 
@@ -168,10 +174,19 @@ func TestGateRetryTimeProbesWithoutWaitingForGitHub(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 
-	// GitHub sends nothing more. At the gate's retry time the timer wakes
-	// the listener, which probes again on its own.
+	// GitHub sends nothing more. At the gate's retry time the timer the
+	// refusal armed wakes the listener, which probes again on its own. The
+	// test brings that time forward instead of waiting 10 s.
 	clock.Add(int64(10 * time.Second))
-	scaler.probeWake <- struct{}{}
+	scaler.capacityMu.Lock()
+	timer := scaler.probeTimer
+	if timer != nil {
+		timer.Reset(time.Millisecond)
+	}
+	scaler.capacityMu.Unlock()
+	if timer == nil {
+		t.Fatal("the refused launch did not arm the probe timer")
+	}
 	waitLaunch("at the retry time")
 
 	cancel()

@@ -333,10 +333,10 @@ Measured in the first real test (`cdg`, `performance` 8 vCPUs, 16 GB, a
   cache and slot caches as it left them.
 - With `min_hosts: 0`, the first job after a quiet period starts a stopped
   host and is placed on it at the controller's next probe, 10 s later. In the
-  test, on 0.5.0, it started 62 s after it was queued, because the probe then
-  waited for the controller's next GitHub message (up to about 50 s); from
-  0.5.1 the controller wakes itself for the probe. `min_hosts: 1` takes it at
-  once, for the price of a host running all month.
+  test it started 62 s after it was queued, because the probe then waited for
+  the controller's next GitHub message (up to about 50 s); the controller now
+  wakes itself for the probe. `min_hosts: 1` takes it at once, for the price
+  of a host running all month.
 
 ### Organization Machine limit
 
