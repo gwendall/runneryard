@@ -167,7 +167,7 @@ pools:
 | `name` | all | Lowercase letters, digits and hyphens; not `ephemeral`. | Required |
 | `source` | all | `fly`, `hetzner` or `static`. | Required |
 | `runner_image` | all | Exact image every slot runs. Pin a digest. | `RUNNER_IMAGE` |
-| `slot_cpus`, `slot_memory_mb` | all | Docker limits per slot; `0` for none. | `0` |
+| `slot_cpus`, `slot_memory_mb` | all | Docker limits per slot; `0` for none. A Fly pool always limits memory, see `memory_mb`. | `0`; Fly `slot_memory_mb`: an equal share of `memory_mb` less 1024 MB |
 | `caches` | all | Runner paths kept between a slot's jobs. | `~/.cache`, `~/.npm`, `~/go` |
 | `min_free_disk_gb` | all | Free disk a start requires; below it the slot's caches are dropped first. | `20` |
 | `hourly_price` | all | Host price for reporting. | Hetzner and Fly: the list price of known types and regions (required otherwise). Static: `0` |
@@ -180,7 +180,7 @@ pools:
 | `hosts` | static | Prepared machines; each sets its slots in its own install. | Required |
 | `fly_app` | fly | The pool's own Fly app. Must differ from `RUNNER_FLY_APP` and the controller's app. | Required |
 | `region` | fly | Region of every host and volume. | `RUNNER_FLY_REGION` |
-| `cpu_kind`, `cpus`, `memory_mb` | fly | Machine shape. `slots` times `slot_memory_mb` must fit in `memory_mb`. | `performance`, required, required |
+| `cpu_kind`, `cpus`, `memory_mb` | fly | Machine shape. `slots` times `slot_memory_mb` must fit in `memory_mb` less 1024 MB, kept for the host's Docker and agent; each slot gets at least 512 MB. | `performance`, required, required |
 | `volume_gb` | fly | Size of each host's Docker volume, 10 to 500. | `50` |
 | `idle_stop_after` | fly | An empty host beyond `min_hosts` is stopped after this. | `5m` |
 | `keep_stopped` | fly | Stopped hosts kept for the next demand, at most `max_hosts`. | `1` |
@@ -227,7 +227,11 @@ image itself, as root, with `runneryard host boot`:
 1. reads the host configuration, its derived host key and the controller's
    public key, written as Machine files at creation;
 2. starts `dockerd` with its data root on the volume, and removes any slot
-   container a previous run left behind;
+   container a previous run left behind. `dockerd`, `containerd` and the
+   agent run with the out-of-memory score systemd gives Docker (`-500`), and
+   every slot has a memory limit that leaves 1024 MB to them: a job that
+   exhausts memory is killed in its own slot instead of taking the host's
+   Docker, and every slot with it, down;
 3. serves the host agent over SSH on the Machine's private address, port
    2222 (Fly's own SSH server, used by `fly ssh console`, holds port 22); it
    refuses to start when `FLY_PRIVATE_IP` is missing or is not an IP address;
@@ -282,7 +286,7 @@ pools:
     volume_gb: 50
     slots: 4
     slot_cpus: 2
-    slot_memory_mb: 3584
+    slot_memory_mb: 3584        # 4 x 3584 leaves 2 GB to the host
     min_hosts: 0                # running hosts kept whatever the load
     max_hosts: 3                # running and stopped hosts together
     keep_stopped: 1             # stopped hosts kept for the next burst

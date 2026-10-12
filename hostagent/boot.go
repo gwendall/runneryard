@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -37,7 +38,13 @@ const (
 	dockerReadyTimeout = 90 * time.Second
 	dockerStopTimeout  = 20 * time.Second
 	maxPullBackoff     = time.Minute
+	// hostOOMScoreAdj is the score systemd's docker.service gives dockerd.
+	hostOOMScoreAdj = -500
 )
+
+// oomScoreAdjPath is this process's out-of-memory score adjustment; tests
+// point it at a file.
+var oomScoreAdjPath = "/proc/self/oom_score_adj"
 
 // BootOptions configures a machine that boots from the runner image and
 // serves as a pool host: no sshd, no installation step, a fresh root
@@ -89,6 +96,9 @@ func Boot(ctx context.Context, options BootOptions) error {
 	}
 	if err := writeFile(dockerdConfigPath, daemon, 0o644); err != nil {
 		return err
+	}
+	if err := protectFromOOMKiller(); err != nil {
+		log.Warn("could not lower the host's out-of-memory score; a job that exhausts memory may stop dockerd", "error", err)
 	}
 	stopDocker, dockerExited, err := startDockerd()
 	if err != nil {
@@ -213,6 +223,15 @@ func DockerDaemonConfig(dataRoot string, dns []string) ([]byte, error) {
 		return nil, err
 	}
 	return append(encoded, '\n'), nil
+}
+
+// protectFromOOMKiller lowers this process's out-of-memory score before it
+// starts dockerd. dockerd, containerd and the agent inherit it, so when the
+// host runs out of memory the kernel kills a job's process rather than one of
+// them, which would end every slot at once. Containers do not inherit it:
+// Docker sets each container's own score, 0 by default.
+func protectFromOOMKiller() error {
+	return os.WriteFile(oomScoreAdjPath, []byte(strconv.Itoa(hostOOMScoreAdj)), 0o600)
 }
 
 func startDockerd() (func(), <-chan struct{}, error) {

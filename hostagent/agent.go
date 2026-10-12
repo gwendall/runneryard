@@ -44,6 +44,9 @@ const (
 	defaultDockerFS = "/var/lib/docker"
 )
 
+// MinimumSlotMemoryMB is the smallest memory limit a slot accepts.
+const MinimumSlotMemoryMB = 512
+
 var (
 	safeLabelValue = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
 	safeHostname   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,62}$`)
@@ -76,8 +79,8 @@ func (c Config) Validate() error {
 	if !safeImage.MatchString(c.Image) {
 		return fmt.Errorf("invalid runner image %q", c.Image)
 	}
-	if c.SlotCPUs < 0 || c.SlotCPUs > 512 || c.SlotMemoryMB < 0 || (c.SlotMemoryMB > 0 && c.SlotMemoryMB < 512) {
-		return errors.New("slot CPUs must be positive and slot memory at least 512 MB when set")
+	if c.SlotCPUs < 0 || c.SlotCPUs > 512 || c.SlotMemoryMB < 0 || (c.SlotMemoryMB > 0 && c.SlotMemoryMB < MinimumSlotMemoryMB) {
+		return fmt.Errorf("slot CPUs must be positive and slot memory at least %d MB when set", MinimumSlotMemoryMB)
 	}
 	if len(c.Caches) > maxCaches {
 		return fmt.Errorf("at most %d cache paths", maxCaches)

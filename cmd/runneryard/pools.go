@@ -40,6 +40,10 @@ const (
 	defaultHetznerImage = "docker-ce"
 )
 
+// flyHostReservedMB is the part of a Fly pool host's memory no slot may use:
+// the host's dockerd and containerd, the agent, and Fly's init.
+const flyHostReservedMB = 1024
+
 // poolsFile is the operator's RUNNER_POOLS_FILE. Without it the controller
 // starts one ephemeral worker per job, as before.
 type poolsFile struct {
@@ -297,8 +301,16 @@ func (p *poolConfig) validateFly(cfg appConfig) error {
 	if p.Slots < 1 || p.Slots > maximumPoolSlots {
 		return fmt.Errorf("fly pool %s slots must be between 1 and %d", p.Name, maximumPoolSlots)
 	}
-	if p.SlotMemoryMB > 0 && p.Slots*p.SlotMemoryMB > p.MemoryMB {
-		return fmt.Errorf("fly pool %s: %d slots of %d MB do not fit in memory_mb %d", p.Name, p.Slots, p.SlotMemoryMB, p.MemoryMB)
+	// A slot without a memory limit can take what the host's Docker and agent
+	// need, and the kernel's out-of-memory kill of either ends every slot on
+	// the host at once. A Fly pool therefore always limits its slots: by
+	// default each gets an equal share of what the host keeps free.
+	if p.SlotMemoryMB == 0 {
+		p.SlotMemoryMB = max(0, p.MemoryMB-flyHostReservedMB) / p.Slots
+	}
+	if p.SlotMemoryMB < hostagent.MinimumSlotMemoryMB || p.Slots*p.SlotMemoryMB+flyHostReservedMB > p.MemoryMB {
+		return fmt.Errorf("fly pool %s: %d slots of %d MB (at least %d MB each) and %d MB for the host do not fit in memory_mb %d",
+			p.Name, p.Slots, p.SlotMemoryMB, hostagent.MinimumSlotMemoryMB, flyHostReservedMB, p.MemoryMB)
 	}
 	if p.MinHosts < 0 || p.MaxHosts < 1 || p.MinHosts > p.MaxHosts || p.MaxHosts > maximumPoolHosts {
 		return fmt.Errorf("fly pool %s hosts must satisfy 0 <= min_hosts <= max_hosts <= %d and max_hosts >= 1", p.Name, maximumPoolHosts)

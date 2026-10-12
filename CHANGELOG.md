@@ -14,6 +14,15 @@ operator-facing schema or a trust boundary is called out here first.
   capacity ceiling or a launch rejection also end on time instead of at the next
   message. Cutting a poll short loses no message: GitHub returns a message again until
   the listener deletes it, which it does only after handling it.
+- Fly pools keep 1024 MB of each host's memory for the host's Docker and agent:
+  `slots` times `slot_memory_mb` must now fit in `memory_mb` less that, and a pool
+  without `slot_memory_mb` gives each slot an equal share of the rest instead of no
+  limit. `runneryard host boot` also gives itself, and so `dockerd`, `containerd` and
+  the agent, the out-of-memory score systemd gives Docker (`-500`). Why: a slot could
+  use the whole Machine, and a job that exhausted memory could get the host's `dockerd`
+  killed, ending every slot on the host at once. A 0.5.0 configuration with four slots
+  of 4096 MB on 16384 MB is now refused; 3584 MB, as in the documented example, fits.
+  Hosts created before keep their limits until they are replaced.
 
 ## 0.5.0 (2026-10-12)
 
