@@ -4,6 +4,15 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
+## Unreleased
+
+- A Fly worker delete that Fly refuses with `412` because the Machine is already being
+  destroyed counts as done. Why: a worker that exits after its job is destroyed by Fly
+  itself (`auto_destroy`), and the controller's delete for the job completion can land
+  in the same instant; the refusal reached the listener as a permanent failure and
+  stopped the controller, which Fly restarted. The adapter now reads the Machine back
+  and accepts `destroying`, `destroyed`, or gone; any other state stays an error.
+
 ## 0.5.2 (2026-10-12)
 
 - A pool slot no longer keeps `/home/runner/_work` between jobs: every job checks

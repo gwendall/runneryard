@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +135,54 @@ func TestDestroyTreatsAlreadyDestroyedAsSuccess(t *testing.T) {
 	defer server.Close()
 	if err := testAdapter(t, server).Destroy(context.Background(), "gone"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Fly destroys a worker that exits after its job by itself, and refuses the
+// controller's delete for the job completion when both land at once.
+func TestDestroyAcceptsAMachineFlyIsAlreadyDestroying(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		get     int
+		state   string
+		wantErr bool
+	}{
+		{name: "destroying", get: http.StatusOK, state: "destroying"},
+		{name: "destroyed", get: http.StatusOK, state: "destroyed"},
+		{name: "gone", get: http.StatusNotFound},
+		{name: "still started", get: http.StatusOK, state: "started", wantErr: true},
+		{name: "unreadable", get: http.StatusInternalServerError, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/apps/ci-runners/machines/machine-a" {
+					t.Errorf("unexpected path %s", r.URL.Path)
+				}
+				switch r.Method {
+				case http.MethodDelete:
+					w.WriteHeader(http.StatusPreconditionFailed)
+					_, _ = io.WriteString(w, `{"error":"failed_precondition: unable to update machine to destroying"}`)
+				case http.MethodGet:
+					w.WriteHeader(tc.get)
+					_ = json.NewEncoder(w).Encode(machine{ID: "machine-a", State: tc.state})
+				default:
+					t.Errorf("unexpected method %s", r.Method)
+				}
+			}))
+			defer server.Close()
+			err := testAdapter(t, server).Destroy(context.Background(), "machine-a")
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "412") {
+					t.Fatalf("Destroy() = %v, want the refused delete", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Destroy() = %v, want success: the Machine is on its way out", err)
+			}
+		})
 	}
 }
 

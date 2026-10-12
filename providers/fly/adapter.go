@@ -339,6 +339,17 @@ func (a *Adapter) Destroy(ctx context.Context, workerID string) error {
 		if resp.StatusCode == http.StatusNotFound {
 			return nil
 		}
+		if resp.StatusCode == http.StatusPreconditionFailed {
+			// Fly refuses to destroy a Machine it is already destroying. A
+			// worker that exits after its job is destroyed by Fly itself, and
+			// the delete for its job completion can land in the same instant:
+			// on 2026-10-12 that refusal stopped a controller.
+			refused := responseError(resp)
+			if a.leaving(ctx, workerID) {
+				return nil
+			}
+			return refused
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return responseError(resp)
 		}
@@ -348,6 +359,17 @@ func (a *Adapter) Destroy(ctx context.Context, workerID string) error {
 		return fmt.Errorf("delete Fly worker %s: %w", workerID, err)
 	}
 	return nil
+}
+
+// leaving reports whether the Machine is gone or on its way out. Any other
+// state, or a failed read, leaves the refused delete an error.
+func (a *Adapter) leaving(ctx context.Context, workerID string) bool {
+	var item machine
+	err := a.doJSON(ctx, http.MethodGet, a.machinesURL()+"/"+url.PathEscape(workerID), nil, &item)
+	if notFound(err) {
+		return true
+	}
+	return err == nil && (item.State == destroyingMachine || item.State == destroyedMachine)
 }
 
 func toWorker(item machine) provider.Worker {
