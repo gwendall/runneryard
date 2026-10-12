@@ -281,6 +281,10 @@ Healthy interpretation:
   schema version 2. Raise the
   budget before the horizon reaches zero; queued jobs otherwise wait until
   the oldest charges leave the rolling window.
+- with `EPHEMERAL_SCALE_SET_NAME` set, `github.scale_sets` lists each scale
+  set's assigned jobs, desired workers and workers, and the top-level GitHub
+  figures are their sums. Without it the field is absent. See
+  [Jobs that skip the pools](pools.md#jobs-that-skip-the-pools).
 
 The schema contains aggregate counters only. It never writes job IDs,
 repository payloads, runner names, JIT configuration, tokens, or secrets. The

@@ -54,6 +54,18 @@ type GitHubStatus struct {
 	DesiredWorkers int       `json:"desired_workers"`
 	LastActivityAt time.Time `json:"last_activity_at,omitempty"`
 	LastEvent      string    `json:"last_event,omitempty"`
+	// ScaleSets lists each scale set when the controller serves two (see
+	// EPHEMERAL_SCALE_SET_NAME); AssignedJobs and DesiredWorkers above are
+	// then their sums. Absent with a single scale set.
+	ScaleSets []ScaleSetStatus `json:"scale_sets,omitempty"`
+}
+
+// ScaleSetStatus is one scale set's share of the fleet.
+type ScaleSetStatus struct {
+	Name           string `json:"name"`
+	AssignedJobs   int    `json:"assigned_jobs"`
+	DesiredWorkers int    `json:"desired_workers"`
+	Workers        int    `json:"workers"`
 }
 
 type WorkerStatus struct {
@@ -164,6 +176,9 @@ func newStatusReporter(cfg Config, budget BudgetStatus) (*statusReporter, error)
 			Budget:   budget,
 		},
 	}
+	if cfg.EphemeralScaleSetName != "" {
+		reporter.status.GitHub.ScaleSets = []ScaleSetStatus{{Name: cfg.ScaleSetName}, {Name: cfg.EphemeralScaleSetName}}
+	}
 	alerts, err := newAlerter(cfg)
 	if err != nil {
 		return nil, err
@@ -230,12 +245,36 @@ func (reporter *statusReporter) githubActivity(event string) {
 	})
 }
 
-func (reporter *statusReporter) desired(assigned, desired int) {
+// desired records a scale set's assigned jobs and desired workers. With two
+// scale sets the fleet's figures are their sums; with one, the scale set's.
+func (reporter *statusReporter) desired(scaleSet string, assigned, desired int) {
 	reporter.update(func(status *FleetStatus) {
 		status.GitHub.AssignedJobs = max(0, assigned)
 		status.GitHub.DesiredWorkers = max(0, desired)
+		if len(status.GitHub.ScaleSets) > 0 {
+			status.GitHub.AssignedJobs, status.GitHub.DesiredWorkers = 0, 0
+			for i := range status.GitHub.ScaleSets {
+				entry := &status.GitHub.ScaleSets[i]
+				if entry.Name == scaleSet {
+					entry.AssignedJobs, entry.DesiredWorkers = max(0, assigned), max(0, desired)
+				}
+				status.GitHub.AssignedJobs += entry.AssignedJobs
+				status.GitHub.DesiredWorkers += entry.DesiredWorkers
+			}
+		}
 		status.GitHub.LastActivityAt = reporter.now().UTC()
 		status.GitHub.LastEvent = "desired_count"
+	})
+}
+
+// scaleSetWorkers records how many workers a scale set has, when there are two.
+func (reporter *statusReporter) scaleSetWorkers(scaleSet string, count int) {
+	reporter.update(func(status *FleetStatus) {
+		for i := range status.GitHub.ScaleSets {
+			if status.GitHub.ScaleSets[i].Name == scaleSet {
+				status.GitHub.ScaleSets[i].Workers = max(0, count)
+			}
+		}
 	})
 }
 
@@ -555,6 +594,12 @@ func (status FleetStatus) validate() error {
 		return errors.New("fleet status contains an invalid health value")
 	}
 	workerValues := []int{status.Workers.Actual, status.Workers.Starting, status.Workers.Busy, status.Workers.Idle, status.Workers.Unknown, status.Workers.OrphanCandidates, status.Workers.PendingRetirements, status.Workers.Maximum}
+	for _, scaleSet := range status.GitHub.ScaleSets {
+		if scaleSet.Name == "" {
+			return errors.New("fleet status lists a scale set without a name")
+		}
+		workerValues = append(workerValues, scaleSet.AssignedJobs, scaleSet.DesiredWorkers, scaleSet.Workers)
+	}
 	for _, value := range workerValues {
 		if value < 0 {
 			return errors.New("fleet status contains a negative worker count")

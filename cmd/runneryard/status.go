@@ -40,7 +40,12 @@ func writeFleetStatus(output io.Writer, status controller.FleetStatus, asJSON bo
 	}
 	fmt.Fprintln(output)
 	fmt.Fprintf(output, "Controller  %s  %s (%s)\n", status.Controller.ID, status.Controller.Version, status.Controller.CommitSHA)
-	fmt.Fprintf(output, "Scale set   %s  desired %d from %d assigned job(s)\n", status.GitHub.ScaleSet, status.GitHub.DesiredWorkers, status.GitHub.AssignedJobs)
+	if len(status.GitHub.ScaleSets) == 0 {
+		fmt.Fprintf(output, "Scale set   %s  desired %d from %d assigned job(s)\n", status.GitHub.ScaleSet, status.GitHub.DesiredWorkers, status.GitHub.AssignedJobs)
+	}
+	for _, scaleSet := range status.GitHub.ScaleSets {
+		fmt.Fprintf(output, "Scale set   %s  desired %d from %d assigned job(s)  %d worker(s)\n", scaleSet.Name, scaleSet.DesiredWorkers, scaleSet.AssignedJobs, scaleSet.Workers)
+	}
 	capacity := ""
 	if status.Workers.Saturated {
 		capacity = "  saturated"

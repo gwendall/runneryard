@@ -73,6 +73,10 @@ billed for up to the idle timeout, or a slot held as long, which can delay
 the host's idle stop or return. Set `speculative: false` on a pool to keep it
 to plain placement. Only the pools placed before the first `ephemeral` tier
 speculate: a pool placed after it is that tier's overflow and keeps that role.
+A job on the ephemeral scale set (see [Jobs that skip the
+pools](#jobs-that-skip-the-pools)) never gets a speculative runner: it asked
+for a worker of its own, and its workers do not count toward the jobs a
+speculation covers.
 
 `MAX_RUNNERS` still caps the whole fleet, pools and ephemeral workers
 together, and `RUNNER_USAGE_BUDGET` still reserves `RUNNER_MAX_LIFETIME` per
@@ -81,6 +85,74 @@ launch. A pool with more slots than `MAX_RUNNERS` leaves the rest idle.
 A tier present in the file but missing from `placement` drains: the controller
 starts nothing there, keeps tracking the workers it still runs, and destroys
 them as usual.
+
+## Jobs that skip the pools
+
+A job can ask for a fresh worker of its own while every other job keeps using
+the pools, for example a timing-sensitive browser test that should not share a
+host's CPUs with other slots. Set `EPHEMERAL_SCALE_SET_NAME`, for example to
+`runneryard-linux-x64-ephemeral`, and name it in that job's `runs-on`:
+
+```yaml
+jobs:
+  browser-tests:
+    runs-on: runneryard-linux-x64-ephemeral
+```
+
+Every other job keeps `runs-on: <SCALE_SET_NAME>` and the placement order.
+
+The controller then registers a second runner scale set with that name, next
+to `SCALE_SET_NAME`, and starts its workers on the `ephemeral` tier
+(`COMPUTE_PROVIDER`) only, never in a pool slot, even when `ephemeral` is not
+in `placement`. A second scale set is needed because GitHub gives a scale
+set's job to whichever of its runners comes online first: labels on runners of
+one scale set cannot route a job. Without a pools file the second scale set
+behaves like the first. `COMPUTE_PROVIDER=none` has no ephemeral tier and
+refuses the option.
+
+One process serves both scale sets with one scaler, so they share every
+limit:
+
+- `MAX_RUNNERS` caps both together: a launch for either waits while the
+  fleet is full.
+- One `RUNNER_USAGE_BUDGET` ledger, one retirement journal, one status file.
+  Each launch reserves `RUNNER_MAX_LIFETIME`, whatever its scale set.
+- One launch gate: a provider capacity refusal or launch rejection pauses
+  launches for both until the probe succeeds.
+- The same GitHub credential; there is no new secret.
+- `MIN_RUNNERS` warms the main scale set only. The second keeps no idle
+  worker.
+- Speculation serves the main scale set only: a job on the second one waits
+  for its own worker even when a slot frees, and a pool host becoming ready
+  wakes only the main scale set's session.
+
+Both fail closed as one scale set does. Each worker records its scale set in
+provider metadata; a runner is generated in, checked against and removed from
+the scale set that asked for it, and a registration in any other scale set is
+never removed. The two listeners take turns, so the scaler handles one stream
+of events, and a handler failure on either session stops the controller. After
+a restart the controller adopts the workers of both from inventory, counts
+each toward its own scale set, and opens the second session only after that
+recovery.
+
+What it costs: each such job waits for a new worker to boot (see
+[Worker startup](operations.md#worker-startup)) instead of a free slot, pays
+for a whole `COMPUTE_PROVIDER` worker for its duration while slots may sit
+idle, and gets none of a slot's warm caches. Keep it for the few jobs that
+need a machine of their own.
+
+`status.json` lists both under `github.scale_sets` with their assigned jobs,
+desired workers and workers; `github.assigned_jobs` and
+`github.desired_workers` become their sums. `runneryard status` prints a line
+per scale set.
+
+To turn it off, take the label out of the workflows, wait until status shows
+no worker on the second scale set, then unset the variable. A controller that
+meets a worker of a scale set it no longer serves refuses to remove that
+runner's registration and stops, as after a `SCALE_SET_NAME` change: set the
+variable again and the controller cleans up as usual. The scale set stays
+registered on GitHub and a job that still names it waits; delete it from the
+repository or organization runner settings.
 
 ## When hosts are returned
 

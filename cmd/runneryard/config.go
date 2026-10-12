@@ -11,6 +11,7 @@ import (
 
 	"github.com/actions/scaleset"
 	"github.com/gwendall/runneryard/controller"
+	"github.com/gwendall/runneryard/pool"
 	"github.com/gwendall/runneryard/provider"
 	"github.com/gwendall/runneryard/provider/retry"
 	flyprovider "github.com/gwendall/runneryard/providers/fly"
@@ -67,6 +68,9 @@ type appConfig struct {
 	// validated content. Without it every job gets its own worker.
 	PoolsFile string
 	Pools     *poolsFile
+	// EphemeralScaleSetName registers a second scale set whose jobs always
+	// get their own ephemeral worker, skipping the pools. Empty: one scale set.
+	EphemeralScaleSetName string
 }
 
 // computeProviderNone runs pools without an ephemeral tier.
@@ -110,6 +114,7 @@ func loadConfig() (appConfig, error) {
 		LogLevel:           parseLogLevel(envOr("LOG_LEVEL", "info")),
 		PoolsFile:          strings.TrimSpace(os.Getenv(poolsFileEnv)),
 	}
+	cfg.EphemeralScaleSetName = strings.TrimSpace(os.Getenv("EPHEMERAL_SCALE_SET_NAME"))
 
 	var err error
 	if cfg.MinWorkers, err = envInt("MIN_RUNNERS", 0); err != nil {
@@ -200,6 +205,14 @@ func (c appConfig) validate() error {
 	}
 	if c.ScaleSetName == "" || c.ControllerID == "" {
 		return fmt.Errorf("scale set name and controller ID are required")
+	}
+	if c.EphemeralScaleSetName != "" {
+		if c.EphemeralScaleSetName == c.ScaleSetName {
+			return fmt.Errorf("EPHEMERAL_SCALE_SET_NAME must differ from SCALE_SET_NAME")
+		}
+		if c.ComputeProvider == computeProviderNone {
+			return fmt.Errorf("EPHEMERAL_SCALE_SET_NAME needs an ephemeral tier; COMPUTE_PROVIDER=none has none")
+		}
 	}
 	if c.GitHubToken == "" {
 		if err := c.GitHubApp.Validate(); err != nil {
@@ -297,14 +310,31 @@ func (c appConfig) githubClient() (*scaleset.Client, error) {
 // compute returns the configured workers: the ephemeral provider, behind the
 // pools when a pools file is set.
 func (c appConfig) compute(logger *slog.Logger) (provider.Compute, error) {
+	compute, _, err := c.computes(logger)
+	return compute, err
+}
+
+// computes also returns what launches the workers of EPHEMERAL_SCALE_SET_NAME:
+// with pools, a placement of the ephemeral tier alone, sharing the ephemeral
+// provider and its worker IDs with the full placement; without pools, nil,
+// since every worker is already ephemeral.
+func (c appConfig) computes(logger *slog.Logger) (provider.Compute, provider.Compute, error) {
 	ephemeral, err := c.ephemeralCompute()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if c.Pools == nil {
-		return ephemeral, nil
+		return ephemeral, nil, nil
 	}
-	return c.withPools(ephemeral, logger)
+	placement, err := c.withPools(ephemeral, logger)
+	if err != nil || c.EphemeralScaleSetName == "" {
+		return placement, nil, err
+	}
+	direct, err := pool.NewPlacement(pool.Tier{Name: ephemeralTier, Compute: ephemeral})
+	if err != nil {
+		return nil, nil, err
+	}
+	return placement, direct, nil
 }
 
 func (c appConfig) ephemeralCompute() (provider.Compute, error) {
@@ -345,7 +375,7 @@ func (c appConfig) ephemeralCompute() (provider.Compute, error) {
 }
 
 func (c appConfig) controllerConfig(logger *slog.Logger) controller.Config {
-	return controller.Config{
+	cfg := controller.Config{
 		GitHubURL:         c.GitHubURL,
 		ScaleSetName:      c.ScaleSetName,
 		RunnerGroup:       c.RunnerGroup,
@@ -368,6 +398,8 @@ func (c appConfig) controllerConfig(logger *slog.Logger) controller.Config {
 		AlertWebhookURL:   c.AlertWebhookURL,
 		Logger:            logger,
 	}
+	cfg.EphemeralScaleSetName = c.EphemeralScaleSetName
+	return cfg
 }
 
 func (c appConfig) retryPolicy() retry.Policy {
