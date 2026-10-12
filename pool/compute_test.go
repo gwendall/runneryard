@@ -43,6 +43,7 @@ type fakeSource struct {
 	deleteErr error
 	created   int
 	deleted   []string
+	images    []string
 	clock     *testClock
 }
 
@@ -75,14 +76,15 @@ func (s *fakeSource) add(host Host) {
 	s.hosts[host.ID] = host
 }
 
-func (s *fakeSource) Create(context.Context) (Host, error) {
+func (s *fakeSource) Create(_ context.Context, image string) (Host, error) {
 	s.mu.Lock()
+	s.images = append(s.images, image)
 	if s.createErr != nil {
 		s.mu.Unlock()
 		return Host{}, s.createErr
 	}
 	s.created++
-	host := Host{ID: fmt.Sprintf("new-%d", s.created), Address: fmt.Sprintf("10.0.1.%d:22", s.created), HostKey: "key", CreatedAt: s.clock.Now()}
+	host := Host{ID: fmt.Sprintf("new-%d", s.created), Address: fmt.Sprintf("10.0.1.%d:22", s.created), HostKey: "key", CreatedAt: s.clock.Now(), Image: image}
 	s.mu.Unlock()
 	s.add(host)
 	return host, nil

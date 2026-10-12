@@ -26,6 +26,7 @@ const (
 	defaultCallTimeout      = 20 * time.Second
 	defaultStartTimeout     = 90 * time.Second
 	defaultDeleteStopped    = 6 * time.Hour
+	defaultImageRefresh     = 5 * time.Minute
 	hostRefusalBackoff      = time.Minute
 	initialCreateBackoff    = time.Minute
 	maximumCreateBackoff    = 15 * time.Minute
@@ -39,6 +40,13 @@ const (
 	CapacityReasonFull = "pool_full"
 )
 
+// imageRetry paces the next resolution of a followed tag after a failed one;
+// replaceInterval spaces out the replacement of hosts on an earlier digest.
+const (
+	imageRetry      = time.Minute
+	replaceInterval = 5 * time.Minute
+)
+
 // Config configures one pool.
 type Config struct {
 	Name         string
@@ -50,6 +58,13 @@ type Config struct {
 	MaxHosts int
 	Source   Source
 	Agent    Agent
+	// Follow, when set, follows the tag Image names, for a source that
+	// creates hosts. Every ImageRefresh (default 5m) the pool resolves the
+	// tag and creates new hosts from that digest. A host on another image of
+	// the same repository keeps serving, and is replaced once it is idle or
+	// drained, one host at a time.
+	Follow       Follower
+	ImageRefresh time.Duration
 	// MaxLifetime bounds every slot container. A host that has not answered
 	// for longer cannot still be running a job and is returned.
 	MaxLifetime time.Duration
@@ -128,6 +143,8 @@ type hostState struct {
 	// changedAt is the pool's last stop or start of the host. A listing that
 	// began before it may predate the change and does not override it.
 	changedAt time.Time
+	// createdImage is the image this process created the host from.
+	createdImage string
 }
 
 func (h *hostState) occupied() int { return len(h.slots) }
@@ -185,6 +202,21 @@ type Pool struct {
 	// roomReady, when set, is called when a host becomes ready, so the
 	// controller can use its slots before its next GitHub message.
 	roomReady func()
+
+	// image is what new hosts are created from: Config.Image, or the digest
+	// its followed tag named at the last resolution (imageResolved).
+	image          string
+	imageResolved  bool
+	imageCheckAt   time.Time
+	imageCheckedAt time.Time
+	imageError     string
+	// replaceNotBefore spaces out the replacement of hosts on an earlier
+	// digest. imageFailed records a creation or a boot from the current
+	// image that failed: the next replacement then waits for a host on that
+	// image to be ready, so an image that cannot serve costs one host at most.
+	replaceNotBefore time.Time
+	imageFailed      bool
+	imageReplaced    int
 }
 
 // New validates the configuration and returns an idle pool.
@@ -208,6 +240,9 @@ func New(cfg Config) (*Pool, error) {
 	} else if cfg.MinHosts != 0 || cfg.MaxHosts != 0 {
 		return nil, fmt.Errorf("pool %s source cannot create hosts, so min_hosts and max_hosts do not apply", cfg.Name)
 	}
+	if cfg.Follow != nil && !facts.CanCreate {
+		return nil, fmt.Errorf("pool %s source cannot create hosts, so it cannot follow an image tag", cfg.Name)
+	}
 	if cfg.MaxLifetime < time.Minute {
 		return nil, fmt.Errorf("pool %s requires the worker maximum lifetime", cfg.Name)
 	}
@@ -230,6 +265,7 @@ func New(cfg Config) (*Pool, error) {
 		{&cfg.CallTimeout, defaultCallTimeout},
 		{&cfg.StartTimeout, defaultStartTimeout},
 		{&cfg.DeleteStoppedAfter, defaultDeleteStopped},
+		{&cfg.ImageRefresh, defaultImageRefresh},
 	}
 	for _, item := range defaults {
 		if *item.value <= 0 {
@@ -259,6 +295,7 @@ func New(cfg Config) (*Pool, error) {
 		log:     cfg.Logger.With("pool", cfg.Name),
 		hosts:   make(map[string]*hostState),
 		wake:    make(chan struct{}, 1),
+		image:   cfg.Image,
 	}, nil
 }
 
@@ -313,7 +350,6 @@ func (p *Pool) launch(ctx context.Context, lease provider.Lease, grow bool) (pro
 		return provider.Worker{}, errors.New("pool launch requires a lease ID, a runner name, and a JIT configuration")
 	}
 	request := StartRequest{
-		Image:              p.cfg.Image,
 		ControllerID:       p.cfg.ControllerID,
 		LeaseID:            lease.ID,
 		RunnerName:         lease.RunnerName,
@@ -324,10 +360,13 @@ func (p *Pool) launch(ctx context.Context, lease provider.Lease, grow bool) (pro
 		IdleTimeoutSeconds: int64(lease.IdleTimeout / time.Second),
 	}
 	for range maxStartAttempts {
-		host, slot, ok := p.reserve(lease.ID)
+		host, slot, image, ok := p.reserve(lease.ID)
 		if !ok {
 			break
 		}
+		// The host's own image: the pool's, or while the host waits for its
+		// replacement, an earlier digest of the followed tag.
+		request.Image = image
 		startCtx, cancel := context.WithTimeout(ctx, p.cfg.StartTimeout)
 		started, err := p.cfg.Agent.Start(startCtx, host, slot, request)
 		cancel()
@@ -453,6 +492,7 @@ func (p *Pool) Run(ctx context.Context) error {
 }
 
 func (p *Pool) maintain(ctx context.Context) {
+	p.followTag(ctx)
 	if err := p.refreshHosts(ctx, false); err != nil {
 		p.log.Warn("could not list pool hosts", "error", err)
 	}
@@ -460,8 +500,118 @@ func (p *Pool) maintain(ctx context.Context) {
 	p.listSlots(ctx, p.hostsIn(func(h *hostState) bool {
 		return h.host.Address != "" && (h.phase == phaseReady || h.phase == phaseDraining)
 	}))
+	p.replaceStale()
 	p.returnHosts(ctx)
 	p.grow(ctx)
+}
+
+// followTag resolves the followed tag when it is due. Until the first
+// resolution succeeds, new hosts are created from the tag itself, as a pool
+// that does not follow it would; after one, a failure keeps the last digest.
+func (p *Pool) followTag(ctx context.Context) {
+	if p.cfg.Follow == nil {
+		return
+	}
+	p.mu.Lock()
+	due := !p.cfg.Now().Before(p.imageCheckAt)
+	p.mu.Unlock()
+	if !due {
+		return
+	}
+	callCtx, cancel := context.WithTimeout(ctx, p.cfg.CallTimeout)
+	image, err := p.cfg.Follow.Resolve(callCtx)
+	cancel()
+	if err == nil && (image == p.cfg.Image || !p.cfg.Follow.Related(image)) {
+		err = fmt.Errorf("resolved %q, which is not a digest of %s", image, p.cfg.Image)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.cfg.Now()
+	if err != nil {
+		p.imageCheckAt = now.Add(imageRetry)
+		p.imageError = err.Error()
+		p.log.Warn("could not resolve the runner image tag; hosts keep their image", "tag", p.cfg.Image, "image", p.image, "retry_after", imageRetry, "error", err)
+		return
+	}
+	p.imageCheckAt = now.Add(p.cfg.ImageRefresh)
+	p.imageCheckedAt = now
+	p.imageError = ""
+	if image == p.image {
+		return
+	}
+	if p.imageResolved {
+		p.log.Info("runner image tag moved; replacing hosts on the earlier digest one at a time", "tag", p.cfg.Image, "image", image, "previous", p.image)
+	} else {
+		p.log.Info("resolved the runner image tag", "tag", p.cfg.Image, "image", image)
+	}
+	p.image, p.imageResolved = image, true
+	p.imageFailed = false
+}
+
+// accepts reports whether a host on image may serve slots: the pool's image,
+// or with a followed tag, any image of its repository. Callers hold p.mu.
+func (p *Pool) accepts(image string) bool {
+	return image == p.image || image == p.cfg.Image || (p.cfg.Follow != nil && p.cfg.Follow.Related(image))
+}
+
+// stale reports whether a host on image is due for replacement: the followed
+// tag has been resolved, to another image. Callers hold p.mu.
+func (p *Pool) stale(image string) bool {
+	return p.cfg.Follow != nil && p.imageResolved && image != p.image
+}
+
+// replaceStale drains one ready host on an earlier image of the followed tag,
+// so it takes no new job, is deleted once its jobs end, and the pool creates
+// its replacement from the current digest as it would for any drained host.
+// It replaces one host at a time: not while another is draining for it, a
+// host is on its way, or within replaceInterval of the previous one, and
+// after a failed creation or boot from the current image only once a host on
+// that image is ready. An idle host goes first.
+func (p *Pool) replaceStale() {
+	if p.cfg.Follow == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.cfg.Now()
+	if !p.imageResolved || now.Before(p.replaceNotBefore) {
+		return
+	}
+	var candidate *hostState
+	candidateBusy, current := 0, false
+	for _, id := range p.sortedIDs() {
+		h := p.hosts[id]
+		switch h.phase {
+		case phaseCreating, phaseStarting, phaseStopping, phaseDeleting:
+			return
+		case phaseBooting:
+			if h.ownBoot && !h.everReady {
+				return
+			}
+		case phaseDraining:
+			if h.drainReason == "image_stale" {
+				return
+			}
+		case phaseReady:
+			if !p.stale(h.info.Image) {
+				current = true
+				continue
+			}
+			busy := h.occupied() + len(h.reserved)
+			if candidate == nil || busy < candidateBusy || (busy == candidateBusy && h.host.CreatedAt.Before(candidate.host.CreatedAt)) {
+				candidate, candidateBusy = h, busy
+			}
+		}
+	}
+	if candidate == nil || (p.imageFailed && !current) {
+		return
+	}
+	candidate.phase = phaseDraining
+	candidate.drainReason = "image_stale"
+	p.replaceNotBefore = now.Add(replaceInterval)
+	p.imageReplaced++
+	p.log.Info("replacing pool host on an earlier runner image; it takes no new job and is deleted once empty",
+		"host", candidate.host.ID, "host_image", candidate.info.Image, "image", p.image, "busy_slots", candidateBusy)
 }
 
 func (p *Pool) known() bool {
@@ -651,10 +801,10 @@ func (p *Pool) probe(ctx context.Context) {
 		h.lastContact = now
 		h.info = info
 		switch {
-		case info.Image != p.cfg.Image:
+		case !p.accepts(info.Image):
 			h.phase = phaseDraining
 			h.drainReason = "image_mismatch"
-			p.log.Warn("pool host runs another runner image; draining it", "host", host.ID, "host_image", info.Image, "image", p.cfg.Image)
+			p.log.Warn("pool host runs another runner image; draining it", "host", host.ID, "host_image", info.Image, "image", p.image)
 		case info.Ready && info.Slots > 0:
 			h.phase = phaseReady
 			h.everReady = true
@@ -729,14 +879,16 @@ func (p *Pool) parallel(count int, call func(int)) {
 	wait.Wait()
 }
 
-// reserve picks the slot for a lease: the busiest ready host that still has
-// room, so load concentrates and spare hosts empty out and can be returned.
-func (p *Pool) reserve(leaseID string) (Host, int, bool) {
+// reserve picks the slot for a lease and the image to start it with: the
+// busiest ready host that still has room, so load concentrates and spare
+// hosts empty out and can be returned. A host on the pool's image goes before
+// one waiting for its replacement, which then empties out first.
+func (p *Pool) reserve(leaseID string) (Host, int, string, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.cfg.Now()
 	var best *hostState
-	bestFree := 0
+	bestFree, bestStale := 0, false
 	for _, id := range p.sortedIDs() {
 		h := p.hosts[id]
 		if !p.takesLeases(h, now) {
@@ -746,17 +898,19 @@ func (p *Pool) reserve(leaseID string) (Host, int, bool) {
 		if free == 0 {
 			continue
 		}
-		if best == nil || free < bestFree || (free == bestFree && h.host.CreatedAt.Before(best.host.CreatedAt)) {
-			best, bestFree = h, free
+		stale := p.stale(h.info.Image)
+		if best == nil || (bestStale && !stale) ||
+			(stale == bestStale && (free < bestFree || (free == bestFree && h.host.CreatedAt.Before(best.host.CreatedAt)))) {
+			best, bestFree, bestStale = h, free, stale
 		}
 	}
 	if best == nil {
-		return Host{}, 0, false
+		return Host{}, 0, "", false
 	}
 	slot, _ := best.freeSlot()
 	best.reserved[slot] = leaseID
 	best.emptySince = time.Time{}
-	return best.host, slot, true
+	return best.host, slot, best.info.Image, true
 }
 
 // takesLeases reports whether a host may receive a lease now: ready, not
@@ -974,6 +1128,9 @@ func (p *Pool) returnCandidates() []returnCandidate {
 		switch {
 		case h.phase == phaseBooting && h.ownBoot && !h.everReady && !bootStart.IsZero() && now.Sub(bootStart) > p.cfg.BootTimeout:
 			reason = "boot_timeout"
+			if h.createdImage != "" && h.createdImage == p.image {
+				p.imageFailed = true
+			}
 		case (h.phase == phaseReady || h.phase == phaseDraining || h.phase == phaseBooting) && now.Sub(latest(h.lastContact, h.firstSeen, h.bootSince)) > p.cfg.MaxLifetime+p.cfg.UnreachableGrace:
 			// Every slot container has a deadline within the maximum lifetime,
 			// so nothing on a host silent for longer can still be a job.
@@ -998,6 +1155,10 @@ func (p *Pool) returnCandidates() []returnCandidate {
 			if !h.emptySince.IsZero() && now.Sub(h.emptySince) >= idle {
 				reason = "idle"
 				stop = p.stopper != nil
+				// A stopped host on an earlier digest would be deleted anyway.
+				if stop && p.stale(h.info.Image) {
+					reason, stop = "image_stale", false
+				}
 			}
 		}
 		if reason == "" {
@@ -1055,8 +1216,10 @@ func (p *Pool) unusable(h *hostState) string {
 	switch {
 	case h.drainReason != "":
 		return h.drainReason
-	case h.host.Image != "" && h.host.Image != p.cfg.Image:
+	case h.host.Image != "" && !p.accepts(h.host.Image):
 		return "image_mismatch"
+	case h.host.Image != "" && p.stale(h.host.Image):
+		return "image_stale"
 	case h.startFailures >= maxStartFailures:
 		return "start_failed"
 	}
@@ -1155,7 +1318,7 @@ func (p *Pool) grow(ctx context.Context) {
 		placeholder := "creating-" + strconv.Itoa(p.createSeq)
 		p.hosts[placeholder] = &hostState{phase: phaseCreating, firstSeen: now, slots: map[int]Slot{}, reserved: map[int]string{}}
 		p.creations.Add(1)
-		go p.create(ctx, placeholder)
+		go p.create(ctx, placeholder, p.image)
 	}
 	p.mu.Unlock()
 }
@@ -1223,9 +1386,9 @@ func (p *Pool) start(ctx context.Context, id string) {
 	p.hostsListedAt = time.Time{}
 }
 
-func (p *Pool) create(ctx context.Context, placeholder string) {
+func (p *Pool) create(ctx context.Context, placeholder, image string) {
 	defer p.creations.Done()
-	host, err := p.cfg.Source.Create(ctx)
+	host, err := p.cfg.Source.Create(ctx, image)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	delete(p.hosts, placeholder)
@@ -1237,7 +1400,10 @@ func (p *Pool) create(ctx context.Context, placeholder string) {
 			p.createBackoff = min(max(p.createBackoff*2, initialCreateBackoff), maximumCreateBackoff)
 			p.createNotBefore = now.Add(p.createBackoff)
 		}
-		p.log.Warn("could not create pool host", "error", err, "retry_after", p.createNotBefore.Sub(now))
+		if image == p.image {
+			p.imageFailed = true
+		}
+		p.log.Warn("could not create pool host", "image", image, "error", err, "retry_after", p.createNotBefore.Sub(now))
 		return
 	}
 	p.createBackoff = 0
@@ -1248,13 +1414,14 @@ func (p *Pool) create(ctx context.Context, placeholder string) {
 	if existing, ok := p.hosts[host.ID]; ok {
 		existing.host = host
 		existing.ownBoot = true
+		existing.createdImage = image
 		return
 	}
 	p.hosts[host.ID] = &hostState{
-		host: host, phase: phaseBooting, firstSeen: now, ownBoot: true,
+		host: host, phase: phaseBooting, firstSeen: now, ownBoot: true, createdImage: image,
 		slots: map[int]Slot{}, reserved: map[int]string{}, runningSince: firstNonZero(host.CreatedAt, now),
 	}
-	p.log.Info("created pool host", "host", host.ID)
+	p.log.Info("created pool host", "host", host.ID, "image", image)
 }
 
 // hostBilled returns the host hours this process counts for h: its earlier
@@ -1302,6 +1469,15 @@ type Status struct {
 	// started again, for sources that stop hosts.
 	HostStops  int `json:"host_stops,omitempty"`
 	HostStarts int `json:"host_starts,omitempty"`
+	// Image is the image new hosts are created from. With a followed tag,
+	// Follows names the tag, ImageCheckedAt is its last resolution and
+	// ImageError the failure of the attempts since; ImageReplacements counts
+	// the hosts drained because they ran an earlier digest.
+	Image             string    `json:"image"`
+	Follows           string    `json:"follows,omitempty"`
+	ImageCheckedAt    time.Time `json:"image_checked_at,omitzero"`
+	ImageError        string    `json:"image_error,omitempty"`
+	ImageReplacements int       `json:"image_replacements,omitempty"`
 	// BilledHours counts host hours this process has seen billed: returned
 	// hosts in full, live hosts up to now, stopped hosts while they ran. Cost
 	// is BilledHours * HourlyPrice; a stopped host's storage is not in it.
@@ -1319,6 +1495,11 @@ type HostStatus struct {
 	Reachable bool      `json:"reachable"`
 	CreatedAt time.Time `json:"created_at,omitzero"`
 	StoppedAt time.Time `json:"stopped_at,omitzero"`
+	// Image is the runner image the host reported, or for a host that has
+	// not answered, the one its source prepared it for. Stale marks an
+	// earlier digest of a followed tag: the host is due for replacement.
+	Image string `json:"image,omitempty"`
+	Stale bool   `json:"stale,omitempty"`
 }
 
 // Status reports the pool's hosts, slots, and billed hours.
@@ -1331,14 +1512,22 @@ func (p *Pool) Status() Status {
 		MinHosts: p.cfg.MinHosts, MaxHosts: p.cfg.MaxHosts, Launched: p.launched, Overflowed: p.overflowed,
 		ReturnedHosts: p.returnedHosts, HostStops: p.hostStops, HostStarts: p.hostStarts, Speculated: p.speculated,
 		BilledHours: p.returnedHours, Hosts: make([]HostStatus, 0, len(p.hosts)),
+		Image: p.image, ImageReplacements: p.imageReplaced,
+	}
+	if p.cfg.Follow != nil {
+		status.Follows, status.ImageCheckedAt, status.ImageError = p.cfg.Image, p.imageCheckedAt, p.imageError
 	}
 	for _, id := range p.sortedIDs() {
 		h := p.hosts[id]
 		busy := h.occupied() + len(h.reserved)
+		image := firstNonEmpty(h.info.Image, h.host.Image)
+		if !h.running() {
+			image = firstNonEmpty(h.host.Image, h.info.Image)
+		}
 		host := HostStatus{
 			ID: id, Phase: string(h.phase), Slots: h.info.Slots, Busy: busy, CreatedAt: h.host.CreatedAt,
 			Reachable: h.running() && !h.lastContact.IsZero() && now.Sub(h.lastContact) <= p.cfg.UnreachableGrace,
-			StoppedAt: h.stoppedSince,
+			StoppedAt: h.stoppedSince, Image: image, Stale: image != "" && p.accepts(image) && p.stale(image),
 		}
 		if h.phase == phaseReady {
 			status.SlotsTotal += h.info.Slots

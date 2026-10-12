@@ -127,7 +127,7 @@ func NewHostSource(cfg HostSourceConfig) (*HostSource, error) {
 	if cfg.VolumeGB < minVolumeGB || cfg.VolumeGB > maxVolumeGB {
 		return nil, fmt.Errorf("fly pool %s volume_gb must be between %d and %d", cfg.Pool, minVolumeGB, maxVolumeGB)
 	}
-	if err := hostConfig(cfg).Validate(); err != nil {
+	if err := hostConfig(cfg, cfg.RunnerImage).Validate(); err != nil {
 		return nil, fmt.Errorf("fly pool %s: %w", cfg.Pool, err)
 	}
 	dockerDNS, err := normalizeDockerDNS(cfg.DockerDNS)
@@ -174,9 +174,9 @@ func NewHostSource(cfg HostSourceConfig) (*HostSource, error) {
 	}, nil
 }
 
-func hostConfig(cfg HostSourceConfig) hostagent.Config {
+func hostConfig(cfg HostSourceConfig, image string) hostagent.Config {
 	return hostagent.Config{
-		Slots: cfg.Slots, Image: cfg.RunnerImage, SlotCPUs: cfg.SlotCPUs, SlotMemoryMB: cfg.SlotMemoryMB,
+		Slots: cfg.Slots, Image: image, SlotCPUs: cfg.SlotCPUs, SlotMemoryMB: cfg.SlotMemoryMB,
 		Caches: cfg.Caches, MinFreeDiskGB: cfg.MinFreeDiskGB, DockerRoot: dataPath + "/docker",
 	}
 }
@@ -204,6 +204,7 @@ type poolMachine struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	// Config is decoded without its files: they hold the host's private key.
 	Config struct {
+		Image    string            `json:"image"`
 		Metadata map[string]string `json:"metadata"`
 		Mounts   []machineMount    `json:"mounts"`
 	} `json:"config"`
@@ -317,7 +318,12 @@ func (s *HostSource) toHost(item poolMachine) (pool.Host, error) {
 	if item.PrivateIP != "" {
 		host.Address = net.JoinHostPort(item.PrivateIP, hostagent.BootPort)
 	}
+	// The Machine boots its configured image, which the pool chose at
+	// creation: the runner image, or the digest a followed tag named then.
+	// The metadata confirms it is the image the host was created for.
 	switch tag := item.Config.Metadata[poolImageKey]; {
+	case tag != "" && item.Config.Image != "" && imageTag(item.Config.Image) == tag:
+		host.Image = item.Config.Image
 	case tag == s.imageTag:
 		host.Image = s.cfg.RunnerImage
 	case tag != "":
@@ -328,11 +334,14 @@ func (s *HostSource) toHost(item poolMachine) (pool.Host, error) {
 	return host, nil
 }
 
-// Create makes the host's volume, then its Machine, which boots the runner
-// image as a pool host. A failure leaves nothing behind: a Machine the
-// request may have created is found by name, a volume without a Machine is
-// deleted.
-func (s *HostSource) Create(ctx context.Context) (pool.Host, error) {
+// Create makes the host's volume, then its Machine, which boots image as a
+// pool host. A failure leaves nothing behind: a Machine the request may have
+// created is found by name, a volume without a Machine is deleted.
+func (s *HostSource) Create(ctx context.Context, image string) (pool.Host, error) {
+	config := hostConfig(s.cfg, image)
+	if err := config.Validate(); err != nil {
+		return pool.Host{}, fmt.Errorf("fly pool %s: %w", s.cfg.Pool, err)
+	}
 	suffix := make([]byte, 4)
 	if _, err := rand.Read(suffix); err != nil {
 		return pool.Host{}, fmt.Errorf("name pool host: %w", err)
@@ -342,7 +351,7 @@ func (s *HostSource) Create(ctx context.Context) (pool.Host, error) {
 	if err != nil {
 		return pool.Host{}, fmt.Errorf("derive host key of %s: %w", name, err)
 	}
-	hostJSON, err := json.MarshalIndent(hostConfig(s.cfg), "", "  ")
+	hostJSON, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return pool.Host{}, err
 	}
@@ -355,7 +364,7 @@ func (s *HostSource) Create(ctx context.Context) (pool.Host, error) {
 		Name:   name,
 		Region: s.cfg.Region,
 		Config: poolMachineConfig{
-			Image: s.cfg.RunnerImage,
+			Image: image,
 			Guest: guest,
 			Processes: []poolProcess{{
 				Entrypoint:       []string{hostBootEntrypoint, "host", "boot"},
@@ -367,7 +376,7 @@ func (s *HostSource) Create(ctx context.Context) (pool.Host, error) {
 				poolHostKey:     "true",
 				controllerIDKey: s.cfg.ControllerID,
 				poolNameKey:     s.cfg.Pool,
-				poolImageKey:    s.imageTag,
+				poolImageKey:    imageTag(image),
 			},
 			Mounts: []machineMount{{Volume: volume.ID, Path: dataPath}},
 			Files: []machineFile{

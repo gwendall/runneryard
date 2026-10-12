@@ -144,7 +144,9 @@ independent pins to the same release: `RUNNER_IMAGE` in `controller.env` for
 workers and `image` in Compose for the controller. In the same commit, set the
 generated canary's `RUNNERYARD_EXPECTED_VERSION` and
 `RUNNERYARD_EXPECTED_COMMIT` to that release so its job proves the worker
-image. Replace the controller, verify `runneryard status` reports the intended
+image. A pool's `runner_image` pinned by digest needs the new digest too; a
+Fly pool that follows a tag replaces its hosts by itself once the tag moves
+(see [Following a tag](pools.md#following-a-tag)). Replace the controller, verify `runneryard status` reports the intended
 controller version and commit, run `runneryard doctor` so the live Machine is
 compared with the committed file, run the canary, and only then recover
 broader workflow routing with an explicit receipt:

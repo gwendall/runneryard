@@ -54,7 +54,7 @@ func TestStaticSourceNormalizesHosts(t *testing.T) {
 	if again, _ := source.List(context.Background()); again[0].ID != "box-1" {
 		t.Fatal("List exposed the source's own slice")
 	}
-	if _, err := source.Create(context.Background()); err == nil {
+	if _, err := source.Create(context.Background(), testImage); err == nil {
 		t.Fatal("a static source created a host")
 	}
 	if err := source.Delete(context.Background(), "box-1"); err == nil {

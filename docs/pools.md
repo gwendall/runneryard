@@ -262,7 +262,7 @@ pools:
 | --- | --- | --- | --- |
 | `name` | all | Lowercase letters, digits and hyphens; not `ephemeral`. | Required |
 | `source` | all | `fly`, `hetzner` or `static`. | Required |
-| `runner_image` | all | Exact image every slot runs. Pin a digest. | `RUNNER_IMAGE` |
+| `runner_image` | all | Image every slot runs. A digest (`name@sha256:...`) is matched exactly. A Fly pool follows a tag, such as `:current`: see [Following a tag](#following-a-tag). | `RUNNER_IMAGE` |
 | `slot_cpus`, `slot_memory_mb` | all | Docker limits per slot; `0` for none. A whole `slot_cpus` pins each slot to its own cores, see below. A Fly pool always limits memory, see `memory_mb`. | `0`; Fly `slot_memory_mb`: an equal share of `memory_mb` less 1024 MB |
 | `caches` | all | Runner paths kept between a slot's jobs. | `~/.cache`, `~/.npm`, `~/go` |
 | `min_free_disk_gb` | all | Free disk a start requires, on Docker's data root and the work root; below it the slot's caches are dropped first. | `20` |
@@ -493,7 +493,8 @@ pools:
   `delete_stopped_after`.
 - **Failures.** A host that fails to start twice, or that Fly cannot start for
   lack of capacity, is deleted, and the next demand creates a new one. A
-  stopped host from another `runner_image` is deleted, never started.
+  stopped host from another `runner_image`, or from an earlier digest of a
+  followed tag, is deleted, never started.
 - **Outside changes.** A host stopped or started by hand (`fly machine stop`)
   is followed at the next listing.
 
@@ -560,6 +561,69 @@ read the files Fly writes at boot, the host key among them; see
   works only for a public image. A private image then leaves the host not
   ready, with both errors in its log (`fly logs --machine <id>`).
 
+### Following a tag
+
+A `runner_image` pinned by digest is matched exactly: a host on any other
+image takes no new job and is replaced once empty. A Fly pool whose
+`runner_image` names a tag and no digest, such as
+`registry.fly.io/ci-workers:current`, follows that tag instead, as ephemeral
+workers do:
+
+- **Resolution.** When the controller starts, then every 5 minutes, it reads
+  the digest the tag names, with one `HEAD` request for the manifest, and
+  creates new hosts from `<name>@<digest>`. A failed read is retried a minute
+  later; hosts keep their image meanwhile, and `status.json` shows the error.
+  Until the first read succeeds, new hosts are created from the tag itself,
+  as before.
+- **Which digest.** It is the digest the registry stores for the tag: for an
+  image built for several platforms, or with attestations, the digest of its
+  index, the one `docker buildx imagetools inspect` prints. A host reports
+  the pinned image it was created from, and the pool compares that with what
+  the tag names now, so both sides use the same digest. Fly's own
+  `image_ref.digest` on a Machine is the platform manifest's digest, a
+  different value, and is not used. A promotion that writes a new manifest
+  for the tag, such as `docker buildx imagetools create`, gives the tag a
+  digest of its own, different from the build's: the pool follows what the
+  tag names, and a tag rewritten with a new manifest counts as moved.
+- **Credentials.** `registry.fly.io` is read with the pool's own token
+  (`RUNNER_POOL_FLY_API_TOKEN`, or `FLY_API_TOKEN`), which Fly's registry
+  accepts for reading every app's images in the organization. Any other
+  registry is read anonymously, so a private image elsewhere cannot be
+  followed: pin it. No credential reaches a host, which still boots through
+  Fly; see [Private runner images](security.md#private-runner-images).
+
+When the tag moves, the hosts on the earlier digest are replaced without
+interrupting a job:
+
+- They keep their jobs, and keep taking new ones while no host on the current
+  digest has room; a host on the current digest is always chosen first.
+- One host at a time is replaced, an idle one first, otherwise the least
+  busy. It takes no new job (phase `draining`), is deleted once its last job
+  ends, and the pool creates its replacement from the new digest within
+  `max_hosts`, as for any drained host.
+- The next replacement waits until the previous host is deleted, no host is
+  being created, started or booted, and 5 minutes have passed since the
+  previous one.
+- If a host from the new digest fails to be created or to boot, replacements
+  stop until a host on that digest is ready: a broken image costs one host,
+  and the hosts on the earlier digest keep serving.
+- An idle host on an earlier digest is deleted rather than stopped, and a
+  stopped one is deleted rather than started.
+- A host on an image of another repository is not part of the tag: it is
+  drained at once, as with a pinned digest.
+
+With `max_hosts` already reached, a busy host's replacement waits until its
+jobs end; until then the pool has one host fewer to give, and the launches it
+cannot take go to the next tier. Each move costs one boot per host, with its
+empty caches.
+
+**Upgrading.** With a followed tag, there is nothing to change in the pools
+file: push the new image and move the tag. Within 5 minutes the pool starts
+replacing hosts, one at a time; moving the tag back rolls them back the same
+way. To hold the pool on one image, pin its digest. With a pinned digest,
+set the new digest in `runner_image` and restart the controller: hosts on
+the old one take no new job and are replaced once empty, all at once.
+
 ## Static hosts
 
 Prepare each machine once, as root, with the runner image the pool uses:
@@ -587,7 +651,9 @@ the network with `ssh-keyscan` is only as trustworthy as that network.
 Changing the image or the slots means running `install` again; a host whose
 image differs from the pool's `runner_image` stops taking jobs until it is.
 Hetzner pools handle this themselves: after a `runner_image` change, hosts on
-the old image take no new job and are replaced once empty.
+the old image take no new job and are replaced once empty. Static and Hetzner
+pools match `runner_image` exactly, tag or digest; only Fly pools follow a
+tag.
 
 ## Status
 
@@ -611,6 +677,12 @@ A host's `phase` is `creating`, `booting`, `ready`, `draining` or `deleting`,
 and for Fly pools also `stopping`, `stopped` (with `stopped_at`) or
 `starting`. Fly pools add `host_stops` and `host_starts`. A stopped host is
 neither reachable nor billed.
+
+A pool reports the `image` it creates hosts from, and each host the `image`
+it runs. A Fly pool that follows a tag adds `follows` (the tag),
+`image_checked_at` (its last read), `image_error` (why the reads since have
+failed, if they have) and `image_replacements` (hosts drained for an earlier
+digest); a host on an earlier digest has `"stale": true`.
 
 `overflowed` counts launches the pool sent to the next tier. A steady rise
 means the pool is too small for the load: raise `slots` or `max_hosts`.

@@ -321,7 +321,7 @@ func TestHostSourceCreateBootsALockedDownHost(t *testing.T) {
 	}))
 	defer server.Close()
 
-	host, err := testHostSource(t, server, key).Create(context.Background())
+	host, err := testHostSource(t, server, key).Create(context.Background(), "ghcr.io/gwendall/runneryard:0.5.0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +456,7 @@ func TestHostSourceCreateDeletesHostWhoseFirewallIsNotApplied(t *testing.T) {
 			}))
 			defer server.Close()
 
-			host, err := testHostSource(t, server, key).Create(context.Background())
+			host, err := testHostSource(t, server, key).Create(context.Background(), "ghcr.io/gwendall/runneryard:0.5.0")
 			if err == nil || !strings.Contains(err.Error(), "firewall 77 is not applied") {
 				t.Fatalf("err = %v", err)
 			}

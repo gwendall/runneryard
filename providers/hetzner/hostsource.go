@@ -169,10 +169,10 @@ func (s *HostSource) toHost(item server) (pool.Host, error) {
 }
 
 // Create makes a server, verifies its firewall while it is still off, and
-// powers it on. Its first boot installs the host agent. A server that fails
-// before power on is deleted; one that cannot be deleted stays labelled, and
-// the pool returns it when its boot times out.
-func (s *HostSource) Create(ctx context.Context) (pool.Host, error) {
+// powers it on. Its first boot installs the host agent for image. A server
+// that fails before power on is deleted; one that cannot be deleted stays
+// labelled, and the pool returns it when its boot times out.
+func (s *HostSource) Create(ctx context.Context, image string) (pool.Host, error) {
 	name, err := s.newName()
 	if err != nil {
 		return pool.Host{}, err
@@ -182,7 +182,7 @@ func (s *HostSource) Create(ctx context.Context) (pool.Host, error) {
 		return pool.Host{}, fmt.Errorf("derive host key of %s: %w", name, err)
 	}
 	userData, err := renderHostCloudInit(hostBootstrap{
-		privateKey: privateKey, publicKey: publicKey, image: s.cfg.RunnerImage, slots: s.cfg.Slots,
+		privateKey: privateKey, publicKey: publicKey, image: image, slots: s.cfg.Slots,
 		authorizedKey: strings.TrimSpace(s.cfg.AuthorizedKey), slotCPUs: s.cfg.SlotCPUs,
 		slotMemoryMB: s.cfg.SlotMemoryMB, minFreeDiskGB: s.cfg.MinFreeDiskGB, caches: s.cfg.Caches,
 	})
