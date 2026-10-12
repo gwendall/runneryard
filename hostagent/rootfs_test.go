@@ -62,8 +62,8 @@ func TestImageEnvironmentKeepsOnlyWhatTheImageSets(t *testing.T) {
 	environ := []string{
 		"DEBIAN_FRONTEND=noninteractive",
 		"DOCKER_BUILDKIT=1",
-		"FLY_ALLOC_ID=894921f66341e8",
-		"FLY_APP_NAME=ry-probe",
+		"FLY_ALLOC_ID=0123456789abcd",
+		"FLY_APP_NAME=pool-app",
 		"FLY_IMAGE_REF=ghcr.io/gwendall/runneryard:0.5.0",
 		"FLY_PRIVATE_IP=fdaa:0:1::2",
 		"HOME=/home/runner",
