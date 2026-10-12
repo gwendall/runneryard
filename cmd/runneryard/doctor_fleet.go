@@ -57,7 +57,9 @@ func budgetHorizonCheck(controllerApp string, file flyConfigFile, run commandRun
 }
 
 // fleetMarginCheck compares MAX_RUNNERS with the room the organization's Machine limit
-// leaves once every other app's Machines are counted (stopped Machines count too).
+// leaves once every other app's Machines are counted (stopped Machines count too). The
+// limit is per organization, so only the apps of the worker app's organization count:
+// `fly apps list` returns the apps of every organization the operator belongs to.
 func fleetMarginCheck(workerApp string, file flyConfigFile, run commandRunner) doctorCheck {
 	if doctorFlyMachineLimit <= 0 {
 		return doctorCheck{Name: "fleet capacity margin", Status: "warn", Details: "pass --fly-machine-limit <n> (the organization's Machine limit, shared by every app) to compare MAX_RUNNERS with the room actually left"}
@@ -71,20 +73,37 @@ func fleetMarginCheck(workerApp string, file flyConfigFile, run commandRunner) d
 		return doctorCheck{Name: "fleet capacity margin", Status: "warn", Details: "cannot list apps: " + compactError(output, err)}
 	}
 	var apps []struct {
-		Name string `json:"Name"`
+		Name         string `json:"Name"`
+		Organization struct {
+			Slug string `json:"Slug"`
+		} `json:"Organization"`
 	}
 	if err := json.Unmarshal(output, &apps); err != nil {
 		return doctorCheck{Name: "fleet capacity margin", Status: "warn", Details: "apps list is not the expected JSON: " + err.Error()}
 	}
+	organization, found := "", false
+	for _, app := range apps {
+		if app.Name == workerApp {
+			organization, found = app.Organization.Slug, true
+			break
+		}
+	}
+	if !found {
+		return doctorCheck{Name: "fleet capacity margin", Status: "warn", Details: "worker app " + workerApp + " is not in `fly apps list`; check --worker-app and the Fly account"}
+	}
 	others, workers := 0, 0
 	for _, app := range apps {
+		// A list without organizations (an older flyctl) counts every app, as before.
+		if organization != "" && app.Organization.Slug != organization {
+			continue
+		}
 		list, err := run("fly", "machines", "list", "--app", app.Name, "--json")
 		if err != nil {
-			continue
+			return doctorCheck{Name: "fleet capacity margin", Status: "warn", Details: "cannot list the Machines of " + app.Name + ": " + compactError(list, err)}
 		}
 		var machines []json.RawMessage
 		if err := json.Unmarshal(list, &machines); err != nil {
-			continue
+			return doctorCheck{Name: "fleet capacity margin", Status: "warn", Details: "Machines of " + app.Name + " are not the expected JSON: " + err.Error()}
 		}
 		if app.Name == workerApp {
 			workers = len(machines)
@@ -92,8 +111,12 @@ func fleetMarginCheck(workerApp string, file flyConfigFile, run commandRunner) d
 			others += len(machines)
 		}
 	}
+	scope := "other apps"
+	if organization != "" {
+		scope = "other apps of organization " + organization
+	}
 	margin := doctorFlyMachineLimit - others
-	detail := fmt.Sprintf("MAX_RUNNERS %d; %d Machines belong to other apps (stopped ones count), %d to the fleet now; room for %d workers under a limit of %d", maxRunners, others, workers, margin, doctorFlyMachineLimit)
+	detail := fmt.Sprintf("MAX_RUNNERS %d; %d Machines belong to %s (stopped ones count), %d to the fleet now; room for %d workers under a limit of %d", maxRunners, others, scope, workers, margin, doctorFlyMachineLimit)
 	if maxRunners > margin {
 		return doctorCheck{Name: "fleet capacity margin", Status: "fail", Details: detail + "; the provider will refuse the launch that crosses the limit"}
 	}

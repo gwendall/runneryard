@@ -4,6 +4,15 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
+## Unreleased
+
+- `runneryard doctor`'s `fleet capacity margin` counts only the apps of the worker app's
+  Fly organization. Why: `fly apps list` returns the apps of every organization the
+  operator belongs to, while Fly's Machine limit is per organization, so the Machines
+  of another organization made a fleet that fit look over the limit. The check also
+  warns, instead of passing, when an app's Machines cannot be listed, since that app
+  was counted as empty.
+
 ## 0.5.1 (2026-10-12)
 
 - A closed launch gate is probed at its `retry_at`, not at the next message from GitHub
