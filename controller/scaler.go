@@ -125,6 +125,7 @@ type scaler struct {
 	state             *workerState
 	compute           provider.Compute
 	scaleSetClient    runnerScaleSetClient
+	scaleSetName      string
 	scaleSetID        int
 	minWorkers        int
 	maxWorkers        int
@@ -153,6 +154,11 @@ type scaler struct {
 	// Nil when the scaler runs without a listener (tests).
 	probeWake  chan struct{}
 	probeTimer *time.Timer
+	// ephemeral is the optional second scale set, whose jobs skip the pools;
+	// nil serves the main scale set alone. Both share every limit above.
+	ephemeral *scaleSetRoute
+	// handlerMu serializes the listeners of both scale sets.
+	handlerMu sync.Mutex
 }
 
 type runnerScaleSetClient interface {
@@ -166,13 +172,17 @@ type runnerScaleSetClient interface {
 // identity, state, or ledger corruption - and is marked as such so the session
 // supervisor ends the controller instead of reopening the session.
 func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, assignedJobs int) (int, error) {
-	count, err := s.handleDesiredRunnerCount(ctx, assignedJobs)
+	count, err := s.handleDesiredRunnerCount(ctx, s.mainRoute(), assignedJobs)
 	return count, failClosed(err)
 }
 
-func (s *scaler) handleDesiredRunnerCount(ctx context.Context, assignedJobs int) (int, error) {
-	target := min(s.maxWorkers, s.minWorkers+assignedJobs)
-	s.reporter.desired(assignedJobs, target)
+// handleDesiredRunnerCount scales one scale set toward its assigned jobs.
+// The target and the current count are the scale set's own; MAX_RUNNERS and
+// the launch gate apply to the whole fleet. With a single scale set both
+// counts are the fleet's.
+func (s *scaler) handleDesiredRunnerCount(ctx context.Context, route scaleSetRoute, assignedJobs int) (int, error) {
+	target := min(s.maxWorkers, route.minWorkers+assignedJobs)
+	s.reporter.desired(route.name, assignedJobs, target)
 	if err := s.reconcile(ctx); err != nil {
 		// A transient provider failure already exhausted the adapter's retry
 		// policy. Keep the GitHub session and the degraded status, skip this
@@ -180,19 +190,19 @@ func (s *scaler) handleDesiredRunnerCount(ctx context.Context, assignedJobs int)
 		// remains fatal so identity and state corruption still fail closed.
 		if provider.IsTransient(err) {
 			s.logger.Warn("provider unavailable during reconciliation; retrying on the next message", "error", err)
-			return s.state.count(), nil
+			return s.routeCount(route), nil
 		}
-		return s.state.count(), err
+		return s.routeCount(route), err
 	}
-	current := s.state.count()
+	current, fleet := s.routeCounts(route)
 	if target > current {
-		needed, probing := s.capacityAllowance(current, target)
+		needed, probing := s.capacityAllowance(fleet, min(s.maxWorkers, fleet+target-current))
 		if needed > 0 {
-			s.logger.Info("scaling up", "current", current, "target", target, "count", needed)
-			if err := s.launchWorkers(ctx, needed, nil); err != nil {
-				return s.state.count(), err
+			s.logger.Info("scaling up", "scale_set", route.name, "current", current, "target", target, "count", needed)
+			if err := s.launchWorkers(ctx, route, needed, nil); err != nil {
+				return s.routeCount(route), err
 			}
-			if probing && s.state.count() > current {
+			if probing && s.state.count() > fleet {
 				s.clearLaunchGate()
 			}
 		}
@@ -205,10 +215,15 @@ func (s *scaler) handleDesiredRunnerCount(ctx context.Context, assignedJobs int)
 	// runner that never receives a job is bounded by its provider lease. For
 	// the same reason, a job that a speculative runner takes leaves the worker
 	// it was waiting on running.
-	if err := s.speculate(ctx, assignedJobs); err != nil {
-		return s.state.count(), err
+	//
+	// Only the main scale set speculates: a job on the ephemeral scale set
+	// asked to skip the pools, so no slot runner is started for it.
+	if route.id == s.scaleSetID {
+		if err := s.speculate(ctx, route, assignedJobs); err != nil {
+			return s.routeCount(route), err
+		}
 	}
-	return s.state.count(), nil
+	return s.routeCount(route), nil
 }
 
 // speculate starts a runner in a free pool slot for each job still waiting on
@@ -218,15 +233,15 @@ func (s *scaler) handleDesiredRunnerCount(ctx context.Context, assignedJobs int)
 // other one takes the next job or releases itself after its idle timeout.
 // Neither is destroyed here: either may just have been assigned the job.
 //
-// The count is bounded by the jobs not started yet, less the idle runners
-// already in slots, by the idle workers elsewhere those jobs wait on, by the
-// free slots, and by MAX_RUNNERS. Adopted workers count as busy. Every launch
-// passes the budget admission and the retirement journal like any other; a
-// closed launch gate skips speculation, and a slot lost meanwhile does not
-// close the gate, since it is no provider ceiling. Each runner started here
-// is an idle runner in a slot on the next pass, so the next pass starts none
-// for the same job.
-func (s *scaler) speculate(ctx context.Context, assignedJobs int) error {
+// The count is bounded by the scale set's jobs not started yet, less its idle
+// runners already in slots, by its idle workers elsewhere those jobs wait on,
+// by the free slots, and by MAX_RUNNERS across the fleet. Adopted workers
+// count as busy. Every launch passes the budget admission and the retirement
+// journal like any other; a closed launch gate skips speculation, and a slot
+// lost meanwhile does not close the gate, since it is no provider ceiling.
+// Each runner started here is an idle runner in a slot on the next pass, so
+// the next pass starts none for the same job.
+func (s *scaler) speculate(ctx context.Context, route scaleSetRoute, assignedJobs int) error {
 	spare, ok := s.compute.(provider.Speculator)
 	if !ok || !s.launchGateOpen() {
 		return nil
@@ -235,7 +250,7 @@ func (s *scaler) speculate(ctx context.Context, assignedJobs int) error {
 	if room < 1 {
 		return nil
 	}
-	busy, fastIdle, slowIdle := s.state.idleByStart(spare.Fast)
+	busy, fastIdle, slowIdle := s.state.idleByStart(s.routeWorker(route), spare.Fast)
 	waiting := max(0, assignedJobs-busy)
 	count := min(waiting-fastIdle, slowIdle, room, s.maxWorkers-s.state.count())
 	if count < 1 {
@@ -243,7 +258,7 @@ func (s *scaler) speculate(ctx context.Context, assignedJobs int) error {
 	}
 	s.logger.Info("starting runners in free pool slots for jobs waiting on booting workers",
 		"waiting_jobs", waiting, "idle_in_slots", fastIdle, "idle_elsewhere", slowIdle, "free_slots", room, "count", count)
-	return s.launchWorkers(ctx, count, spare)
+	return s.launchWorkers(ctx, route, count, spare)
 }
 
 // launchGateOpen reports whether no capacity ceiling or launch rejection is
@@ -274,7 +289,7 @@ func (s *scaler) roomReady() <-chan struct{} {
 // flight finish normally. Only a fail-closed error is returned, after every
 // in-flight launch has settled. A non-nil spare starts speculative runners in
 // its spare room instead, and its capacity refusals leave the gate open.
-func (s *scaler) launchWorkers(ctx context.Context, needed int, spare provider.Speculator) error {
+func (s *scaler) launchWorkers(ctx context.Context, route scaleSetRoute, needed int, spare provider.Speculator) error {
 	limit := max(1, s.launchConcurrency)
 	slots := make(chan struct{}, limit)
 	var wait sync.WaitGroup
@@ -299,7 +314,7 @@ func (s *scaler) launchWorkers(ctx context.Context, needed int, spare provider.S
 		go func() {
 			defer wait.Done()
 			defer func() { <-slots }()
-			started, err := s.startWorker(ctx, spare)
+			started, err := s.startWorker(ctx, route, spare)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -700,10 +715,11 @@ func (s *scaler) handleJobCompleted(ctx context.Context, job *scaleset.JobComple
 	return nil
 }
 
-// startWorker launches one worker through compute, or, with a non-nil spare,
-// one speculative runner in its spare room.
-func (s *scaler) startWorker(ctx context.Context, spare provider.Speculator) (bool, error) {
-	launch := s.compute.Launch
+// startWorker launches one worker of the route's scale set through the
+// route's compute, or, with a non-nil spare, one speculative runner in its
+// spare room.
+func (s *scaler) startWorker(ctx context.Context, route scaleSetRoute, spare provider.Speculator) (bool, error) {
+	launch := route.launch.Launch
 	if spare != nil {
 		launch = spare.LaunchSpare
 	}
@@ -733,7 +749,7 @@ func (s *scaler) startWorker(ctx context.Context, spare provider.Speculator) (bo
 		return false, fmt.Errorf("generated runner name %q already exists", name)
 	}
 	retirement := retirementEntry{
-		RunnerName: name, RunnerScaleSetID: s.scaleSetID, LeaseID: leaseID, BudgetDisposition: forfeitReservation,
+		RunnerName: name, RunnerScaleSetID: route.id, LeaseID: leaseID, BudgetDisposition: forfeitReservation,
 		RequestedAt: time.Now().UTC(),
 	}
 	if err := s.retirements.put(retirement); err != nil {
@@ -745,7 +761,7 @@ func (s *scaler) startWorker(ctx context.Context, spare provider.Speculator) (bo
 	jit, err := s.scaleSetClient.GenerateJitRunnerConfig(ctx, &scaleset.RunnerScaleSetJitRunnerSetting{
 		Name:       name,
 		WorkFolder: "_work",
-	}, s.scaleSetID)
+	}, route.id)
 	if err != nil {
 		return false, s.cleanupJITGenerationFailure(context.WithoutCancel(ctx), retirement, err)
 	}
@@ -759,7 +775,7 @@ func (s *scaler) startWorker(ctx context.Context, spare provider.Speculator) (bo
 			return false, fmt.Errorf("resolve generated runner registration: %w", err)
 		}
 	}
-	if registration == nil || registration.ID < 1 || registration.Name != name || (registration.RunnerScaleSetID != 0 && registration.RunnerScaleSetID != s.scaleSetID) {
+	if registration == nil || registration.ID < 1 || registration.Name != name || (registration.RunnerScaleSetID != 0 && registration.RunnerScaleSetID != route.id) {
 		return false, fmt.Errorf("GitHub returned invalid identity for generated runner %q", name)
 	}
 	retirement.RunnerID = int64(registration.ID)
@@ -770,7 +786,7 @@ func (s *scaler) startWorker(ctx context.Context, spare provider.Speculator) (bo
 	s.reporter.starting(1)
 	launchStarted := time.Now()
 	worker, err := launch(ctx, provider.Lease{
-		ID: leaseID, RunnerName: name, RunnerID: retirement.RunnerID, RunnerScaleSetID: s.scaleSetID,
+		ID: leaseID, RunnerName: name, RunnerID: retirement.RunnerID, RunnerScaleSetID: route.id,
 		JITConfig: jit.EncodedJITConfig, Deadline: time.Now().Add(s.maxLifetime - 30*time.Second),
 		IdleTimeout: s.idleTimeout,
 	})
@@ -1069,7 +1085,7 @@ func (s *scaler) finishRetirement(ctx context.Context, worker provider.Worker, p
 }
 
 func (s *scaler) removeRunnerRegistration(ctx context.Context, retirement retirementEntry) error {
-	if retirement.RunnerScaleSetID != s.scaleSetID {
+	if !s.servesScaleSet(retirement.RunnerScaleSetID) {
 		return fmt.Errorf("refusing to remove runner from unexpected scale set %d", retirement.RunnerScaleSetID)
 	}
 	runner, err := s.scaleSetClient.GetRunnerByName(ctx, retirement.RunnerName)
@@ -1135,6 +1151,7 @@ func (s *scaler) destroyWorker(ctx context.Context, worker provider.Worker) erro
 func (s *scaler) reportState() {
 	actual, busy, idle, unknown := s.state.summary()
 	s.reporter.workers(actual, busy, idle, unknown)
+	s.reportScaleSets()
 }
 
 // workerStopped reports provider states in which a worker can no longer run

@@ -75,6 +75,19 @@ func (s *workerState) count() int {
 	return len(s.workers)
 }
 
+// countScaleSet returns how many workers carry the scale set id, and the
+// whole fleet, from one snapshot.
+func (s *workerState) countScaleSet(id int) (matching, total int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, record := range s.workers {
+		if record.Worker.RunnerScaleSetID == id {
+			matching++
+		}
+	}
+	return matching, len(s.workers)
+}
+
 func (s *workerState) summary() (actual, busy, idle, unknown int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -91,14 +104,16 @@ func (s *workerState) summary() (actual, busy, idle, unknown int) {
 	return actual, busy, idle, unknown
 }
 
-// idleByStart counts the workers that run a job or may run one (adopted and
-// never observed), and the observed idle workers split by whether fast says
-// their runner comes online in seconds.
-func (s *workerState) idleByStart(fast func(workerID string) bool) (busy, fastIdle, slowIdle int) {
+// idleByStart counts, among the workers include accepts, those that run a job
+// or may run one (adopted and never observed), and the observed idle workers
+// split by whether fast says their runner comes online in seconds.
+func (s *workerState) idleByStart(include func(provider.Worker) bool, fast func(workerID string) bool) (busy, fastIdle, slowIdle int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, record := range s.workers {
 		switch {
+		case !include(record.Worker):
+			continue
 		case record.Busy || !record.Observed:
 			busy++
 		case fast(record.Worker.ID):

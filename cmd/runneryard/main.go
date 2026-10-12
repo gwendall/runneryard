@@ -76,11 +76,13 @@ func serve() error {
 	if err != nil {
 		return fmt.Errorf("create GitHub adapter: %w", err)
 	}
-	compute, err := cfg.compute(logger)
+	compute, ephemeral, err := cfg.computes(logger)
 	if err != nil {
 		return fmt.Errorf("create compute adapter: %w", err)
 	}
-	fleet, err := controller.New(cfg.controllerConfig(logger), github, compute)
+	controllerCfg := cfg.controllerConfig(logger)
+	controllerCfg.EphemeralCompute = ephemeral
+	fleet, err := controller.New(controllerCfg, github, compute)
 	if err != nil {
 		return fmt.Errorf("create controller: %w", err)
 	}

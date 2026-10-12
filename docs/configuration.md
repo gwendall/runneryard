@@ -168,6 +168,7 @@ from production.
 | `RUNNER_POOLS_FILE` | YAML file declaring persistent host pools and the placement order. | Unset: one worker per job. |
 | `RUNNER_POOL_SSH_KEY_FILE` | Controller ed25519 key toward pool hosts; overrides `ssh_key_file` in the pools file. | Unset |
 | `COMPUTE_PROVIDER=none` | Run pools only, without an ephemeral tier. Requires `RUNNER_POOLS_FILE`. | `fly` |
+| `EPHEMERAL_SCALE_SET_NAME` | Second scale set and `runs-on` label whose jobs always get their own ephemeral worker, skipping the pools. Shares `MAX_RUNNERS` and the budget with `SCALE_SET_NAME`. | Unset: one scale set. |
 
 Pools serve private repositories only. The file format, the Hetzner and
 static sources, and the trust checks are in [Host pools](pools.md).

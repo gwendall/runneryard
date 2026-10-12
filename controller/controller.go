@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/actions/scaleset"
@@ -73,6 +74,17 @@ type Config struct {
 	// transition and one reminder per hour while degraded. Empty disables it.
 	AlertWebhookURL string
 	Logger          *slog.Logger
+
+	// EphemeralScaleSetName registers a second scale set whose jobs always
+	// get their own worker from EphemeralCompute, skipping the pools. Both
+	// share MaxWorkers, the usage budget, the retirement journal, the status
+	// file and the launch gate. Empty serves ScaleSetName alone.
+	EphemeralScaleSetName string
+	// EphemeralCompute launches the second scale set's workers: the
+	// ephemeral tier alone, with the same worker IDs as in the compute given
+	// to New, which still inventories and destroys them. Nil launches them
+	// through that compute, as without pools.
+	EphemeralCompute provider.Compute
 }
 
 const defaultLaunchConcurrency = 8
@@ -89,6 +101,14 @@ func New(cfg Config, github *scaleset.Client, compute provider.Compute) (*Contro
 	}
 	if cfg.ScaleSetName == "" || cfg.ControllerID == "" || cfg.MaxWorkers < 1 || cfg.MinWorkers < 0 || cfg.MinWorkers > cfg.MaxWorkers {
 		return nil, fmt.Errorf("invalid controller identity or worker bounds")
+	}
+	if cfg.EphemeralScaleSetName == cfg.ScaleSetName {
+		return nil, fmt.Errorf("the ephemeral scale set needs a name of its own")
+	}
+	if cfg.EphemeralScaleSetName == "" {
+		cfg.EphemeralCompute = nil
+	} else if cfg.EphemeralCompute == nil {
+		cfg.EphemeralCompute = compute
 	}
 	if cfg.MaxLifetime < time.Minute || cfg.MaxLifetime > 24*time.Hour {
 		return nil, fmt.Errorf("maximum worker lifetime must be between 1m and 24h")
@@ -173,31 +193,20 @@ func (c *Controller) Run(ctx context.Context) error {
 		runnerGroupID = group.ID
 	}
 
-	scaleSet, err := c.github.GetRunnerScaleSet(ctx, runnerGroupID, cfg.ScaleSetName)
+	scaleSet, err := c.registerScaleSet(ctx, cfg, reporter, runnerGroupID, cfg.ScaleSetName)
 	if err != nil {
-		reporter.degraded("github_scale_set_failed")
-		return fmt.Errorf("find runner scale set: %w", err)
+		return err
 	}
-	desired := &scaleset.RunnerScaleSet{
-		Name:          cfg.ScaleSetName,
-		RunnerGroupID: runnerGroupID,
-		Labels:        []scaleset.Label{{Name: cfg.ScaleSetName}},
-		RunnerSetting: scaleset.RunnerSetting{DisableUpdate: true},
-	}
-	if scaleSet == nil {
-		scaleSet, err = c.github.CreateRunnerScaleSet(ctx, desired)
+	var ephemeralSet *scaleset.RunnerScaleSet
+	if cfg.EphemeralScaleSetName != "" {
+		ephemeralSet, err = c.registerScaleSet(ctx, cfg, reporter, runnerGroupID, cfg.EphemeralScaleSetName)
 		if err != nil {
-			reporter.degraded("github_scale_set_failed")
-			return fmt.Errorf("create runner scale set: %w", err)
+			return err
 		}
-		cfg.Logger.Info("created runner scale set", "name", scaleSet.Name, "id", scaleSet.ID)
-	} else {
-		scaleSet, err = c.github.UpdateRunnerScaleSet(ctx, scaleSet.ID, desired)
-		if err != nil {
+		if ephemeralSet.ID == scaleSet.ID {
 			reporter.degraded("github_scale_set_failed")
-			return fmt.Errorf("update runner scale set: %w", err)
+			return fmt.Errorf("GitHub returned one scale set for both %q and %q", cfg.ScaleSetName, cfg.EphemeralScaleSetName)
 		}
-		cfg.Logger.Info("using existing runner scale set", "name", scaleSet.Name, "id", scaleSet.ID)
 	}
 	c.github.SetSystemInfo(c.systemInfo(scaleSet.ID))
 
@@ -205,18 +214,21 @@ func (c *Controller) Run(ctx context.Context) error {
 	if err != nil || hostname == "" {
 		hostname = cfg.ControllerID
 	}
-	open := func(ctx context.Context) (messageSession, error) {
-		session, err := c.github.MessageSessionClient(ctx, scaleSet.ID, hostname)
-		if err != nil {
-			return nil, err
+	opener := func(scaleSetID int) sessionOpener {
+		return func(ctx context.Context) (messageSession, error) {
+			session, err := c.github.MessageSessionClient(ctx, scaleSetID, hostname)
+			if err != nil {
+				return nil, err
+			}
+			return session, nil
 		}
-		return session, nil
 	}
 
 	scaler := &scaler{
 		state:             newWorkerState(),
 		compute:           c.compute,
 		scaleSetClient:    newPacedScaleSetClient(c.github, cfg.GitHubAPIRate, cfg.GitHubAPIBurst),
+		scaleSetName:      cfg.ScaleSetName,
 		scaleSetID:        scaleSet.ID,
 		minWorkers:        cfg.MinWorkers,
 		maxWorkers:        cfg.MaxWorkers,
@@ -231,7 +243,47 @@ func (c *Controller) Run(ctx context.Context) error {
 		startedAt:         time.Now(),
 		probeWake:         make(chan struct{}, 1),
 	}
-	return superviseSessions(ctx, open, scaler, cfg, scaleSet.ID, sessionRestartInitialBackoff, sessionRestartMaximumBackoff)
+	if ephemeralSet == nil {
+		return superviseSessions(ctx, opener(scaleSet.ID), scaler, cfg, scaleSet.ID, sessionRestartInitialBackoff, sessionRestartMaximumBackoff)
+	}
+	scaler.ephemeral = &scaleSetRoute{name: cfg.EphemeralScaleSetName, id: ephemeralSet.ID, launch: cfg.EphemeralCompute}
+	wakes := []chan struct{}{make(chan struct{}, 1), make(chan struct{}, 1)}
+	wakeCtx, stopWaking := context.WithCancel(ctx)
+	defer stopWaking()
+	go fanOutWake(wakeCtx, scaler.probeWake, wakes)
+	return superviseScaleSets(ctx, scaler, cfg, scaler.scaleSetSessions(opener, wakes), sessionRestartInitialBackoff, sessionRestartMaximumBackoff)
+}
+
+// registerScaleSet finds the named scale set in the runner group, creating
+// it when missing, and makes its only label its name.
+func (c *Controller) registerScaleSet(ctx context.Context, cfg Config, reporter *statusReporter, runnerGroupID int, name string) (*scaleset.RunnerScaleSet, error) {
+	scaleSet, err := c.github.GetRunnerScaleSet(ctx, runnerGroupID, name)
+	if err != nil {
+		reporter.degraded("github_scale_set_failed")
+		return nil, fmt.Errorf("find runner scale set: %w", err)
+	}
+	desired := &scaleset.RunnerScaleSet{
+		Name:          name,
+		RunnerGroupID: runnerGroupID,
+		Labels:        []scaleset.Label{{Name: name}},
+		RunnerSetting: scaleset.RunnerSetting{DisableUpdate: true},
+	}
+	if scaleSet == nil {
+		scaleSet, err = c.github.CreateRunnerScaleSet(ctx, desired)
+		if err != nil {
+			reporter.degraded("github_scale_set_failed")
+			return nil, fmt.Errorf("create runner scale set: %w", err)
+		}
+		cfg.Logger.Info("created runner scale set", "name", scaleSet.Name, "id", scaleSet.ID)
+		return scaleSet, nil
+	}
+	scaleSet, err = c.github.UpdateRunnerScaleSet(ctx, scaleSet.ID, desired)
+	if err != nil {
+		reporter.degraded("github_scale_set_failed")
+		return nil, fmt.Errorf("update runner scale set: %w", err)
+	}
+	cfg.Logger.Info("using existing runner scale set", "name", scaleSet.Name, "id", scaleSet.ID)
+	return scaleSet, nil
 }
 
 // superviseSessions keeps a GitHub scale-set session open for the fleet's
@@ -246,18 +298,82 @@ func (c *Controller) Run(ctx context.Context) error {
 // workers from provider inventory.
 func superviseSessions(ctx context.Context, open sessionOpener, scaler *scaler, cfg Config, scaleSetID int, initialBackoff, maximumBackoff time.Duration) error {
 	defer scaler.shutdown(context.Background())
+	return superviseSession(ctx, scaler, cfg, sessionScaleSet{
+		name: cfg.ScaleSetName, id: scaleSetID, open: open, handler: scaler, wake: scaler.probeWake, room: scaler.roomReady(),
+	}, initialBackoff, maximumBackoff)
+}
+
+// sessionScaleSet is what one scale set's session needs: how to open it, the
+// handlers its listener calls, and the channels that wake its long poll.
+type sessionScaleSet struct {
+	name    string
+	id      int
+	open    sessionOpener
+	handler listener.Scaler
+	wake    <-chan struct{}
+	// room wakes the poll when a speculative pool gets a ready host. Only the
+	// main scale set speculates, so the ephemeral one has none.
+	room <-chan struct{}
+	// awaitRecovery, when set, holds the first session back until another
+	// scale set's session has recovered the fleet's workers; recovered is
+	// called once this scale set's session has.
+	awaitRecovery <-chan struct{}
+	recovered     func()
+}
+
+// superviseScaleSets supervises one session per scale set when the
+// controller serves two. The first scale set's session recovers the workers
+// of both, as the only session does with one scale set; the other opens its
+// session after that, so no handler runs before recovery. A handler failure
+// in either session ends both: the fleet fails closed as a whole.
+func superviseScaleSets(ctx context.Context, scaler *scaler, cfg Config, sets []sessionScaleSet, initialBackoff, maximumBackoff time.Duration) error {
+	defer scaler.shutdown(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	recovered := make(chan struct{})
+	for i := range sets {
+		if i == 0 {
+			sets[i].recovered = sync.OnceFunc(func() { close(recovered) })
+		} else {
+			sets[i].awaitRecovery = recovered
+		}
+	}
+	results := make(chan error, len(sets))
+	for _, set := range sets {
+		go func() { results <- superviseSession(ctx, scaler, cfg, set, initialBackoff, maximumBackoff) }()
+	}
+	var failure error
+	for range sets {
+		if err := <-results; err != nil && failure == nil {
+			failure = err
+			cancel()
+		}
+	}
+	return failure
+}
+
+// superviseSession keeps one scale set's session open until a handler
+// failure or cancellation.
+func superviseSession(ctx context.Context, scaler *scaler, cfg Config, set sessionScaleSet, initialBackoff, maximumBackoff time.Duration) error {
+	if set.awaitRecovery != nil {
+		select {
+		case <-set.awaitRecovery:
+		case <-ctx.Done():
+			return nil
+		}
+	}
 	backoff := time.Duration(0)
-	recoverWorkers := true
+	recoverWorkers := set.awaitRecovery == nil
 	for {
 		var err error
-		session, openErr := open(ctx)
+		session, openErr := set.open(ctx)
 		if openErr != nil {
 			scaler.reporter.degraded("github_session_failed")
 			err = fmt.Errorf("create message session: %w", openErr)
 		} else {
 			started := time.Now()
 			scaler.reporter.githubActivity("session_created")
-			err = runSession(ctx, session, scaler, cfg, scaleSetID, recoverWorkers)
+			err = runScaleSetSession(ctx, session, scaler, cfg, set, recoverWorkers)
 			closeSession(session, cfg.Logger)
 			recoverWorkers = false
 			if time.Since(started) >= sessionStableAfter {
@@ -277,7 +393,7 @@ func superviseSessions(ctx context.Context, open sessionOpener, scaler *scaler, 
 		}
 		backoff = nextSessionBackoff(backoff, initialBackoff, maximumBackoff)
 		scaler.reporter.degraded("github_session_restarting")
-		cfg.Logger.Warn("scale set session ended; reopening after backoff", "error", err, "backoff", backoff)
+		cfg.Logger.Warn("scale set session ended; reopening after backoff", "scale_set", set.name, "error", err, "backoff", backoff)
 		if err := waitContext(ctx, backoff); err != nil {
 			return nil
 		}
@@ -313,15 +429,26 @@ func runControllerSession(ctx context.Context, session messageSession, scaler *s
 // recovery or listener configuration failure is a fail-closed handler
 // failure; a listener transport failure is returned as is for the supervisor.
 func runSession(ctx context.Context, session messageSession, scaler *scaler, cfg Config, scaleSetID int, recoverWorkers bool) error {
+	return runScaleSetSession(ctx, session, scaler, cfg, sessionScaleSet{
+		name: cfg.ScaleSetName, id: scaleSetID, handler: scaler, wake: scaler.probeWake, room: scaler.roomReady(),
+	}, recoverWorkers)
+}
+
+func runScaleSetSession(ctx context.Context, session messageSession, scaler *scaler, cfg Config, set sessionScaleSet, recoverWorkers bool) error {
 	if recoverWorkers {
 		if err := scaler.recover(ctx); err != nil {
 			return failClosed(fmt.Errorf("recover workers: %w", err))
 		}
+		if set.recovered != nil {
+			set.recovered()
+		}
 	}
 	scaler.reporter.recovered()
 
-	queue, err := listener.New(wakingSession{messageSession: session, wake: scaler.probeWake, room: scaler.roomReady()}, listener.Config{
-		ScaleSetID: scaleSetID,
+	// Each listener may tell GitHub it takes up to MAX_RUNNERS jobs: the
+	// scaler, not GitHub, holds both scale sets under that one ceiling.
+	queue, err := listener.New(wakingSession{messageSession: session, wake: set.wake, room: set.room}, listener.Config{
+		ScaleSetID: set.id,
 		MaxRunners: cfg.MaxWorkers,
 		Logger:     cfg.Logger.WithGroup("listener"),
 	})
@@ -329,8 +456,8 @@ func runSession(ctx context.Context, session messageSession, scaler *scaler, cfg
 		scaler.reporter.degraded("github_listener_failed")
 		return failClosed(fmt.Errorf("create scale set listener: %w", err))
 	}
-	cfg.Logger.Info("controller ready", "github", cfg.GitHubURL, "scale_set", cfg.ScaleSetName, "min_workers", cfg.MinWorkers, "max_workers", cfg.MaxWorkers)
-	if err := queue.Run(ctx, scaler); err != nil && !errors.Is(err, context.Canceled) {
+	cfg.Logger.Info("controller ready", "github", cfg.GitHubURL, "scale_set", set.name, "min_workers", cfg.MinWorkers, "max_workers", cfg.MaxWorkers)
+	if err := queue.Run(ctx, set.handler); err != nil && !errors.Is(err, context.Canceled) {
 		scaler.reporter.degraded("github_listener_failed")
 		return fmt.Errorf("run scale set listener: %w", err)
 	}

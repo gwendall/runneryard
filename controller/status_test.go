@@ -27,7 +27,7 @@ func TestFleetStatusCoversEmptySaturatedAndDegradedStates(t *testing.T) {
 		t.Fatalf("empty status = %#v", empty)
 	}
 
-	reporter.desired(8, 4)
+	reporter.desired("acme-linux", 8, 4)
 	reporter.workers(4, 2, 1, 1)
 	saturated := loadFleetStatus(t, statusFile)
 	if !saturated.Workers.Saturated || saturated.GitHub.DesiredWorkers != 4 {
