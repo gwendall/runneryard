@@ -5,8 +5,8 @@ if [[ "$(id -u)" -ne 0 ]]; then
   # sudo resets the environment, which drops the variables the image sets: a
   # derived image's PATH, npm_config_store_dir or PLAYWRIGHT_BROWSERS_PATH.
   # Carry the whole environment across for the runner; the root steps below
-  # keep sudo's.
-  RUNNERYARD_RUNNER_ENVIRONMENT="$(env -0 | base64 --wrap=0)"
+  # keep sudo's. A value the image set for the carrier itself is left out.
+  RUNNERYARD_RUNNER_ENVIRONMENT="$(env -u RUNNERYARD_RUNNER_ENVIRONMENT -0 | base64 --wrap=0)"
   export RUNNERYARD_RUNNER_ENVIRONMENT
   exec sudo --preserve-env=ACTIONS_RUNNER_INPUT_JITCONFIG,RUNNERYARD_DEADLINE,RUNNERYARD_DOCKER_DNS,RUNNERYARD_DIAG_HOLD,RUNNERYARD_IDLE_TIMEOUT,RUNNERYARD_REUSED_SLOT,RUNNERYARD_RUNNER_ENVIRONMENT /usr/local/bin/runner-entrypoint "$@"
 fi
@@ -16,7 +16,11 @@ fi
 runner_environment=(env)
 if [[ -n "${RUNNERYARD_RUNNER_ENVIRONMENT:-}" ]]; then
   carried_environment="$(mktemp)"
-  base64 --decode <<<"$RUNNERYARD_RUNNER_ENVIRONMENT" >"$carried_environment"
+  if ! base64 --decode <<<"$RUNNERYARD_RUNNER_ENVIRONMENT" >"$carried_environment"; then
+    rm -f "$carried_environment"
+    echo "the environment carried across sudo is malformed" >&2
+    exit 64
+  fi
   mapfile -d '' carried <"$carried_environment"
   rm -f "$carried_environment"
   for entry in "${carried[@]}"; do

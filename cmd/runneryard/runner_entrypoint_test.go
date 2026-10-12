@@ -59,12 +59,14 @@ func TestRunnerEntrypointCarriesTheImageEnvironmentAcrossSudo(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := string(contents)
-	carried := strings.Index(source, `RUNNERYARD_RUNNER_ENVIRONMENT="$(env -0 | base64 --wrap=0)"`)
+	carried := strings.Index(source, `RUNNERYARD_RUNNER_ENVIRONMENT="$(env -u RUNNERYARD_RUNNER_ENVIRONMENT -0 | base64 --wrap=0)"`)
 	escalation := strings.Index(source, "exec sudo")
 	if carried < 0 || escalation < 0 || carried > escalation {
 		t.Fatal("the entrypoint must record its environment before sudo resets it")
 	}
 	for _, guard := range []string{
+		// A carrier that does not decode stops the worker with a diagnosis.
+		`if ! base64 --decode <<<"$RUNNERYARD_RUNNER_ENVIRONMENT" >"$carried_environment"; then`,
 		// Only NAME=value entries, so none can reach env as an option.
 		`"$entry" != [A-Za-z_]*=*`,
 		`runner_environment=(env --ignore-environment "${carried[@]}")`,
