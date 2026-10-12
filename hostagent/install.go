@@ -20,7 +20,8 @@ import (
 const (
 	// AgentUser is the account the controller connects as.
 	AgentUser = "runneryard"
-	// AgentHome holds the account's authorized_keys and slot locks.
+	// AgentHome holds the account's authorized_keys, slot locks and the
+	// slots' work directories.
 	AgentHome = "/var/lib/runneryard"
 	// BinaryPath is the agent command forced by authorized_keys.
 	BinaryPath       = "/usr/local/bin/runneryard"
