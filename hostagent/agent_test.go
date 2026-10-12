@@ -51,13 +51,28 @@ type fakeDocker struct {
 	onVolumeRemove  func()
 	// script answers before the model unless it returns errUnscripted.
 	script func(args []string) ([]byte, error)
+	// status is a container's state when it is not running, such as
+	// "exited".
+	status map[string]string
+	// keepsRunning makes "docker wait" block until its context ends, as for a
+	// job still running; otherwise a running container exits on its own, as
+	// a runner does after its job.
+	keepsRunning bool
+	// removedStatus records each container's state when it was removed.
+	removedStatus map[string]string
 }
 
 func newFakeDocker() *fakeDocker {
-	return &fakeDocker{image: agentTestImage, containers: map[string]map[string]string{}, fail: map[string]error{}}
+	return &fakeDocker{
+		image: agentTestImage, containers: map[string]map[string]string{}, fail: map[string]error{},
+		status: map[string]string{}, removedStatus: map[string]string{},
+	}
 }
 
-func (d *fakeDocker) Run(_ context.Context, env []string, args ...string) ([]byte, error) {
+func (d *fakeDocker) Run(ctx context.Context, env []string, args ...string) ([]byte, error) {
+	if len(args) == 2 && args[0] == "wait" {
+		return d.wait(ctx, env, args)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.calls = append(d.calls, dockerCall{env: slices.Clone(env), args: slices.Clone(args)})
@@ -87,12 +102,16 @@ func (d *fakeDocker) Run(_ context.Context, env []string, args ...string) ([]byt
 		if !ok {
 			return []byte("[]\n"), errors.New("Error: No such container: " + name)
 		}
-		return inspectJSON(inspectEntry{Name: name, Created: "2026-10-11T12:00:01Z", Status: "running", Labels: labels}), nil
+		return inspectJSON(inspectEntry{Name: name, Created: "2026-10-11T12:00:01Z", Status: d.state(name), Labels: labels}), nil
 	case key == "run --detach":
 		d.containers[flagValue(args, "--name")] = runLabels(args)
 		return []byte("4f9c0ffee\n"), nil
 	case key == "rm --force":
+		if _, ok := d.containers[name]; ok {
+			d.removedStatus[name] = d.state(name)
+		}
 		delete(d.containers, name)
+		delete(d.status, name)
 		return []byte(name + "\n"), nil
 	case key == "run --rm":
 		return nil, nil
@@ -103,6 +122,37 @@ func (d *fakeDocker) Run(_ context.Context, env []string, args ...string) ([]byt
 		return []byte(strings.Join(args[3:], "\n") + "\n"), nil
 	}
 	return nil, fmt.Errorf("fake docker: unexpected command %q", args)
+}
+
+// state is a container's state, "running" unless status says otherwise;
+// callers hold d.mu.
+func (d *fakeDocker) state(name string) string {
+	if status := d.status[name]; status != "" {
+		return status
+	}
+	return "running"
+}
+
+// wait models "docker wait": it answers at once for a container that is not
+// running or that exits on its own, and otherwise blocks until ctx ends.
+func (d *fakeDocker) wait(ctx context.Context, env []string, args []string) ([]byte, error) {
+	name := args[1]
+	d.mu.Lock()
+	d.calls = append(d.calls, dockerCall{env: slices.Clone(env), args: slices.Clone(args)})
+	_, exists := d.containers[name]
+	if exists && d.state(name) == "running" && !d.keepsRunning {
+		d.status[name] = "exited"
+	}
+	running := exists && d.state(name) == "running"
+	d.mu.Unlock()
+	switch {
+	case !exists:
+		return nil, errors.New("Error response from daemon: No such container: " + name)
+	case running:
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return []byte("0\n"), nil
 }
 
 func (d *fakeDocker) snapshot() []dockerCall {
@@ -1161,6 +1211,81 @@ func TestRemoveIsLeaseScoped(t *testing.T) {
 			}
 			if !slices.Equal(locks.locked, []int{1}) || locks.released != 1 {
 				t.Fatalf("locks = %v released %d, want slot 1 locked and released once", locks.locked, locks.released)
+			}
+		})
+	}
+}
+
+// TestRemoveLetsAnExitingContainerFinish covers the removal that follows a
+// job: the runner is exiting, and forcing its container then races the exit.
+func TestRemoveLetsAnExitingContainerFinish(t *testing.T) {
+	t.Parallel()
+	const exitWait = 300 * time.Millisecond
+	cases := []struct {
+		name         string
+		status       string
+		keepsRunning bool
+		holder       string
+		wantWait     bool
+		// wantRemoved is the container's state when it was removed; empty
+		// means it was not removed.
+		wantRemoved string
+		atLeast     time.Duration
+	}{
+		{name: "running container exits on its own", wantWait: true, wantRemoved: "exited"},
+		{name: "running container keeps running", keepsRunning: true, wantWait: true, wantRemoved: "running", atLeast: exitWait},
+		{name: "container already stopped", status: "exited", wantRemoved: "exited"},
+		{name: "slot of another lease", holder: "lease-other"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			docker := newFakeDocker()
+			holder := tc.holder
+			if holder == "" {
+				holder = "lease-0001"
+			}
+			docker.containers["runneryard-slot-1"] = map[string]string{labelSlot: "1", labelLease: holder}
+			if tc.status != "" {
+				docker.status["runneryard-slot-1"] = tc.status
+			}
+			docker.keepsRunning = tc.keepsRunning
+			agent := newTestAgent(docker)
+			agent.exitWait = exitWait
+			began := time.Now()
+			reply := agent.Handle(context.Background(), "remove 1 lease-0001", strings.NewReader(""))
+			elapsed := time.Since(began)
+			if tc.holder != "" {
+				requireRefusal(t, reply, pool.CodeLeaseMismatch)
+			} else {
+				decodeOK(t, reply, nil)
+			}
+			waits := 0
+			for _, call := range docker.snapshot() {
+				if call.args[0] == "wait" {
+					waits++
+					if !slices.Equal(call.args, []string{"wait", "runneryard-slot-1"}) {
+						t.Fatalf("wait call = %v, want the slot's container", call.args)
+					}
+				}
+			}
+			if (waits == 1) != tc.wantWait || waits > 1 {
+				t.Fatalf("docker calls = %v, want one wait %v", docker.keys(), tc.wantWait)
+			}
+			docker.mu.Lock()
+			removed := docker.removedStatus["runneryard-slot-1"]
+			docker.mu.Unlock()
+			if removed != tc.wantRemoved {
+				t.Fatalf("removed in state %q, want %q", removed, tc.wantRemoved)
+			}
+			if elapsed < tc.atLeast {
+				t.Fatalf("removal took %s, want the full wait of %s", elapsed, tc.atLeast)
+			}
+			if tc.atLeast == 0 && elapsed >= exitWait {
+				t.Fatalf("removal took %s, want no wait for the bound", elapsed)
+			}
+			if elapsed >= exitWait+5*time.Second {
+				t.Fatalf("removal took %s, want it bounded by the wait", elapsed)
 			}
 		})
 	}

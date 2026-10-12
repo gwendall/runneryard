@@ -365,6 +365,18 @@ a larger one could outlast the controller's 20 s call, which then retried a
 removal the first one still held the slot for. The same removal now answers
 in under half a second.
 
+A runner exits after its one job, and the controller asks for the removal as
+soon as the job completes, so the slot's container is often still exiting.
+Forcing it then races the exit: on a production pool host, Docker missed the
+exit, waited 10 s before killing the container again, and the removal took
+41 s. Every `docker inspect` of that container waited as long, so the host's
+listing outlasted the controller's 20 s call too. A removal that finds the
+slot's container running therefore waits up to 5 s for it to exit on its own
+(`docker wait`), then removes it with `docker rm --force`, which stops
+whatever still runs, such as a job the controller cancels. A stopped
+container is removed at once, and a slot that holds another lease is refused
+before any wait.
+
 The space a workspace held comes back seconds after the removal instead of
 before it answers. `min_free_disk_gb` counts the fuller of Docker's data root
 and the work root when they are on different filesystems, and a start that
