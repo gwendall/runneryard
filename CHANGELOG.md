@@ -4,6 +4,18 @@ RunnerYard is pre-1.0 and follows semantic versioning: patch and minor releases
 are drop-in upgrades for a running fleet, and anything that changes an
 operator-facing schema or a trust boundary is called out here first.
 
+## Unreleased
+
+- A pool host fills every slot's cache volumes from the runner image before it reports
+  ready (`host boot` once the image is present, `host install` after its pull), instead
+  of leaving the copy to each slot's first start. Why: Docker copies the image's files
+  at a volume's path into the volume the first time a container mounts it, and an
+  image that ships a pnpm store and Playwright's browsers there (3.2 GB) took 50 s to
+  start its first slot and 99 s for three slots at once, past the controller's 90 s
+  start timeout, so those jobs went to the next tier. A volume that already has files
+  is left as it is, so a restarted host only runs one short container per slot. A
+  host that cannot fill its caches logs a warning and reports ready anyway.
+
 ## 0.5.3 (2026-10-12)
 
 - A Fly worker delete that Fly refuses with `412` because the Machine is already being

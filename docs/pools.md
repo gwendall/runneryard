@@ -190,6 +190,19 @@ Every slot also keeps its own Docker data root, so `docker build` reuses its
 layers. The previous job's containers, networks and volumes are removed before
 the next job; its images and build cache stay.
 
+A slot's caches start with the image's files at their paths: Docker copies
+them into a new volume the first time a container mounts it. The host fills
+every slot's caches this way before it reports ready (`host boot` once the
+image is present, `host install` after its pull), in parallel, so a slot's
+first job starts as fast as its later ones. An image that ships gigabytes
+there, such as a pnpm store or Playwright's browsers, makes a new host take
+longer to become ready instead. A volume that already has files is left as it
+is, so a restarted host is ready again within seconds. RunnerYard 0.5.3 and
+earlier left the copy to each slot's first start: 3.2 GB took 50 s in one slot
+and 99 s in three at once, past the controller's 90 s start timeout, and those
+jobs went to the next tier. A host that cannot fill its caches logs why and
+reports ready anyway, and its slots fill their own on their first start.
+
 A slot with a whole number of CPUs is pinned to its own cores
 (`--cpuset-cpus`) when the host has `slots` times `slot_cpus` online CPUs:
 slot 0 gets the first ones, slot 1 the next, and so on. Inside it `nproc`,
@@ -257,7 +270,9 @@ image itself, as root, with `runneryard host boot`:
    refuses to start when `FLY_PRIVATE_IP` is missing or is not an IP address;
 4. imports the runner image into the host's Docker from the Machine's own
    root filesystem when the volume does not have it yet, and pulls it
-   instead if the import fails (see [Runner image](#runner-image)).
+   instead if the import fails (see [Runner image](#runner-image));
+5. fills every slot's caches from the image (see
+   [Configuration](#configuration)), and only then reports ready.
 
 Every step is safe to repeat, because a stopped Machine runs them again on its
 next start: the root filesystem is reset, the volume is not. There is no
@@ -353,8 +368,9 @@ runner image):
 
 - A new host is ready 59 to 72 s after its creation: Fly pulls the image for
   the root filesystem (about 30 s), then host boot imports it from there into
-  the host's Docker (23 to 28 s). A burst shorter than that is over before the
-  new host can take a job.
+  the host's Docker (23 to 28 s). Filling the slots' caches then adds about as
+  long as copying the image's files at the `caches` paths once per slot. A
+  burst shorter than that is over before the new host can take a job.
 - A stopped host is ready 3 to 9 s after its start, with its images, build
   cache and slot caches as it left them.
 - With `min_hosts: 0`, the first job after a quiet period starts a stopped

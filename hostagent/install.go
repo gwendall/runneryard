@@ -122,6 +122,10 @@ func Install(ctx context.Context, options InstallOptions) error {
 	if err := run(ctx, "docker", "pull", options.Config.Image); err != nil {
 		return err
 	}
+	fmt.Fprintf(options.Out, "filling the slot caches from the image\n")
+	if err := (&Agent{Config: options.Config, Docker: CLI{}}).PrefillCaches(ctx); err != nil {
+		fmt.Fprintf(options.Out, "warning: could not fill the slot caches (%v); a slot's first start fills its own and may outlast the controller's start timeout\n", err)
+	}
 	if options.BlockMetadata {
 		if err := writeFile(metadataUnitPath, []byte(MetadataBlockUnit), 0o644); err != nil {
 			return err
