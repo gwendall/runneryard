@@ -343,18 +343,25 @@ type volume struct {
 }
 
 // volumes are the slot's persistent paths: the nested Docker data (images
-// and build cache), the runner work directory, and the configured caches.
+// and build cache) and the configured caches. The runner work directory is
+// not one of them: it lives in the container and goes with it, so every job
+// checks out into an empty workspace, as on a disposable worker. A kept
+// checkout broke sparse checkouts: actions/checkout leaves the previous job's
+// files outside the new pattern in place, some of them from another commit.
 func (a *Agent) volumes(slot int) []volume {
 	prefix := containerName(slot)
 	volumes := []volume{
 		{name: prefix + "-docker", target: "/var/lib/docker"},
-		{name: prefix + "-work", target: "/home/runner/_work"},
 	}
 	for _, path := range a.Config.Caches {
 		volumes = append(volumes, volume{name: prefix + "-cache-" + cacheVolumeSuffix(path), target: path})
 	}
 	return volumes
 }
+
+// retiredWorkVolume is the work directory volume RunnerYard 0.5.1 and earlier
+// kept for a slot. Nothing mounts it any more.
+func retiredWorkVolume(slot int) string { return containerName(slot) + "-work" }
 
 func cacheVolumeSuffix(path string) string {
 	return strings.ReplaceAll(strings.TrimPrefix(path, "/"), "/", "-")
@@ -370,11 +377,13 @@ func (a *Agent) ensureDisk(ctx context.Context, slot int) (pool.Reply, bool) {
 		return pool.Reply{}, true
 	}
 	// The slot has no container, so its volumes are unused: drop them and let
-	// this job start cold rather than fill the disk.
+	// this job start cold rather than fill the disk. The work directory volume
+	// an older agent kept goes too.
 	args := []string{"volume", "rm", "--force"}
 	for _, volume := range a.volumes(slot) {
 		args = append(args, volume.name)
 	}
+	args = append(args, retiredWorkVolume(slot))
 	if _, err := a.Docker.Run(ctx, nil, args...); err != nil {
 		return refuse(pool.CodeDiskFull, "free disk below minimum and slot caches could not be removed: "+err.Error()), false
 	}

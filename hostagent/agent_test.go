@@ -525,7 +525,6 @@ func TestStartRunsTheSlotWithTheJITOnlyInItsEnvironment(t *testing.T) {
 		"--env", "RUNNERYARD_IDLE_TIMEOUT=900",
 		"--env", "RUNNERYARD_REUSED_SLOT=1",
 		"--mount", "type=volume,source=runneryard-slot-1-docker,target=/var/lib/docker",
-		"--mount", "type=volume,source=runneryard-slot-1-work,target=/home/runner/_work",
 		"--mount", "type=volume,source=runneryard-slot-1-cache-home-runner-.cache,target=/home/runner/.cache",
 		"--mount", "type=volume,source=runneryard-slot-1-cache-opt-hostedtoolcache,target=/opt/hostedtoolcache",
 		"--pull", "never",
@@ -537,6 +536,23 @@ func TestStartRunsTheSlotWithTheJITOnlyInItsEnvironment(t *testing.T) {
 	}
 	if !slices.Equal(locks.locked, []int{1}) || locks.released != 1 {
 		t.Fatalf("locks = %v released %d, want slot 1 locked and released once", locks.locked, locks.released)
+	}
+}
+
+// A kept work directory gave a sparse checkout the previous job's full tree:
+// every job must start in an empty workspace, as on a disposable worker.
+func TestStartGivesEveryJobAnEmptyWorkspace(t *testing.T) {
+	t.Parallel()
+	docker := newFakeDocker()
+	decodeOK(t, newTestAgent(docker).Handle(context.Background(), "start 0", requestBody(t, validStartRequest())), nil)
+	run := docker.find("run --detach")[0]
+	for i, arg := range run.args {
+		if arg == "--mount" && strings.Contains(run.args[i+1], "/home/runner/_work") {
+			t.Fatalf("slot mounts %q: the workspace would outlive the job", run.args[i+1])
+		}
+	}
+	if keys := docker.keys(); slices.Contains(keys, "volume rm") {
+		t.Fatalf("docker calls = %q: a start with free disk removes no volume", keys)
 	}
 }
 
@@ -730,8 +746,9 @@ func TestStartDropsSlotCachesWhenDiskIsLow(t *testing.T) {
 	t.Parallel()
 	slotVolumes := []string{
 		"volume", "rm", "--force",
-		"runneryard-slot-0-docker", "runneryard-slot-0-work",
+		"runneryard-slot-0-docker",
 		"runneryard-slot-0-cache-home-runner-.cache", "runneryard-slot-0-cache-opt-hostedtoolcache",
+		"runneryard-slot-0-work",
 	}
 	cases := []struct {
 		name       string

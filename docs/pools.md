@@ -2,8 +2,8 @@
 
 A pool keeps machines running and starts each job in a free slot on one of
 them, instead of creating a machine per job. A slot keeps its Docker images,
-build cache, workspace and tool caches between jobs, so a job starts on warm
-data, and a host that is already paid for runs many jobs in a row.
+build cache and tool caches between jobs, so a job starts on warm data, and a
+host that is already paid for runs many jobs in a row.
 
 Pools are a preview: covered by tests, not yet proven on a production fleet.
 Start with one host on a test repository, keep `ephemeral` as the last tier,
@@ -186,9 +186,17 @@ pools:
 | `keep_stopped` | fly | Stopped hosts kept for the next demand, at most `max_hosts`. | `1` |
 | `delete_stopped_after` | fly | Stopped hosts beyond `keep_stopped` are deleted after this. | `6h` |
 
-Every slot also keeps `/home/runner/_work` and its own Docker data root, so
-`actions/checkout` fetches only what changed and `docker build` reuses its
-layers.
+Every slot also keeps its own Docker data root, so `docker build` reuses its
+layers. The previous job's containers, networks and volumes are removed before
+the next job; its images and build cache stay.
+
+The workspace, `/home/runner/_work`, is never kept: every job checks out into
+an empty one, as on a disposable worker, and it cannot be listed in `caches`.
+RunnerYard 0.5.1 and earlier kept it, and a sparse checkout then found the
+previous job's files outside its pattern, some of them from another commit
+(`actions/checkout` does not remove them). A host started by an older agent
+keeps an unused `runneryard-slot-<n>-work` volume per slot until the disk runs
+low, when it is removed with the slot's caches.
 
 ## Hetzner pools
 
