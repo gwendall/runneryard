@@ -120,7 +120,7 @@ func runHostBoot(args []string) error {
 	flags := flag.NewFlagSet("host boot", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	dataRoot := flags.String("data-root", hostagent.BootDataRoot, "mounted volume for Docker's data")
-	defaultDNS := os.Getenv("RUNNERYARD_DOCKER_DNS")
+	defaultDNS := os.Getenv(hostagent.BootDNSVariable)
 	if defaultDNS == "" {
 		defaultDNS = "1.1.1.1,8.8.8.8"
 	}
@@ -184,9 +184,10 @@ Usage:
         --block-metadata       keep containers away from 169.254.169.254
   runneryard host boot [--data-root /data] [--dns 1.1.1.1,8.8.8.8]
       Main process of a machine that boots from the runner image (Fly): start
-      Docker on the data volume, clean the slots of the previous run, pull the
-      image, and serve the agent over SSH without sshd on FLY_PRIVATE_IP, port
-      2222; it refuses to start without that address. The host source writes
+      Docker on the data volume, clean the slots of the previous run, import
+      the image from the machine's root filesystem (pull it if that fails),
+      and serve the agent over SSH without sshd on FLY_PRIVATE_IP, port 2222;
+      it refuses to start without that address. The host source writes
       /etc/runneryard/host.json, the host key, and controller.pub.
   runneryard host info | list
       Show what the controller sees (as the runneryard user).

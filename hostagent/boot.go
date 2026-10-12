@@ -121,12 +121,13 @@ func Boot(ctx context.Context, options BootOptions) error {
 		return fmt.Errorf("listen on %s: %w", options.Listen, err)
 	}
 	agent := &Agent{
-		Config:    cfg,
-		Docker:    docker,
-		FreeBytes: FreeBytes,
-		Lock:      SlotLock(options.LockDir),
-		Now:       time.Now,
-		Version:   options.Version,
+		Config:     cfg,
+		LocalImage: LocalImageName(cfg.Image),
+		Docker:     docker,
+		FreeBytes:  FreeBytes,
+		Lock:       SlotLock(options.LockDir),
+		Now:        time.Now,
+		Version:    options.Version,
 	}
 	server := &SSHServer{Agent: agent, HostKey: signer, AuthorizedKey: authorized, Logger: log}
 	serveCtx, cancel := context.WithCancel(ctx)
@@ -135,8 +136,8 @@ func Boot(ctx context.Context, options BootOptions) error {
 	go func() { served <- server.Serve(serveCtx, listener) }()
 	log.Info("pool host agent listening", "address", listener.Addr().String(), "slots", cfg.Slots, "image", cfg.Image)
 	// The agent answers "not ready" until the image is present, so the
-	// controller sees the host while the first pull runs.
-	go EnsureImage(serveCtx, docker, cfg.Image, log, func(d time.Duration) {
+	// controller sees the host while the import or the first pull runs.
+	go EnsureImage(serveCtx, docker, cfg.Image, agent.LocalImage, ImportRootfsImage, log, func(d time.Duration) {
 		select {
 		case <-serveCtx.Done():
 		case <-time.After(d):
@@ -305,24 +306,41 @@ func RemoveLeftoverSlots(ctx context.Context, docker Docker) (int, error) {
 	return len(ids), nil
 }
 
-// EnsureImage pulls the runner image when it is missing, retrying until it
-// succeeds or ctx ends.
-func EnsureImage(ctx context.Context, docker Docker, image string, log *slog.Logger, sleep func(time.Duration)) {
-	if _, err := docker.Run(ctx, nil, "image", "inspect", "--format", "{{.Id}}", image); err == nil {
+// EnsureImage makes the runner image present as local, the name the agent
+// starts slots with. It imports the machine's root filesystem with
+// importImage when that is set, and pulls image otherwise or when the import
+// fails, retrying the pull until it succeeds or ctx ends.
+func EnsureImage(ctx context.Context, docker Docker, image, local string, importImage func(context.Context, string) error, log *slog.Logger, sleep func(time.Duration)) {
+	if _, err := docker.Run(ctx, nil, "image", "inspect", "--format", "{{.Id}}", local); err == nil {
 		return
 	}
-	backoff := 5 * time.Second
-	for ctx.Err() == nil {
+	if importImage != nil {
 		started := time.Now()
-		_, err := docker.Run(ctx, nil, "pull", "--quiet", image)
+		err := importImage(ctx, local)
 		if err == nil {
-			log.Info("pulled runner image", "image", image, "duration", time.Since(started).Round(time.Second))
+			log.Info("imported runner image from the machine's root filesystem", "image", image, "duration", time.Since(started).Round(time.Second).String())
 			return
 		}
 		if ctx.Err() != nil {
 			return
 		}
-		log.Warn("could not pull the runner image; retrying", "image", image, "retry_after", backoff, "error", err)
+		log.Warn("could not import the runner image from the machine's root filesystem; pulling it", "image", image, "error", err)
+	}
+	backoff := 5 * time.Second
+	for ctx.Err() == nil {
+		started := time.Now()
+		_, err := docker.Run(ctx, nil, "pull", "--quiet", image)
+		if err == nil && local != image {
+			_, err = docker.Run(ctx, nil, "tag", image, local)
+		}
+		if err == nil {
+			log.Info("pulled runner image", "image", image, "duration", time.Since(started).Round(time.Second).String())
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		log.Warn("could not pull the runner image; retrying", "image", image, "retry_after", backoff.String(), "error", err)
 		sleep(backoff)
 		backoff = min(backoff*2, maxPullBackoff)
 	}

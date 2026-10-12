@@ -528,6 +528,7 @@ func TestStartRunsTheSlotWithTheJITOnlyInItsEnvironment(t *testing.T) {
 		"--mount", "type=volume,source=runneryard-slot-1-work,target=/home/runner/_work",
 		"--mount", "type=volume,source=runneryard-slot-1-cache-home-runner-.cache,target=/home/runner/.cache",
 		"--mount", "type=volume,source=runneryard-slot-1-cache-opt-hostedtoolcache,target=/opt/hostedtoolcache",
+		"--pull", "never",
 		"--entrypoint", "/usr/bin/dumb-init",
 		agentTestImage, "--", "/usr/local/bin/runner-entrypoint",
 	}
@@ -536,6 +537,25 @@ func TestStartRunsTheSlotWithTheJITOnlyInItsEnvironment(t *testing.T) {
 	}
 	if !slices.Equal(locks.locked, []int{1}) || locks.released != 1 {
 		t.Fatalf("locks = %v released %d, want slot 1 locked and released once", locks.locked, locks.released)
+	}
+}
+
+func TestStartRunsTheLocalImageAndLabelsTheConfiguredOne(t *testing.T) {
+	t.Parallel()
+	docker := newFakeDocker()
+	docker.image = LocalImageName(agentTestImage)
+	agent := newTestAgent(docker)
+	agent.LocalImage = docker.image
+	reply := agent.Handle(context.Background(), "start 1", requestBody(t, validStartRequest()))
+
+	var started pool.Slot
+	decodeOK(t, reply, &started)
+	run := docker.find("run --detach")[0]
+	if image := run.args[len(run.args)-3]; image != "ghcr.io/acme/runner:sha256-2222" {
+		t.Fatalf("slot runs %q, want the local name of the pinned image", image)
+	}
+	if label := runLabels(run.args)[labelImage]; label != agentTestImage {
+		t.Fatalf("image label = %q, want the configured image %q", label, agentTestImage)
 	}
 }
 
