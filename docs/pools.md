@@ -167,7 +167,7 @@ pools:
 | `name` | all | Lowercase letters, digits and hyphens; not `ephemeral`. | Required |
 | `source` | all | `fly`, `hetzner` or `static`. | Required |
 | `runner_image` | all | Exact image every slot runs. Pin a digest. | `RUNNER_IMAGE` |
-| `slot_cpus`, `slot_memory_mb` | all | Docker limits per slot; `0` for none. A Fly pool always limits memory, see `memory_mb`. | `0`; Fly `slot_memory_mb`: an equal share of `memory_mb` less 1024 MB |
+| `slot_cpus`, `slot_memory_mb` | all | Docker limits per slot; `0` for none. A whole `slot_cpus` pins each slot to its own cores, see below. A Fly pool always limits memory, see `memory_mb`. | `0`; Fly `slot_memory_mb`: an equal share of `memory_mb` less 1024 MB |
 | `caches` | all | Runner paths kept between a slot's jobs. | `~/.cache`, `~/.npm`, `~/go` |
 | `min_free_disk_gb` | all | Free disk a start requires; below it the slot's caches are dropped first. | `20` |
 | `hourly_price` | all | Host price for reporting. | Hetzner and Fly: the list price of known types and regions (required otherwise). Static: `0` |
@@ -189,6 +189,18 @@ pools:
 Every slot also keeps its own Docker data root, so `docker build` reuses its
 layers. The previous job's containers, networks and volumes are removed before
 the next job; its images and build cache stay.
+
+A slot with a whole number of CPUs is pinned to its own cores
+(`--cpuset-cpus`) when the host has `slots` times `slot_cpus` online CPUs:
+slot 0 gets the first ones, slot 1 the next, and so on. Inside it `nproc`,
+Node's `os.availableParallelism()` and Go's `runtime.NumCPU()` report the
+slot's CPUs, as on a disposable worker of that size. Otherwise, with a
+fractional `slot_cpus` or too few host CPUs, the slot gets a CPU quota
+(`--cpus`) instead, and the host logs a warning at boot (`host install` prints
+it): a quota limits the slot's CPU time but leaves every host CPU visible, so a
+tool that sizes its parallelism by the CPU count oversubscribes the slot. A
+test runner on an eight-CPU host then runs eight workers in two CPUs' time,
+and slow tests time out. RunnerYard 0.5.2 and earlier always used a quota.
 
 The workspace, `/home/runner/_work`, is never kept: every job checks out into
 an empty one, as on a disposable worker, and it cannot be listed in `caches`.

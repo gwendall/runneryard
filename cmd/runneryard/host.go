@@ -51,6 +51,7 @@ func runHost(args []string) error {
 		Docker:    hostagent.CLI{},
 		FreeBytes: hostagent.FreeBytes,
 		Lock:      hostagent.SlotLock(hostLockDirectory()),
+		CPUs:      hostagent.OnlineCPUs(),
 		Version:   version,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), hostCommandTimeout)

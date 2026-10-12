@@ -142,6 +142,9 @@ func Install(ctx context.Context, options InstallOptions) error {
 		return err
 	}
 	fmt.Fprintf(options.Out, "pool host ready: %d slots, image %s\n", options.Config.Slots, options.Config.Image)
+	if agent := (&Agent{Config: options.Config, CPUs: OnlineCPUs()}); options.Config.SlotCPUs > 0 && !agent.SlotsPinned() {
+		fmt.Fprintf(options.Out, "warning: slots get a CPU quota and see all %d host CPUs; a whole --slot-cpus with slots x slot CPUs within the host's pins each slot to its own cores\n", len(agent.CPUs))
+	}
 	return nil
 }
 

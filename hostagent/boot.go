@@ -126,8 +126,13 @@ func Boot(ctx context.Context, options BootOptions) error {
 		Docker:     docker,
 		FreeBytes:  FreeBytes,
 		Lock:       SlotLock(options.LockDir),
+		CPUs:       OnlineCPUs(),
 		Now:        time.Now,
 		Version:    options.Version,
+	}
+	if cfg.SlotCPUs > 0 && !agent.SlotsPinned() {
+		log.Warn("slots get a CPU quota but see every host CPU: pinning needs a whole slot_cpus and slots x slot_cpus host CPUs; tools that size their parallelism by the CPU count will oversubscribe",
+			"slots", cfg.Slots, "slot_cpus", cfg.SlotCPUs, "host_cpus", len(agent.CPUs))
 	}
 	server := &SSHServer{Agent: agent, HostKey: signer, AuthorizedKey: authorized, Logger: log}
 	serveCtx, cancel := context.WithCancel(ctx)

@@ -12,6 +12,14 @@ operator-facing schema or a trust boundary is called out here first.
   in the same instant; the refusal reached the listener as a permanent failure and
   stopped the controller, which Fly restarted. The adapter now reads the Machine back
   and accepts `destroying`, `destroyed`, or gone; any other state stays an error.
+- A pool slot with a whole `slot_cpus` is pinned to its own cores (`--cpuset-cpus`)
+  when the host has a core for every slot CPU, instead of getting a CPU quota (`--cpus`).
+  Why: a quota limits CPU time but leaves every host CPU visible, so `nproc`, Node's
+  `os.availableParallelism()` and Go's `runtime.NumCPU()` reported eight CPUs in a
+  two-CPU slot of an eight-CPU host. A test runner that sized its workers by it ran
+  seven test files in two CPUs' time, and a suite that takes about 2 minutes on a
+  disposable worker hit its 10-minute timeout in a slot. A fractional `slot_cpus`, or
+  more slot CPUs than the host has, keeps the quota, and the host warns at boot.
 
 ## 0.5.2 (2026-10-12)
 
